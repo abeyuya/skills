@@ -44,6 +44,12 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 /plugin install pr-review@abeyuya-skills
 ```
 
+## マイグレーション (旧 `@skills` を使っていた caller 向け)
+
+marketplace 名を `skills` → `abeyuya-skills` にリネームした。
+旧名 `pr-review@skills` を参照していた caller (他リポジトリの GitHub Actions ワークフロー、ローカルの `/plugin install` 等) は **すべて `pr-review@abeyuya-skills` に書き換えが必要**。
+書き換え漏れがあると plugin が解決できず CI が壊れるため注意。
+
 ## 開発時 (このリポジトリ自身で plugin を編集しながら使う)
 
 `/plugin install` 経由だと `~/.claude/plugins/cache/` にコピーされた版が使われ、
