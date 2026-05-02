@@ -44,6 +44,18 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 /plugin install pr-review@abeyuya-skills
 ```
 
+## 開発時 (このリポジトリ自身で plugin を編集しながら使う)
+
+`/plugin install` 経由だと `~/.claude/plugins/cache/` にコピーされた版が使われ、
+ローカルの未コミット変更が反映されない。編集中の内容をそのまま動かすには
+`--plugin-dir` でディスクを直接読ませる:
+
+```bash
+claude --plugin-dir plugins/pr-review
+```
+
+セッション中に `SKILL.md` や `commands/*.md` を編集したら `/reload-plugins` で再読込できる。
+
 ## 構成
 
 ```
