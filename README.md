@@ -27,14 +27,15 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
     plugins: |
       pr-review@abeyuya-skills
     prompt: |
-      REPO: ${{ github.repository }}
-      PR NUMBER: ${{ github.event.pull_request.number }}
+      OWNER: ${{ github.repository_owner }}
+      REPO: ${{ github.event.repository.name }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
       CALLER_GUIDELINES: docs/ai_code_review/all.md
       MODE: all
 
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
     claude_args: |
-      --allowedTools "Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*)"
+      --allowedTools "Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*)"
 ```
 
 ## 利用方法 (ローカル Claude Code)
