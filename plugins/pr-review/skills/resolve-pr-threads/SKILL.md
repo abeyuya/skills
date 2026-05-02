@@ -117,7 +117,9 @@ gh api graphql \
 
 ### Step 4. `resolveReviewThread` mutation を実行する
 
-Step 3 のコメント投稿が成功したスレッドのみ resolve する。`<THREAD_ID>` は Step 1 で得たスレッドの `id`。
+Step 3 のコメント投稿が成功したスレッドのみ resolve する。`addPullRequestReviewThreadReply` が失敗した場合は **当該スレッドのみ skip し、resolve も実行せず次のスレッドへ進む** (全体停止はしない)。skip した件数は Step 5 で別カウントとして報告する。
+
+`<THREAD_ID>` は Step 1 で得たスレッドの `id`。
 
 ```bash
 gh api graphql \
@@ -132,4 +134,8 @@ gh api graphql \
 
 ### Step 5. caller への報告
 
-resolve したスレッドの件数と概要を caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように)。
+以下の件数をそれぞれ分けて caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように):
+
+- resolve したスレッド件数 (Step 4 まで成功したもの)
+- コメント投稿失敗で resolve を見送った件数 (Step 3 の `addPullRequestReviewThreadReply` が失敗したもの)
+- 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能なもの)

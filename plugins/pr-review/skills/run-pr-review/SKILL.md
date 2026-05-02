@@ -15,6 +15,7 @@ PR レビュー一式 (方針読み込み → PR 確認 → レビュー作成 �
 - `CALLER_GUIDELINES`: caller プロジェクト固有のレビュー観点ファイルのリポジトリ相対パス (例: `docs/ai_code_review/all.md`)。省略時は読み込まない。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は AI 判断 (=`/pr-review-guidelines` 引数なし相当)。Step 2 で `/pr-review-guidelines max-inline-comments=<値>` として渡す。
 - `MODE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
+- `SELF_LOGIN` (任意, `MODE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 7 でそのまま `resolve-pr-threads` に転送される。
 
 ## 手順
 
@@ -55,6 +56,8 @@ Step 2〜4 で得た方針・観点・差分・CI 情報をもとに、総括 (`
 ### Step 6. `post-pr-review` skill でレビューを投稿する
 
 Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` と Step 5 で作成した本文を `post-pr-review` skill に渡し、**1回の API コールで1つの Review として** 投稿する。`gh pr comment` や `gh pr review` での個別投稿はしない。
+
+起動方法は **Skill ツールで `post-pr-review` を呼ぶ**。本文 (`body` / `event` / `comments[]`) は `post-pr-review/SKILL.md` のスキーマに従って組み立て、起動時の引数として渡す。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
 
 ### Step 7. `resolve-pr-threads` skill で過去スレッドを整理する
 
