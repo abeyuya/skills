@@ -80,9 +80,44 @@ gh api graphql \
 2. `MODE=own` の場合、スレッド先頭コメントの `author.login` が `SELF_LOGIN` と一致しないならスキップ。
 3. 上記「共通の resolve 判定ルール」に従って、指摘どおりに修正されたものだけを resolve 候補にする。コメントの `path` / `line` 周辺の現在のファイル内容と差分を必ず確認する。
 
-### Step 3. `resolveReviewThread` mutation を実行する
+### Step 3. resolve 根拠コメントを投稿する
 
-resolve 対象のスレッドごとに以下を実行する。`<THREAD_ID>` は Step 1 で得たスレッドの `id`。
+resolve する前に、なぜ resolve するのか根拠を一言コメントで残す。後から「なぜこのスレッドが畳まれたのか」を追えるようにするため。
+
+#### 3-1. 対応 commit を特定する
+
+可能なら指摘箇所を修正した commit を特定し、その URL を根拠として添える。
+
+- `git log --oneline -- <path>` で対象ファイルの commit 履歴を確認する。
+- `git blame <path> -L <line>,<line>` で該当行を最後に変更した commit を特定するのが最も確実。
+- PR 全体の commit は `gh pr view <PR_NUMBER> --json commits` でも取得できる。
+- commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
+
+特定できない場合 (リファクタで該当行が消えただけ等) は commit URL を省略し、根拠を文章で簡潔に書く。
+
+#### 3-2. スレッドへ返信コメントを投稿する
+
+`addPullRequestReviewThreadReply` mutation でスレッドに返信する。コメント本文は短く 1 文程度に抑える。
+
+例:
+- `[abc1234](https://github.com/<OWNER>/<REPO>/commit/abc1234) で対応済みのため resolve します。`
+- `指摘箇所のロジックを削除し別実装に置き換えたため resolve します ([abc1234](...))。`
+
+```bash
+gh api graphql \
+  -F threadId=<THREAD_ID> \
+  -F body='<根拠コメント本文>' \
+  -f query='
+    mutation($threadId: ID!, $body: String!) {
+      addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+        comment { id }
+      }
+    }'
+```
+
+### Step 4. `resolveReviewThread` mutation を実行する
+
+Step 3 のコメント投稿が成功したスレッドのみ resolve する。`<THREAD_ID>` は Step 1 で得たスレッドの `id`。
 
 ```bash
 gh api graphql \
@@ -95,6 +130,6 @@ gh api graphql \
     }'
 ```
 
-### Step 4. caller への報告
+### Step 5. caller への報告
 
 resolve したスレッドの件数と概要を caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように)。
