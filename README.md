@@ -7,13 +7,13 @@ abeyuya 個人が利用する Claude Code 向け skill / plugin 群を集約し�
 
 ### `pr-review`
 
-PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群。
+PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群と、**共通レビュー方針** をスラッシュコマンドとしてまとめて提供する。
 
-- `post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
-- `resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`mode` (`all` / `own` / `none`) で範囲を制御。
+- `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
+- `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`mode` (`all` / `own` / `none`) で範囲を制御。
+- `commands/pr-review-guidelines`: `/pr-review-guidelines` で呼び出す **共通レビュー方針** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。
 
-レビューの観点・トーン・重要度ラベル規約等の **方針** は含まない。手続きのみを提供する設計のため、
-caller リポジトリ側でレビュー方針を別途用意し、prompt で参照させる前提。
+プロジェクト固有のレビュー観点は本プラグインには含まれないため、caller リポジトリ側で別途用意し、上記共通方針と併用して prompt で参照させる前提。
 
 ## 利用方法 (GitHub Actions)
 
@@ -29,7 +29,8 @@ caller リポジトリ側でレビュー方針を別途用意し、prompt で参
       REPO: ${{ github.repository }}
       PR NUMBER: ${{ github.event.pull_request.number }}
 
-      docs/ai_code_review/all.md を読み、その方針に従って PR をレビューしてください。
+      まず /pr-review-guidelines を実行し、共通レビュー方針を読み込んでください。
+      加えて docs/ai_code_review/all.md (caller 固有観点) を読み、両方の方針に従って PR をレビューしてください。
       レビュー結果は post-pr-review skill で1つの Review として投稿してください。
       投稿後、resolve-pr-threads skill を mode=all で呼び、修正済みの過去スレッドを resolve してください。
     claude_args: |
@@ -52,6 +53,8 @@ plugins/
   pr-review/
     .claude-plugin/
       plugin.json
+    commands/
+      pr-review-guidelines.md
     skills/
       post-pr-review/
         SKILL.md
