@@ -9,6 +9,7 @@ abeyuya 個人が利用する Claude Code 向け skill / plugin 群を集約し�
 
 PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群と、**共通レビュー方針** をスラッシュコマンドとしてまとめて提供する。
 
+- `skills/run-pr-review`: PR レビュー一式 (方針読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`mode` (`all` / `own` / `none`) で範囲を制御。
 - `commands/pr-review-guidelines`: `/pr-review-guidelines` で呼び出す **共通レビュー方針** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。
@@ -28,11 +29,10 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
     prompt: |
       REPO: ${{ github.repository }}
       PR NUMBER: ${{ github.event.pull_request.number }}
+      CALLER_GUIDELINES: docs/ai_code_review/all.md
+      MODE: all
 
-      まず /pr-review-guidelines を実行し、共通レビュー方針を読み込んでください。
-      加えて docs/ai_code_review/all.md (caller 固有観点) を読み、両方の方針に従って PR をレビューしてください。
-      レビュー結果は post-pr-review skill で1つの Review として投稿してください。
-      投稿後、resolve-pr-threads skill を mode=all で呼び、修正済みの過去スレッドを resolve してください。
+      run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
     claude_args: |
       --allowedTools "Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*)"
 ```
@@ -68,6 +68,8 @@ plugins/
     commands/
       pr-review-guidelines.md
     skills/
+      run-pr-review/
+        SKILL.md
       post-pr-review/
         SKILL.md
       resolve-pr-threads/
