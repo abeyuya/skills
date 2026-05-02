@@ -1,0 +1,9 @@
+{
+  "name": "pr-review",
+  "version": "0.1.0",
+  "description": "PR レビュー投稿 (post-pr-review) と過去レビュースレッドの resolve (resolve-pr-threads) を担う skill 群。レビューの観点・規約は含まず、手続きのみを提供する。",
+  "author": {
+    "name": "abeyuya",
+    "url": "https://github.com/abeyuya"
+  }
+}

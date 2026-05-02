@@ -1,0 +1,18 @@
+{
+  "name": "skills",
+  "owner": {
+    "name": "abeyuya",
+    "url": "https://github.com/abeyuya"
+  },
+  "metadata": {
+    "description": "abeyuya 個人が利用する Claude Code 向け skill / plugin 群"
+  },
+  "plugins": [
+    {
+      "name": "pr-review",
+      "source": "./plugins/pr-review",
+      "description": "PR レビューを1回のAPIコールで1つのReviewとして投稿し、過去スレッドを安全に resolve するための skill 群",
+      "version": "0.1.0"
+    }
+  ]
+}
