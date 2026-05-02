@@ -24,7 +24,7 @@ caller リポジトリ側でレビュー方針を別途用意し、prompt で参
     plugin_marketplaces: |
       https://github.com/abeyuya/skills.git
     plugins: |
-      pr-review@skills
+      pr-review@abeyuya-skills
     prompt: |
       REPO: ${{ github.repository }}
       PR NUMBER: ${{ github.event.pull_request.number }}
@@ -40,7 +40,7 @@ caller リポジトリ側でレビュー方針を別途用意し、prompt で参
 
 ```bash
 /plugin marketplace add abeyuya/skills
-/plugin install pr-review@skills
+/plugin install pr-review@abeyuya-skills
 ```
 
 ## 構成
