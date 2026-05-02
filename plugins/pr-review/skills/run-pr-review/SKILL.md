@@ -40,10 +40,12 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 レビューに必要な情報を取得する。
 
-- `gh pr view <PR_NUMBER> --json title,body,headRefName,baseRefName,statusCheckRollup,commits` で PR メタ情報と CI 状態を取得する。
-- `gh pr diff <PR_NUMBER>` で差分を取得する。
-- 既存レビュー / コメントは `resolve-pr-threads` 内でも取得するが、**重複指摘を避けるため** 本ステップでも GraphQL で `reviewThreads` を取得し、自分の過去コメント等を把握しておく (`/pr-review-guidelines` の「既存レビュー/コメントとの重複回避」に従う)。
-- `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log` 等で失敗ログ本体まで読み、`[must]` 指摘の根拠にする (詳細は `/pr-review-guidelines` の「CI の扱い」)。
+いずれの `gh` コマンドも、cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう、Step 1 で確定した `OWNER`/`REPO` を `--repo <OWNER>/<REPO>` で必ず明示する。
+
+- `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,baseRefName,statusCheckRollup,commits` で PR メタ情報と CI 状態を取得する。
+- `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得する。
+- 既存レビュー / コメントは `resolve-pr-threads` 内でも取得するが、**重複指摘を避けるため** 本ステップでも GraphQL で `reviewThreads` を取得し、自分の過去コメント等を把握しておく (`/pr-review-guidelines` の「既存レビュー/コメントとの重複回避」に従う)。GraphQL は `-F owner=<OWNER> -F name=<REPO>` で渡す。
+- `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log --repo <OWNER>/<REPO>` 等で失敗ログ本体まで読み、`[must]` 指摘の根拠にする (詳細は `/pr-review-guidelines` の「CI の扱い」)。
 
 ### Step 5. レビュー本文を作成する
 

@@ -132,10 +132,13 @@ gh api graphql \
     }'
 ```
 
+`resolveReviewThread` が失敗した場合は **再試行せず次のスレッドへ進む** (再試行で根拠コメントが二重投稿になるのを避けるため)。Step 3 のコメントは投稿済みなので、当該スレッドは「根拠コメントだけ残り `isResolved=false` のオーファン状態」になる。これは Step 5 で別カウントとして caller に報告し、後続で人間が手動 resolve できるようにする。
+
 ### Step 5. caller への報告
 
 以下の件数をそれぞれ分けて caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように):
 
 - resolve したスレッド件数 (Step 4 まで成功したもの)
 - コメント投稿失敗で resolve を見送った件数 (Step 3 の `addPullRequestReviewThreadReply` が失敗したもの)
+- resolve 実行失敗で見送った件数 (Step 3 のコメントは投稿済みだが Step 4 の `resolveReviewThread` が失敗したもの。手動 resolve が必要)
 - 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能なもの)
