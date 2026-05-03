@@ -12,9 +12,9 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 - `skills/run-pr-review`: PR レビュー一式 (参考ガイドライン読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`mode` (`all` / `own` / `none`) で範囲を制御。
-- `commands/pr-review-guidelines`: `/pr-review-guidelines` で呼び出す **参考ガイドライン** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。
+- `commands/pr-review-reference`: `/pr-review-reference` で呼び出す **参考ガイドライン** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。
 
-レビュー方針は caller (ユーザー) に委ねる前提。caller リポジトリ側に独自のレビュー観点がある場合はそれを優先し、特にこだわりがない場合のみ上記参考ガイドラインを採用する想定。
+レビュー方針は caller (ユーザー) に委ねる前提。本参考ガイドラインは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。
 
 ## 利用方法 (GitHub Actions)
 
@@ -73,7 +73,7 @@ plugins/
     .claude-plugin/
       plugin.json
     commands/
-      pr-review-guidelines.md
+      pr-review-reference.md
     skills/
       run-pr-review/
         SKILL.md
