@@ -12,7 +12,7 @@ PR レビュー一式 (スタイル参考ガイド読み込み → PR 確認 →
 すべて省略可。省略時の挙動は各項目に記載。
 
 - `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR の識別情報。省略時は後述の手順で自動取得する。
-- `CALLER_GUIDELINES`: caller プロジェクト固有のレビュー観点ファイルのリポジトリ相対パス (例: `docs/ai_code_review/all.md`)。省略時は読み込まない。
+- `CALLER_GUIDELINES`: caller プロジェクトのレビュー指示ファイル (技術観点 / スタイル上書き / 全方針置換 のいずれを含めてもよい) のリポジトリ相対パス (例: `docs/ai_code_review/all.md`)。省略時は読み込まない。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は AI 判断 (=`/pr-review-style-reference` 引数なし相当)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
 - `MODE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
 - `SELF_LOGIN` (任意, `MODE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 7 でそのまま `resolve-pr-threads` に転送される。
