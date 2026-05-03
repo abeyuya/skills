@@ -11,7 +11,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 - `skills/run-pr-review`: PR レビュー一式 (スタイル参考ガイド読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
-- `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`mode` (`all` / `own` / `none`) で範囲を制御。
+- `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `skills/local-ai-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する skill (GitHub 投稿は行わない)。スタイル参考ガイドと caller 固有観点の読み込みは `run-pr-review` と共通。
 - `commands/pr-review-style-reference`: `/pr-review-style-reference` で呼び出す **スタイル参考ガイド** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。レビューコメントの書き方・体裁が対象で、技術観点 (何を見るか) は対象外。
 
@@ -31,8 +31,8 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
       OWNER: ${{ github.repository_owner }}
       REPO: ${{ github.event.repository.name }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      CALLER_GUIDELINES: docs/ai_code_review/all.md
-      MODE: all
+      PROJECT_GUIDELINES: docs/ai_code_review/general.md, docs/ai_code_review/typescript.md
+      THREAD_RESOLVE_SCOPE: all
 
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
     claude_args: |
@@ -45,12 +45,6 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 /plugin marketplace add abeyuya/skills
 /plugin install pr-review@abeyuya-skills
 ```
-
-## マイグレーション (旧 `@skills` を使っていた caller 向け)
-
-marketplace 名を `skills` → `abeyuya-skills` にリネームした。
-旧名 `pr-review@skills` を参照していた caller (他リポジトリの GitHub Actions ワークフロー、ローカルの `/plugin install` 等) は **すべて `pr-review@abeyuya-skills` に書き換えが必要**。
-書き換え漏れがあると plugin が解決できず CI が壊れるため注意。
 
 ## 開発時 (このリポジトリ自身で plugin を編集しながら使う)
 

@@ -1,6 +1,6 @@
 ---
 name: resolve-pr-threads
-description: PR の過去レビュースレッドのうち、指摘どおりに修正済みのものだけを resolve する。再レビュー後に古いスレッドを畳むのに使う。`mode` 引数 (all / own / none) で resolve 範囲を制御する。判定に迷う場合は resolve しない。
+description: PR の過去レビュースレッドのうち、指摘どおりに修正済みのものだけを resolve する。再レビュー後に古いスレッドを畳むのに使う。`THREAD_RESOLVE_SCOPE` 引数 (all / own / none) で resolve 範囲を制御する。判定に迷う場合は resolve しない。
 ---
 
 # resolve-pr-threads skill
@@ -11,11 +11,11 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 ## 入力
 
 - `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR
-- `MODE`: resolve 範囲
+- `THREAD_RESOLVE_SCOPE`: resolve 範囲
   - `all` (デフォルト): すべての未 resolve スレッドを対象に、author 種別 (本レビュアー Bot / 他 Bot レビュアー / 人間レビュアー) を問わず resolve 候補にする。
   - `own`: 本アクション自身 (claude-code-action が用いる Bot) が author のスレッドのみ resolve 候補にする。判定は自身の過去コメントの `author.login` と一致するか否かで行う。判定が困難な場合は resolve しない。
   - `none`: 過去スレッドの resolve は一切行わない。本 skill 全体を skip する。
-- `SELF_LOGIN` (任意): `MODE=own` 時に「自身」を判定するための `author.login`。caller が判明していれば渡す。不明なら最近の自身レビューコメントから推定する。
+- `SELF_LOGIN` (任意): `THREAD_RESOLVE_SCOPE=own` 時に「自身」を判定するための `author.login`。caller が判明していれば渡す。不明なら最近の自身レビューコメントから推定する。
 
 ## 共通の resolve 判定ルール
 
@@ -29,9 +29,9 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 
 ## 手順
 
-### Step 0. MODE のチェック
+### Step 0. THREAD_RESOLVE_SCOPE のチェック
 
-`MODE=none` の場合は何もせず終了する。
+`THREAD_RESOLVE_SCOPE=none` の場合は何もせず終了する。
 
 ### Step 1. レビュースレッド一覧を取得する
 
@@ -77,7 +77,7 @@ gh api graphql \
 各スレッドについて以下を判定する。
 
 1. `isResolved: true` ならスキップ。
-2. `MODE=own` の場合、スレッド先頭コメントの `author.login` が `SELF_LOGIN` と一致しないならスキップ。
+2. `THREAD_RESOLVE_SCOPE=own` の場合、スレッド先頭コメントの `author.login` が `SELF_LOGIN` と一致しないならスキップ。
 3. 上記「共通の resolve 判定ルール」に従って、指摘どおりに修正されたものだけを resolve 候補にする。コメントの `path` / `line` 周辺の現在のファイル内容と差分を必ず確認する。
 
 ### Step 3. resolve 根拠コメントを投稿する
