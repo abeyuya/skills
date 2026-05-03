@@ -80,9 +80,46 @@ gh api graphql \
 2. `MODE=own` の場合、スレッド先頭コメントの `author.login` が `SELF_LOGIN` と一致しないならスキップ。
 3. 上記「共通の resolve 判定ルール」に従って、指摘どおりに修正されたものだけを resolve 候補にする。コメントの `path` / `line` 周辺の現在のファイル内容と差分を必ず確認する。
 
-### Step 3. `resolveReviewThread` mutation を実行する
+### Step 3. resolve 根拠コメントを投稿する
 
-resolve 対象のスレッドごとに以下を実行する。`<THREAD_ID>` は Step 1 で得たスレッドの `id`。
+resolve する前に、なぜ resolve するのか根拠を一言コメントで残す。後から「なぜこのスレッドが畳まれたのか」を追えるようにするため。
+
+#### 3-1. 対応 commit を特定する
+
+可能なら指摘箇所を修正した commit を特定し、その URL を根拠として添える。
+
+- `git log --oneline -- <path>` で対象ファイルの commit 履歴を確認する。
+- `git blame <path> -L <line>,<line>` で該当行を最後に変更した commit を特定するのが最も確実。
+- PR 全体の commit は `gh pr view <PR_NUMBER> --json commits` でも取得できる。
+- commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
+
+特定できない場合 (リファクタで該当行が消えただけ等) は commit URL を省略し、根拠を文章で簡潔に書く。
+
+#### 3-2. スレッドへ返信コメントを投稿する
+
+`addPullRequestReviewThreadReply` mutation でスレッドに返信する。コメント本文は短く 1 文程度に抑える。
+
+例:
+- `[abc1234](https://github.com/<OWNER>/<REPO>/commit/abc1234) で対応済みのため resolve します。`
+- `指摘箇所のロジックを削除し別実装に置き換えたため resolve します ([abc1234](...))。`
+
+```bash
+gh api graphql \
+  -F threadId=<THREAD_ID> \
+  -F body='<根拠コメント本文>' \
+  -f query='
+    mutation($threadId: ID!, $body: String!) {
+      addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+        comment { id }
+      }
+    }'
+```
+
+### Step 4. `resolveReviewThread` mutation を実行する
+
+Step 3 のコメント投稿が成功したスレッドのみ resolve する。`addPullRequestReviewThreadReply` が失敗した場合は **当該スレッドのみ skip し、resolve も実行せず次のスレッドへ進む** (全体停止はしない)。skip した件数は Step 5 で別カウントとして報告する。
+
+`<THREAD_ID>` は Step 1 で得たスレッドの `id`。
 
 ```bash
 gh api graphql \
@@ -95,6 +132,13 @@ gh api graphql \
     }'
 ```
 
-### Step 4. caller への報告
+`resolveReviewThread` が失敗した場合は **再試行せず次のスレッドへ進む** (再試行で根拠コメントが二重投稿になるのを避けるため)。Step 3 のコメントは投稿済みなので、当該スレッドは「根拠コメントだけ残り `isResolved=false` のオーファン状態」になる。これは Step 5 で別カウントとして caller に報告し、後続で人間が手動 resolve できるようにする。
 
-resolve したスレッドの件数と概要を caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように)。
+### Step 5. caller への報告
+
+以下の件数をそれぞれ分けて caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように):
+
+- resolve したスレッド件数 (Step 4 まで成功したもの)
+- コメント投稿失敗で resolve を見送った件数 (Step 3 の `addPullRequestReviewThreadReply` が失敗したもの)
+- resolve 実行失敗で見送った件数 (Step 3 のコメントは投稿済みだが Step 4 の `resolveReviewThread` が失敗したもの。手動 resolve が必要)
+- 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能なもの)

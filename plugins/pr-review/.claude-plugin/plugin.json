@@ -1,7 +1,7 @@
 {
   "name": "pr-review",
   "version": "0.1.0",
-  "description": "PR レビュー投稿 (post-pr-review) と過去レビュースレッドの resolve (resolve-pr-threads) を担う skill 群。レビューの観点・規約は含まず、手続きのみを提供する。",
+  "description": "PR レビュー投稿 (post-pr-review) / 過去レビュースレッドの resolve (resolve-pr-threads) の skill と、共通レビュー方針コマンド (/pr-review-guidelines) を提供する。プロジェクト固有のレビュー観点は caller 側で追加読込みする前提。",
   "author": {
     "name": "abeyuya",
     "url": "https://github.com/abeyuya"

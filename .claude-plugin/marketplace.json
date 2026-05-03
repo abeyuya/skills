@@ -1,5 +1,5 @@
 {
-  "name": "skills",
+  "name": "abeyuya-skills",
   "owner": {
     "name": "abeyuya",
     "url": "https://github.com/abeyuya"
@@ -11,7 +11,7 @@
     {
       "name": "pr-review",
       "source": "./plugins/pr-review",
-      "description": "PR レビューを1回のAPIコールで1つのReviewとして投稿し、過去スレッドを安全に resolve するための skill 群",
+      "description": "PR レビューの投稿 / 過去スレッドの resolve の skill と、共通レビュー方針コマンド (/pr-review-guidelines) を提供する",
       "version": "0.1.0"
     }
   ]
