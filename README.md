@@ -51,6 +51,15 @@ marketplace 名を `skills` → `abeyuya-skills` にリネームした。
 旧名 `pr-review@skills` を参照していた caller (他リポジトリの GitHub Actions ワークフロー、ローカルの `/plugin install` 等) は **すべて `pr-review@abeyuya-skills` に書き換えが必要**。
 書き換え漏れがあると plugin が解決できず CI が壊れるため注意。
 
+## マイグレーション (`run-pr-review` 引数名変更)
+
+`run-pr-review` skill の入力キーを以下のとおりリネームした。旧キーをそのまま渡しても新 skill 側は認識せず、Step 3 / Step 7 が **エラーにならずに** 該当キー無し相当 (= 観点未読込 / `THREAD_RESOLVE_SCOPE=all` 既定) で動いてしまうため、caller の Actions ワークフロー / ローカル prompt は書き換えが必要。
+
+| 旧キー | 新キー | 補足 |
+| --- | --- | --- |
+| `CALLER_GUIDELINES` | `PROJECT_GUIDELINES` | 今回からカンマ区切りで複数パス指定可 (例: `docs/general.md, docs/typescript.md`) |
+| `MODE` | `THREAD_RESOLVE_SCOPE` | 値 (`all` / `own` / `none`) は変更なし |
+
 ## 開発時 (このリポジトリ自身で plugin を編集しながら使う)
 
 `/plugin install` 経由だと `~/.claude/plugins/cache/` にコピーされた版が使われ、
