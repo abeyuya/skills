@@ -12,7 +12,7 @@ PR レビュー一式 (方針読み込み → PR 確認 → レビュー作成 �
 すべて省略可。省略時の挙動は各項目に記載。
 
 - `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR の識別情報。省略時は後述の手順で自動取得する。
-- `CALLER_GUIDELINES`: caller プロジェクト固有のレビュー観点ファイルのリポジトリ相対パス (例: `docs/ai_code_review/all.md`)。省略時は読み込まない。
+- `PROJECT_GUIDELINES`: プロジェクト固有のレビュー観点ファイルのリポジトリ相対パス。複数指定する場合はカンマ区切り (例: `docs/ai_code_review/all.md, docs/ai_code_review/typescript.md`)。省略時は読み込まない。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は AI 判断 (=`/pr-review-guidelines` 引数なし相当)。Step 2 で `/pr-review-guidelines max-inline-comments=<値>` として渡す。
 - `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
 - `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 7 でそのまま `resolve-pr-threads` に転送される。
@@ -32,9 +32,9 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 `MAX_INLINE_COMMENTS` が指定されている場合は `/pr-review-guidelines max-inline-comments=<値>` として渡す。未指定なら引数なしで呼ぶ。
 
-### Step 3. caller 固有観点を読み込む (任意)
+### Step 3. プロジェクト固有観点を読み込む (任意)
 
-`CALLER_GUIDELINES` が指定されている場合のみ、そのパスのファイルを `Read` ツールで読み、共通方針と併用するレビュー観点として適用する。指定が無い場合はこのステップを skip する。
+`PROJECT_GUIDELINES` が指定されている場合のみ、カンマで分割した各パスを `Read` ツールで読み (前後空白はトリム)、共通方針と併用するレビュー観点として適用する。指定が無い場合はこのステップを skip する。
 
 ### Step 4. PR の状態を取得する
 

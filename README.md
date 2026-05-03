@@ -30,7 +30,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
       OWNER: ${{ github.repository_owner }}
       REPO: ${{ github.event.repository.name }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      CALLER_GUIDELINES: docs/ai_code_review/all.md
+      PROJECT_GUIDELINES: docs/ai_code_review/general.md, docs/ai_code_review/typescript.md
       THREAD_RESOLVE_SCOPE: all
 
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
