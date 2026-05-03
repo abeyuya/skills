@@ -1,7 +1,7 @@
 {
   "name": "pr-review",
   "version": "0.1.0",
-  "description": "PR レビュー投稿 (post-pr-review) / 過去スレッド resolve (resolve-pr-threads) と、レビュースタイル参考ガイド (/pr-review-style-reference) を提供する。技術観点は caller 側に委ね、スタイル参考ガイドは採用・上書き・不使用いずれも可。",
+  "description": "PR レビュー投稿 (post-pr-review) / 過去スレッド resolve (resolve-pr-threads) / PR 作成前のローカルブランチ向け AI レビュー (local-ai-review) と、レビュースタイル参考ガイド (/pr-review-style-reference) を提供する。技術観点は caller 側に委ね、スタイル参考ガイドは採用・上書き・不使用いずれも可。",
   "author": {
     "name": "abeyuya",
     "url": "https://github.com/abeyuya"
