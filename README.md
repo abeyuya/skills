@@ -7,14 +7,14 @@ abeyuya 個人が利用する Claude Code 向け skill / plugin 群を集約し�
 
 ### `pr-review`
 
-PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群と、**共通レビュー方針** をスラッシュコマンドとしてまとめて提供する。
+PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群と、**参考ガイドライン** をスラッシュコマンドとしてまとめて提供する。
 
-- `skills/run-pr-review`: PR レビュー一式 (方針読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
+- `skills/run-pr-review`: PR レビュー一式 (参考ガイドライン読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`mode` (`all` / `own` / `none`) で範囲を制御。
-- `commands/pr-review-guidelines`: `/pr-review-guidelines` で呼び出す **共通レビュー方針** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。
+- `commands/pr-review-guidelines`: `/pr-review-guidelines` で呼び出す **参考ガイドライン** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。
 
-プロジェクト固有のレビュー観点は本プラグインには含まれないため、caller リポジトリ側で別途用意し、上記共通方針と併用して prompt で参照させる前提。
+レビュー方針は caller (ユーザー) に委ねる前提。caller リポジトリ側に独自のレビュー観点がある場合はそれを優先し、特にこだわりがない場合のみ上記参考ガイドラインを採用する想定。
 
 ## 利用方法 (GitHub Actions)
 
