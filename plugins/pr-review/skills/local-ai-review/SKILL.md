@@ -14,7 +14,7 @@ PR 作成前のローカルブランチに対して AI レビューを行うた�
 
 - `BASE_BRANCH`: 比較対象のベースブランチ。省略時は既定ブランチ名を `git symbolic-ref refs/remotes/origin/HEAD` から取得し、**ローカルの同名ブランチ** を使う (詳細は Step 1)。取れない場合は `main` → `master` の順でフォールバックし、いずれも無ければエラーとして停止する。本 skill は `git fetch` を走らせない (`守ること` 参照) ため、ローカルのベースブランチが古いと差分が古い基準で計算される点に注意。最新で比較したい場合は caller 側で事前に fetch するか、`BASE_BRANCH=origin/main` のようにリモート追跡参照を明示指定する。
 - `CALLER_GUIDELINES`: caller プロジェクトのレビュー指示ファイル (技術観点 / スタイル上書き / 全方針置換 のいずれを含めてもよい) のリポジトリ相対パス。省略時は読み込まない。
-- `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は AI 判断 (=`/pr-review-style-reference` 引数なし相当)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
+- `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い (=`/pr-review-style-reference` 引数なしのデフォルト)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
 - `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/local-ai-review.md`。既存ファイルがあれば上書きする。
 
 ## 手順
