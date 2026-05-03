@@ -14,8 +14,8 @@ PR レビュー一式 (方針読み込み → PR 確認 → レビュー作成 �
 - `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR の識別情報。省略時は後述の手順で自動取得する。
 - `CALLER_GUIDELINES`: caller プロジェクト固有のレビュー観点ファイルのリポジトリ相対パス (例: `docs/ai_code_review/all.md`)。省略時は読み込まない。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は AI 判断 (=`/pr-review-guidelines` 引数なし相当)。Step 2 で `/pr-review-guidelines max-inline-comments=<値>` として渡す。
-- `MODE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
-- `SELF_LOGIN` (任意, `MODE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 7 でそのまま `resolve-pr-threads` に転送される。
+- `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
+- `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 7 でそのまま `resolve-pr-threads` に転送される。
 
 ## 手順
 
@@ -63,9 +63,9 @@ Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` と Step 5 で作成した
 
 ### Step 7. `resolve-pr-threads` skill で過去スレッドを整理する
 
-Step 1 の PR 識別情報と `MODE` (省略時 `all`) を `resolve-pr-threads` skill に渡して呼び出す。`MODE=none` の場合は呼び出すが skill 側で skip される。
+Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `resolve-pr-threads` skill に渡して呼び出す。`THREAD_RESOLVE_SCOPE=none` の場合は呼び出すが skill 側で skip される。
 
-`MODE=own` の場合、caller から `SELF_LOGIN` が渡されていれば一緒に渡す。
+`THREAD_RESOLVE_SCOPE=own` の場合、caller から `SELF_LOGIN` が渡されていれば一緒に渡す。
 
 ### Step 8. caller への報告
 

@@ -11,7 +11,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 - `skills/run-pr-review`: PR レビュー一式 (方針読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
-- `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`mode` (`all` / `own` / `none`) で範囲を制御。
+- `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `commands/pr-review-guidelines`: `/pr-review-guidelines` で呼び出す **共通レビュー方針** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。
 
 プロジェクト固有のレビュー観点は本プラグインには含まれないため、caller リポジトリ側で別途用意し、上記共通方針と併用して prompt で参照させる前提。
@@ -31,7 +31,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
       REPO: ${{ github.event.repository.name }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       CALLER_GUIDELINES: docs/ai_code_review/all.md
-      MODE: all
+      THREAD_RESOLVE_SCOPE: all
 
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
     claude_args: |
