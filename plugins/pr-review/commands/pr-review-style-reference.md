@@ -1,6 +1,6 @@
 ---
 description: PR レビュー時のスタイル参考ガイド (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い) を読み込む。
-argument-hint: '[max-inline-comments=N | max-inline-comments=unlimited]'
+argument-hint: '[max-inline-comments=N]'
 ---
 
 # PR レビュー時のスタイル参考ガイド
