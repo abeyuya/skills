@@ -7,14 +7,14 @@ abeyuya 個人が利用する Claude Code 向け skill / plugin 群を集約し�
 
 ### `pr-review`
 
-PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群と、**参考ガイドライン** をスラッシュコマンドとしてまとめて提供する。
+PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群と、レビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
 
-- `skills/run-pr-review`: PR レビュー一式 (参考ガイドライン読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
+- `skills/run-pr-review`: PR レビュー一式 (スタイル参考ガイド読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`mode` (`all` / `own` / `none`) で範囲を制御。
-- `commands/pr-review-reference`: `/pr-review-reference` で呼び出す **参考ガイドライン** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。
+- `commands/pr-review-style-reference`: `/pr-review-style-reference` で呼び出す **スタイル参考ガイド** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。レビューコメントの書き方・体裁が対象で、技術観点 (何を見るか) は対象外。
 
-レビュー方針は caller (ユーザー) に委ねる前提。本参考ガイドラインは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。
+レビュー方針は caller (ユーザー) に委ねる前提。本スタイル参考ガイドは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。技術観点 (何をレビューするか) は caller 側で別途指定する想定。
 
 ## 利用方法 (GitHub Actions)
 
@@ -73,7 +73,7 @@ plugins/
     .claude-plugin/
       plugin.json
     commands/
-      pr-review-reference.md
+      pr-review-style-reference.md
     skills/
       run-pr-review/
         SKILL.md
