@@ -46,7 +46,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 - `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,baseRefName,statusCheckRollup,commits` で PR メタ情報と CI 状態を取得する。
 - `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得する。
-- 既存レビュー / コメントは `resolve-pr-threads` 内でも取得するが、**重複指摘を避けるため** 本ステップでも GraphQL で `reviewThreads` を取得し、自分の過去コメント等を把握しておく (caller 側に方針が無い場合は `/pr-review-style-reference` の「既存レビュー/コメントとの重複回避」を参考にする)。GraphQL は `-F owner=<OWNER> -F name=<REPO>` で渡す。
+- 既存レビュー / コメントは `resolve-pr-threads` 内でも取得するが、**重複指摘を避けるため** 本ステップでも GraphQL で `reviewThreads` を取得し、自分の過去コメント等を把握しておく (caller 側に方針が無い場合は `/pr-review-style-reference` の「既存レビュー/コメントとの重複回避」を参考にする)。GraphQL は `-F owner=<OWNER> -F name=<REPO>` で渡す。`reviewThreads(first: 100)` は GitHub GraphQL API の 1 ページあたりの上限値で、100 件を超える可能性がある PR では `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` を付けて再実行して全スレッドを取得しきること (取得漏れがあると重複指摘の検知が抜ける)。
 - `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log --repo <OWNER>/<REPO>` 等で失敗ログ本体まで読み、`[must]` 指摘の根拠にする (詳細は `/pr-review-style-reference` の「CI の扱い」を参考)。
 
 ### Step 5. レビュー本文を作成する
