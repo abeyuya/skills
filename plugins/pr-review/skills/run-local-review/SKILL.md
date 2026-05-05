@@ -103,7 +103,7 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 - 生成日時: <ISO8601, UTC 秒精度。例: 2026-05-04T12:34:56Z>
 - 差分モード: <commit / staged / worktree / なし>
-- 対象コミット: <count> 件 (<base>..HEAD) ※ staged / worktree モードでは「0 件 (コミット未作成)」と記載
+- 対象コミット: <count> 件 (<base>..HEAD) ※ staged / worktree モードでは「0 件 (コミット未作成)」と記載し、範囲表示は含めない
 - インライン指摘: <count> 件
 
 ## 総括
