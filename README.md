@@ -27,6 +27,13 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 個別ファイルパスを skill 引数で渡す方式は持たない。複数ファイルを束ねたい場合は caller 側 workflow で 1 ファイルに事前生成 (例: `cat docs/general.md docs/typescript.md > REVIEW.md`) してから skill を呼ぶ。
 
+### `AGENTS.md` / `CLAUDE.md` を fallback として使う際の注意
+
+`AGENTS.md` / `CLAUDE.md` はもともとレビュー専用ではなく、`claude /init` が生成する雛形には「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等の **アクション指示** が含まれることが多い。本 skill (`run-pr-review` / `run-local-review`) は read-only レビュー専念で、これらのアクション指示は **実行しない** (レビュー観点に翻訳できる範囲のみ参照する) ように Step 3 で明示的に防いでいるが、念のため次のいずれかを推奨する:
+
+- レビュー方針として意図されていないアクション指示が多い場合は、リポジトリ root に **`REVIEW.md` を新規作成** してレビュー方針だけを書き、`AGENTS.md` / `CLAUDE.md` は読まれないようにする (上記優先順で `REVIEW.md` が最優先)。
+- `AGENTS.md` / `CLAUDE.md` 内でレビュー専用セクションを設けて他から分離する。
+
 ## 重要度ラベル
 
 インライン指摘は以下のいずれかのラベルで開始する (詳細は `/pr-review-style-reference`):
@@ -55,6 +62,16 @@ gh api repos/$OWNER/$REPO/check-runs/$CHECK_RUN_ID \
 `conclusion` は常に `neutral` 固定で、本 check run 自体は merge を block しない。check run 作成は best-effort で、403 等の権限不足 (fork PR 等) で失敗しても Review 投稿は成功扱いとする。check run 作成には `checks: write` 権限が必要。
 
 ## 利用方法 (GitHub Actions)
+
+`run-pr-review` の動作には以下の権限が必要。job の `permissions:` で明示する (Review 投稿 / 過去スレッド resolve / check run 出力で使用):
+
+```yaml
+permissions:
+  contents: read         # PR 差分 / リポジトリ root のレビュー方針ファイル参照
+  pull-requests: write   # Review 投稿 / 過去スレッド resolve / reply
+  checks: write          # check run 出力 (run-pr-review Step 7)
+  issues: write          # PR スレッドへの reply 投稿で内部的に必要
+```
 
 ```yaml
 - uses: anthropics/claude-code-action@v1
