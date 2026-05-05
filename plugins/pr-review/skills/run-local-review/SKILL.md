@@ -28,7 +28,12 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
   2. `git rev-parse --verify main` が通れば `main`
   3. `git rev-parse --verify master` が通れば `master`
   4. いずれも取れなければエラーとして停止し、caller に `BASE_BRANCH` を明示するよう促す
-- 現在ブランチがベースブランチ自身、または `git diff <base>...HEAD` が空の場合は、レビュー対象差分が無いため **Step 2〜5 を skip して Step 6 へ直行** する。markdown も「差分なし」として書き出し、Step 7 の caller 報告でも「対象差分なし」を伝える。
+- `git diff <base>...HEAD` を実行し、差分モードを以下の優先順位で決定する:
+  1. **commit モード**: 差分が空でない → 通常どおり `git diff <base>...HEAD` をレビュー対象とする。
+  2. **staged モード**: commit モードの差分が空 (ベースと同一コミットまたは diverge なし) → `git diff --cached` (ステージ済み差分) を確認し、空でなければそれをレビュー対象とする。
+  3. **worktree モード**: staged モードも空 → `git diff` (未ステージの作業ツリー差分) を確認し、空でなければそれをレビュー対象とする。
+  4. **差分なし**: 上記すべてが空 → **Step 2〜5 を skip して Step 6 へ直行** する。markdown も「差分なし」として書き出し、Step 7 の caller 報告でも「対象差分なし」を伝える。
+- 現在ブランチがベースブランチ自身の場合は commit モードの差分は必ず空になるため、上記フォールバック順に従う。
 
 ### Step 2. スタイル参考ガイドを読み込む
 
@@ -60,9 +65,20 @@ Step 2 のスタイル参考ガイドと矛盾する箇所は caller 側を優�
 
 レビューに必要な情報を取得する。リモートに無いコミットも対象にするため、`git fetch` 等は走らせない (caller 側の意思を尊重)。
 
-- `git log <base>..HEAD --oneline` でコミット一覧を取得する。
-- `git diff <base>...HEAD` で差分本体を取得する。三点記法 (`...`) を用いて、ベースブランチ側の進行は除外し「現在ブランチで増えた変更」だけを対象にする。
-- 差分が大きく一度に取りきれない場合は、`git diff --stat <base>...HEAD` でファイル一覧をまず取り、ファイル単位で `git diff <base>...HEAD -- <path>` を必要な範囲だけ追い読みする。
+Step 1 で決定した差分モードに応じて以下の通り取得する:
+
+- **commit モード**:
+  - `git log <base>..HEAD --oneline` でコミット一覧を取得する。
+  - `git diff <base>...HEAD` で差分本体を取得する。三点記法 (`...`) を用いて、ベースブランチ側の進行は除外し「現在ブランチで増えた変更」だけを対象にする。
+  - 差分が大きく一度に取りきれない場合は、`git diff --stat <base>...HEAD` でファイル一覧をまず取り、ファイル単位で `git diff <base>...HEAD -- <path>` を必要な範囲だけ追い読みする。
+- **staged モード**:
+  - コミット一覧は空 (コミット未作成のため)。
+  - `git diff --cached` でステージ済み差分を取得する。
+  - 差分が大きい場合は `git diff --cached --stat` でファイル一覧を取り、ファイル単位で `git diff --cached -- <path>` を追い読みする。
+- **worktree モード**:
+  - コミット一覧は空。
+  - `git diff` で作業ツリー差分を取得する。
+  - 差分が大きい場合は `git diff --stat` でファイル一覧を取り、ファイル単位で `git diff -- <path>` を追い読みする。
 
 ### Step 5. レビュー本文を作成する
 
@@ -86,7 +102,8 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 # Local AI Review: <branch> (vs <base>)
 
 - 生成日時: <ISO8601, UTC 秒精度。例: 2026-05-04T12:34:56Z>
-- 対象コミット: <count> 件 (<base>..HEAD)
+- 差分モード: <commit / staged / worktree / なし>
+- 対象コミット: <count> 件 (<base>..HEAD) ※ staged / worktree モードでは「0 件 (コミット未作成)」と記載し、範囲表示は含めない
 - インライン指摘: <count> 件
 
 ## 総括
