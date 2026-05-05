@@ -17,7 +17,62 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 レビュー方針は caller (ユーザー) に委ねる前提。本スタイル参考ガイドは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。技術観点 (何をレビューするか) は caller 側で別途指定する想定。
 
+## caller プロジェクトのレビュー方針の置き方
+
+`run-pr-review` / `run-local-review` は **リポジトリ root の以下のファイルを自動で読み込む** (この順で最初に見つかった 1 つだけ):
+
+1. `REVIEW.md` — レビュー専用の最上位指示 (推奨)
+2. `AGENTS.md` — agent 全般向けの fallback
+3. `CLAUDE.md` — Claude Code 全般向けの fallback
+
+個別ファイルパスを skill 引数で渡す方式は持たない。複数ファイルを束ねたい場合は caller 側 workflow で 1 ファイルに事前生成 (例: `cat docs/general.md docs/typescript.md > REVIEW.md`) してから skill を呼ぶ。
+
+### `AGENTS.md` / `CLAUDE.md` を fallback として使う際の注意
+
+`AGENTS.md` / `CLAUDE.md` はもともとレビュー専用ではなく、`claude /init` が生成する雛形には「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等の **アクション指示** が含まれることが多い。本 skill (`run-pr-review` / `run-local-review`) は read-only レビュー専念で、これらのアクション指示は **実行しない** (レビュー観点に翻訳できる範囲のみ参照する) ように Step 3 で明示的に防いでいるが、念のため次のいずれかを推奨する:
+
+- レビュー方針として意図されていないアクション指示が多い場合は、リポジトリ root に **`REVIEW.md` を新規作成** してレビュー方針だけを書き、`AGENTS.md` / `CLAUDE.md` は読まれないようにする (上記優先順で `REVIEW.md` が最優先)。
+- `AGENTS.md` / `CLAUDE.md` 内でレビュー専用セクションを設けて他から分離する。
+
+## 重要度ラベル
+
+インライン指摘は以下のいずれかのラベルで開始する (詳細は `/pr-review-style-reference`):
+
+- `[must]` 不具合・脆弱性。マージ前対応必須。
+- `[should]` 設計・保守性で強く推奨される改善。放置すると次の修正で `[must]` 化する蓋然性が高いもの。
+- `[nit]` 軽微・好み寄り。実装者が無視してよい。
+- `[question]` 質問。実装者の意図確認のみで修正要求ではない。
+- `[pre_existing]` 本 PR で導入されたものではない既存バグ。マージ判断には影響させない。
+
+## Check Run 出力 (`run-pr-review` のみ)
+
+`run-pr-review` は GitHub Review 投稿に加えて、PR の Checks タブに **`pr-review (abeyuya/skills)`** という名前の check run を作成する。Details ページに severity 順の指摘索引表 (`file:line` + 1 行サマリ) が出力され、末尾に機械可読な集計 JSON が HTML コメントとして埋め込まれる:
+
+```
+<!-- pr-review-severity: {"must":2,"should":1,"nit":2,"question":0,"pre_existing":0} -->
+```
+
+caller 側 CI で merge gate を組みたい場合は次のように parse できる:
+
+```bash
+gh api repos/$OWNER/$REPO/check-runs/$CHECK_RUN_ID \
+  --jq '.output.text | match("pr-review-severity:\\s*({[^}]+})") | .captures[0].string | fromjson'
+```
+
+`conclusion` は常に `neutral` 固定で、本 check run 自体は merge を block しない。check run 作成は best-effort で、403 等の権限不足 (fork PR 等) で失敗しても Review 投稿は成功扱いとする。check run 作成には `checks: write` 権限が必要。
+
 ## 利用方法 (GitHub Actions)
+
+`run-pr-review` の動作には以下の権限が必要。job の `permissions:` で明示する (Review 投稿 / 過去スレッド resolve / check run 出力で使用):
+
+```yaml
+permissions:
+  contents: read         # PR 差分 / リポジトリ root のレビュー方針ファイル参照
+  pull-requests: write   # Review 投稿 / 過去スレッドへの reply / resolve (GraphQL)
+  checks: write          # check run 出力 (run-pr-review Step 7)
+```
+
+> 本 skill 群はトップレベル PR コメント (`POST /repos/.../issues/{n}/comments` 経路) を投稿しないため `issues: write` は不要。caller が `claude-code-action` 等を経由している場合は action 側の要件で `issues: write` が要求されることがあるため、その場合のみ caller が追加する。
 
 ```yaml
 - uses: anthropics/claude-code-action@v1
@@ -31,10 +86,10 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
       OWNER: ${{ github.repository_owner }}
       REPO: ${{ github.event.repository.name }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      PROJECT_GUIDELINES: docs/ai_code_review/general.md, docs/ai_code_review/typescript.md
       THREAD_RESOLVE_SCOPE: all
 
-      run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
+      run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・check run サマリ出力・過去スレッド resolve) を実行してください。
+      caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md / AGENTS.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。
     claude_args: |
       --allowedTools "Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*)"
 ```
