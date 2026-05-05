@@ -12,10 +12,11 @@ PR レビュー一式 (スタイル参考ガイド読み込み → PR 確認 →
 すべて省略可。省略時の挙動は各項目に記載。
 
 - `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR の識別情報。省略時は後述の手順で自動取得する。
-- `PROJECT_GUIDELINES`: プロジェクトのレビュー指示ファイル (技術観点 / スタイル上書き / 全方針置換 のいずれを含めてもよい) のリポジトリ相対パス。複数指定する場合はカンマ区切り (例: `docs/ai_code_review/all.md, docs/ai_code_review/typescript.md`)。省略時は読み込まない。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い (=`/pr-review-style-reference` 引数なしのデフォルト)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
 - `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
-- `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 7 でそのまま `resolve-pr-threads` に転送される。
+- `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 8 でそのまま `resolve-pr-threads` に転送される。
+
+caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` または `AGENTS.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
 
 ## 手順
 
@@ -30,13 +31,22 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 `/pr-review-style-reference` slash command を実行し、スタイル参考ガイド (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い) を本セッションのレビュー方針の参考として読み込む。
 
-レビュー方針は caller プロジェクトに委ねる前提。Step 3 で読み込む `PROJECT_GUIDELINES` が本スタイル参考ガイドに上乗せ・上書き・全置換のいずれを意図しているかは caller の指示に従う。caller 側に独自方針が無い場合は本スタイル参考ガイドをそのまま採用してよい。
+レビュー方針は caller プロジェクトに委ねる前提。Step 3 で読み込む `REVIEW.md` / `AGENTS.md` が本スタイル参考ガイドに上乗せ・上書き・全置換のいずれを意図しているかは caller の指示に従う。caller 側に独自方針が無い (`REVIEW.md` / `AGENTS.md` 不在) 場合は本スタイル参考ガイドをそのまま採用してよい。
 
 `MAX_INLINE_COMMENTS` が指定されている場合は `/pr-review-style-reference max-inline-comments=<値>` として渡す。未指定なら引数なしで呼ぶ。
 
 ### Step 3. プロジェクト固有観点を読み込む (任意)
 
-`PROJECT_GUIDELINES` が指定されている場合のみ、カンマで分割した各パスを `Read` ツールで読み (前後空白はトリム)、本セッションのレビュー方針として適用する。Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト側を優先し、矛盾しない箇所は両者を併用する (プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されている場合はそれに従う)。指定が無い場合はこのステップを skip する。
+リポジトリ root の以下のファイルをこの順で **存在チェックし、最初に見つかった 1 つだけ** を `Read` ツールで読み込み、本セッションのレビュー方針として適用する。
+
+1. `REVIEW.md`
+2. `AGENTS.md`
+
+どちらも存在しなければこのステップを skip する。両方ある場合は `REVIEW.md` を優先し `AGENTS.md` は読まない (`REVIEW.md` がレビュー専用の最上位指示、`AGENTS.md` は agent 全般向けの fallback、という棲み分け)。
+
+Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト側を優先し、矛盾しない箇所は両者を併用する (プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されている場合はそれに従う)。
+
+ファイル内容は **そのままプロンプトに注入される** 想定で扱う。`@import` のような外部ファイル展開は行わない (caller が一次ファイルに直接書く前提)。
 
 ### Step 4. PR の状態を取得する
 
@@ -44,7 +54,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 いずれの `gh` コマンドも、cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう、Step 1 で確定した `OWNER`/`REPO` を `--repo <OWNER>/<REPO>` で必ず明示する。
 
-- `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,baseRefName,statusCheckRollup,commits` で PR メタ情報と CI 状態を取得する。
+- `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup,commits` で PR メタ情報と CI 状態を取得する。`headRefOid` は Step 7 の check run 投稿で `head_sha` として使う。
 - `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得する。
 - 既存レビュー / コメントは `resolve-pr-threads` 内でも取得するが、**重複指摘を避けるため** 本ステップでも GraphQL で `reviewThreads` を取得し、自分の過去コメント等を把握しておく (caller 側に方針が無い場合は `/pr-review-style-reference` の「既存レビュー/コメントとの重複回避」を参考にする)。GraphQL は `-F owner=<OWNER> -F name=<REPO>` で渡す。`reviewThreads(first: 100)` は GitHub GraphQL API の 1 ページあたりの上限値で、100 件を超える可能性がある PR では `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` を付けて再実行して全スレッドを取得しきること (取得漏れがあると重複指摘の検知が抜ける)。
 - `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log --repo <OWNER>/<REPO>` 等で失敗ログ本体まで読み、`[must]` 指摘の根拠にする (詳細は `/pr-review-style-reference` の「CI の扱い」を参考)。
@@ -53,7 +63,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 Step 2〜4 で得た方針・観点・差分・CI 情報をもとに、総括 (`body`) とインライン指摘 (`comments[]`) を作成する。
 
-- レビュー方針はプロジェクト (`PROJECT_GUIDELINES`) を最優先とし、プロジェクト側で明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル / ノイズ抑制 / 粒度ガイド等を参考にする。プロジェクト側でスタイル参考ガイドを使わない旨が明示されている場合はそれに従う。
+- レビュー方針は Step 3 で読み込んだ `REVIEW.md` / `AGENTS.md` を最優先とし、明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル / ノイズ抑制 / 粒度ガイド等を参考にする。プロジェクト側 (`REVIEW.md` 等) でスタイル参考ガイドを使わない旨が明示されている場合はそれに従う。
 - 既存スレッドと同主旨の指摘は再掲しない。
 - 指摘が無い場合も Step 6 で「特に指摘なし」相当の Review を投稿する (skip しない)。
 
@@ -63,19 +73,67 @@ Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` と Step 5 で作成した
 
 起動方法は **Skill ツールで `post-pr-review` を呼ぶ**。本文 (`body` / `event` / `comments[]`) は `post-pr-review/SKILL.md` のスキーマに従って組み立て、起動時の引数として渡す。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
 
-### Step 7. `resolve-pr-threads` skill で過去スレッドを整理する
+### Step 7. Check Run でサマリと機械可読 severity を出力する
+
+Step 6 で投稿した Review の内容を **Checks タブの Details ページから一覧で参照できる索引** として check run に書き出す。inline review comment の本文は再掲しない (重複させない)。merge gate を組みたい caller のため、`output.text` 末尾に severity 件数の JSON を HTML コメントとして埋める。
+
+本ステップは **best-effort**。失敗 (403 等) しても Step 6 / Step 8 の成否には影響させず、Step 9 で警告として報告するだけに留める。
+
+#### 7-1. severity 件数を集計する
+
+Step 5 で生成した `comments[]` のラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`) を本文先頭から抽出して件数を数える。指摘 0 件のときも全ラベル `0` で埋めた JSON を作る (caller が常に同じスキーマで読めるように)。
+
+#### 7-2. `/tmp/check-run.json` を `Write` ツールで書き出す
+
+`heredoc` や `cat` リダイレクトは使わず、必ず `Write` ツールで書く。スキーマは以下:
+
+```json
+{
+  "name": "pr-review (abeyuya/skills)",
+  "head_sha": "<HEAD_SHA>",
+  "status": "completed",
+  "conclusion": "neutral",
+  "output": {
+    "title": "Code Review Summary",
+    "summary": "5 件の指摘 (must: 2, should: 1, nit: 2, question: 0, pre_existing: 0)",
+    "text": "| Severity | File:Line | Issue |\n| --- | --- | --- |\n| [must] | src/auth.ts:42 | Token refresh races with logout |\n| [must] | src/db.ts:88 | Tenant scoping missing |\n| [should] | src/api.ts:14 | Error message leaks internals |\n| [nit] | src/util.ts:7 | Inconsistent naming |\n| [nit] | README.md:3 | Typo |\n\n<!-- pr-review-severity: {\"must\":2,\"should\":1,\"nit\":2,\"question\":0,\"pre_existing\":0} -->"
+  }
+}
+```
+
+- `name`: `pr-review (abeyuya/skills)` 固定。docs の managed Code Review (`Claude Code Review`) と衝突しないように本リポジトリ由来であることを明示する。
+- `head_sha`: Step 4 の `headRefOid` をそのまま使う。
+- `conclusion`: 必ず `neutral`。merge を block する権限を持たないため。
+- `output.title`: 固定文言 `Code Review Summary`。
+- `output.summary`: 1 行サマリ。件数の総数と severity 内訳。
+- `output.text`: severity 順 (must → should → nit → question → pre_existing) に並べた表。各行は `| [label] | path:line | 1 行サマリ (Step 5 の本文先頭 1 行を要約) |`。表のあとに **空行 1 行を空けて** HTML コメント形式で `pr-review-severity:` JSON を 1 行で書く。指摘 0 件の場合は表の代わりに `特に指摘なし` の 1 行 + JSON。
+
+#### 7-3. `gh api` で投稿する
+
+```bash
+gh api \
+  -X POST \
+  -H "Accept: application/vnd.github+json" \
+  /repos/<OWNER>/<REPO>/check-runs \
+  --input /tmp/check-run.json
+```
+
+403 / 404 (権限不足、特に fork PR で `GITHUB_TOKEN` が read-only にダウングレードされる場合等) で失敗したときは **再試行せず** Step 9 で警告として報告する。それ以外のエラー (ネットワーク等) も同様に best-effort 扱いとして 1 回だけ試して終わる。
+
+### Step 8. `resolve-pr-threads` skill で過去スレッドを整理する
 
 Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `resolve-pr-threads` skill に渡して呼び出す。`THREAD_RESOLVE_SCOPE=none` の場合は呼び出すが skill 側で skip される。
 
 `THREAD_RESOLVE_SCOPE=own` の場合、caller から `SELF_LOGIN` が渡されていれば一緒に渡す。
 
-### Step 8. caller への報告
+### Step 9. caller への報告
 
 以下を簡潔に caller へ返す:
 
 - 投稿した Review の URL (Step 6 のレスポンスから取れる場合)
-- インライン指摘件数 / 総括の主要懸念件数
-- resolve したスレッド件数 (Step 7 の戻り値)
+- インライン指摘件数 / 総括の主要懸念件数 / severity 内訳
+- 作成した check run の URL または ID (Step 7 が成功した場合) / 失敗した場合はその旨を 1 行 (例: `check run skipped: 403 Forbidden`)
+- resolve したスレッド件数 (Step 8 の戻り値)
 
 ## 守ること
 
