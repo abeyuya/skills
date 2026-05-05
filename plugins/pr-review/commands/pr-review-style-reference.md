@@ -20,7 +20,7 @@ caller 側のカスタム指示と本ガイドラインの内容が矛盾する�
 インライン指摘 (GitHub Review API の `comments[]`) の総数の扱いを切り替える。
 
 - 引数なし (デフォルト): `max-inline-comments=unlimited` と同じ扱い。件数制限を設けず、発見した指摘はできる限り全てインラインコメントとして出す。ただし「ノイズ抑制ルール」(フォーマッタ/Linter レベルは出さない・同一事象は代表1箇所に集約) は引き続き厳守する。
-- `max-inline-comments=N` (N は正の整数): インライン指摘の総数を最大 N 件に絞る。N を超える場合は重要度 (`[must]` > `[should]` > `[nit]` / `[question]` / `[pre_existing]`) の高い順に残す。
+- `max-inline-comments=N` (N は正の整数): インライン指摘の総数を最大 N 件に絞る。N を超える場合は重要度 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) の高い順に残す。
 - `max-inline-comments=unlimited`: 引数なしと同じ (明示指定用)。
 
 ## 重要度ラベル

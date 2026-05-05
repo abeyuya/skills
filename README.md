@@ -49,7 +49,7 @@ caller 側 CI で merge gate を組みたい場合は次のように parse で�
 
 ```bash
 gh api repos/$OWNER/$REPO/check-runs/$CHECK_RUN_ID \
-  --jq '.output.text | match("pr-review-severity: ({[^}]+})") | .captures[0].string | fromjson'
+  --jq '.output.text | match("pr-review-severity:\\s*({[^}]+})") | .captures[0].string | fromjson'
 ```
 
 `conclusion` は常に `neutral` 固定で、本 check run 自体は merge を block しない。check run 作成は best-effort で、403 等の権限不足 (fork PR 等) で失敗しても Review 投稿は成功扱いとする。check run 作成には `checks: write` 権限が必要。
