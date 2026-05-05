@@ -47,7 +47,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 - `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,baseRefName,statusCheckRollup,commits` で PR メタ情報と CI 状態を取得する。
 - `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得する。
 - 既存レビュー / コメントは `resolve-pr-threads` 内でも取得するが、**重複指摘を避けるため** 本ステップでも GraphQL で `reviewThreads` を取得し、自分の過去コメント等を把握しておく (caller 側に方針が無い場合は `/pr-review-style-reference` の「既存レビュー/コメントとの重複回避」を参考にする)。GraphQL は `-F owner=<OWNER> -F name=<REPO>` で渡す。`reviewThreads(first: 100)` は GitHub GraphQL API の 1 ページあたりの上限値で、100 件を超える可能性がある PR では `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` を付けて再実行して全スレッドを取得しきること (取得漏れがあると重複指摘の検知が抜ける)。各スレッドの `comments.nodes[].body` まで取得し、Step 5 で本文の主旨重複判定に使う (`path`/`line` だけでは「位置は同じだが論点は別」のケースを取り違える)。
-- `commits` の末尾要素 (`gh pr view ... --json commits` の最後の `oid`) を head SHA として控え、Step 6 で `post-pr-review` の引数に **常時** 転送する (受け側で必須でも任意でも害はなく、コミット移動による誤コメント防止に有効。「必要に応じて転送」のような条件分岐はしない)。
+- `commits` の末尾要素 (`gh pr view ... --json commits` の最後の `oid`) を head SHA として控え、Step 6 で `post-pr-review` の `COMMIT_ID` 引数として常時転送する (`post-pr-review/SKILL.md` の入力欄に定義された任意フィールド。force-push / rebase で行ズレが起きた際の誤コメント防止に有効)。
 - caller の cwd と PR の所属リポジトリが異なるドッグフーディング系では、`PROJECT_GUIDELINES` のパスがローカルに存在しないことがある。その場合は `gh api repos/<OWNER>/<REPO>/contents/<path>` でリモートから取得して `Read` 相当に扱う (Step 3 の補足)。
 - `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log --repo <OWNER>/<REPO>` 等で失敗ログ本体まで読み、`[must]` 指摘の根拠にする (詳細は `/pr-review-style-reference` の「CI の扱い」を参考)。
 
@@ -57,14 +57,14 @@ Step 2〜4 で得た方針・観点・差分・CI 情報をもとに、総括 (`
 
 - レビュー方針はプロジェクト (`PROJECT_GUIDELINES`) を最優先とし、プロジェクト側で明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル / ノイズ抑制 / 粒度ガイド等を参考にする。プロジェクト側でスタイル参考ガイドを使わない旨が明示されている場合はそれに従う。
 - 既存スレッドと同主旨の指摘は再掲しない。判定は Step 4 で取得した `reviewThreads.nodes[].comments.nodes[].body` の主旨と現在の指摘の主旨を突き合わせて行う (位置 `path:line` だけが一致して論点が別のケースは「別件として新規指摘してよい」)。
-- `event` (`post-pr-review` への引数) のデフォルト選定基準: `[must]` が 1 件以上含まれるなら `REQUEST_CHANGES`、`[must]` が 0 件で `[should]` 以下のみなら `COMMENT`、指摘ゼロなら `COMMENT` (空 Review として投稿)。`APPROVE` は caller / プロジェクト側で明示的に指定された場合のみ使う (誤承認のリスクを避けるため、自動 `APPROVE` はデフォルトでは選ばない)。
+- `event` (`post-pr-review` への引数) は **常に `COMMENT`** とする (`post-pr-review/SKILL.md` の「守ること」に従う。Bot がマージブロックや承認権を持つことを避けるため)。`[must]` の有無にかかわらず `COMMENT` で投稿し、修正が必要な旨は本文 (`body`) と各インライン (`comments[]`) で `[must]` ラベルとして伝える。`APPROVE` / `REQUEST_CHANGES` は本 skill では使わない。
 - 指摘が無い場合も Step 6 で「特に指摘なし」相当の Review を投稿する (skip しない)。
 
 ### Step 6. `post-pr-review` skill でレビューを投稿する
 
 Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` と Step 5 で作成した本文を `post-pr-review` skill に渡し、**1回の API コールで1つの Review として** 投稿する。`gh pr comment` や `gh pr review` での個別投稿はしない。
 
-起動方法は **Skill ツールで `post-pr-review` を呼ぶ**。本文 (`body` / `event` / `comments[]`) は `post-pr-review/SKILL.md` のスキーマに従って組み立て、起動時の引数として渡す。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
+起動方法は **Skill ツールで `post-pr-review` を呼ぶ**。本文 (`body` / `event` / `comments[]`) と `COMMIT_ID` (Step 4 で控えた head SHA) は `post-pr-review/SKILL.md` のスキーマに従って組み立て、起動時の引数として渡す。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
 
 ### Step 7. `resolve-pr-threads` skill で過去スレッドを整理する
 
