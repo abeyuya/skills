@@ -19,6 +19,7 @@ PR レビュー結果を **1回の API コールで「1つの Review」として
 
 - `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR の識別情報
 - レビュー本文 (総括 + インラインコメント配列)
+- `COMMIT_ID` (任意): レビューを紐づける head commit の SHA。caller 側で `gh pr view ... --json commits` の末尾 `oid` を取得できる場合は渡すことを推奨。指定があれば手順 1 の JSON および手順 2 の API リクエストに含める (force-push / rebase で行ズレが起きた際の誤コメント防止に有効)。未指定なら省略 (GitHub 側で最新 commit を採用)。
 
 ## 手順
 
@@ -28,6 +29,7 @@ PR レビュー結果を **1回の API コールで「1つの Review」として
 
 ```json
 {
+  "commit_id": "9f8e7d6c1a2b3c4d5e6f7890abcdef1234567890",
   "body": "総括コメント本文 (Markdown可)",
   "event": "COMMENT",
   "comments": [
@@ -51,6 +53,7 @@ PR レビュー結果を **1回の API コールで「1つの Review」として
 
 - 単一行コメントは `path` / `line` / `side` を指定する。
 - 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。
+- `commit_id` は caller から `COMMIT_ID` が渡された場合のみ含める (任意)。GitHub Reviews API がトップレベルで受け取るフィールドで、未指定なら GitHub 側で最新 commit が採用される。
 - 指摘がない場合: `body` を「特に指摘なし」相当の文言とし、`comments` は `[]`、`event` は `COMMENT` で投稿する。
 
 ### 2. `gh api` を1回だけ実行して投稿する
