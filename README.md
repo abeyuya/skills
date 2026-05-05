@@ -23,6 +23,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 1. `REVIEW.md` — レビュー専用の最上位指示 (推奨)
 2. `AGENTS.md` — agent 全般向けの fallback
+3. `CLAUDE.md` — Claude Code 全般向けの fallback
 
 個別ファイルパスを skill 引数で渡す方式は持たない。複数ファイルを束ねたい場合は caller 側 workflow で 1 ファイルに事前生成 (例: `cat docs/general.md docs/typescript.md > REVIEW.md`) してから skill を呼ぶ。
 
@@ -70,7 +71,7 @@ gh api repos/$OWNER/$REPO/check-runs/$CHECK_RUN_ID \
       THREAD_RESOLVE_SCOPE: all
 
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・check run サマリ出力・過去スレッド resolve) を実行してください。
-      caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md または AGENTS.md に置けば自動で読み込まれます。
+      caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md / AGENTS.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。
     claude_args: |
       --allowedTools "Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*)"
 ```
