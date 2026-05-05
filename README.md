@@ -68,10 +68,11 @@ gh api repos/$OWNER/$REPO/check-runs/$CHECK_RUN_ID \
 ```yaml
 permissions:
   contents: read         # PR 差分 / リポジトリ root のレビュー方針ファイル参照
-  pull-requests: write   # Review 投稿 / 過去スレッド resolve / reply
+  pull-requests: write   # Review 投稿 / 過去スレッドへの reply / resolve (GraphQL)
   checks: write          # check run 出力 (run-pr-review Step 7)
-  issues: write          # PR スレッドへの reply 投稿で内部的に必要
 ```
+
+> 本 skill 群はトップレベル PR コメント (`POST /repos/.../issues/{n}/comments` 経路) を投稿しないため `issues: write` は不要。caller が `claude-code-action` 等を経由している場合は action 側の要件で `issues: write` が要求されることがあるため、その場合のみ caller が追加する。
 
 ```yaml
 - uses: anthropics/claude-code-action@v1
