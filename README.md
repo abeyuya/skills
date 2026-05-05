@@ -101,6 +101,23 @@ permissions:
 /plugin install pr-review@abeyuya-skills
 ```
 
+## 利用方法 (apm 経由)
+
+[apm (Agent Package Manager)](https://github.com/microsoft/apm) は Claude Code 形式の `marketplace.json` / `plugin.json` をネイティブに解釈するため、本リポジトリの配布物 (`.claude-plugin/marketplace.json` と `plugins/pr-review/`) を **そのまま** 依存として扱える。配布ファイルの二重管理は不要。
+
+```bash
+# marketplace 経由 (recommended)
+apm marketplace add abeyuya/skills
+apm install pr-review@abeyuya-skills
+
+# または subdirectory を直接指定する primitive form
+apm install abeyuya/skills/plugins/pr-review
+```
+
+`apm install` 後、`pr-review` plugin の skill / command は consumer 側の `.claude/skills/` および `.claude/commands/` に展開される (ローカル Claude Code 経由で `/plugin install` した場合と同じファイルがインストールされる)。
+
+リポジトリ root の `apm.yml` は「このリポジトリが apm-aware である」ことを示すメタデータのみで、apm 依存は宣言していない。
+
 ## 開発時 (このリポジトリ自身で plugin を編集しながら使う)
 
 `/plugin install` 経由だと `~/.claude/plugins/cache/` にコピーされた版が使われ、
@@ -116,8 +133,9 @@ claude --plugin-dir plugins/pr-review
 ## 構成
 
 ```
+apm.yml                                # apm 相互運用用マニフェスト
 .claude-plugin/
-  marketplace.json
+  marketplace.json                     # Claude Code marketplace 索引 (apm からも参照される)
 plugins/
   pr-review/
     .claude-plugin/

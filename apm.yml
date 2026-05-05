@@ -1,0 +1,18 @@
+# apm (Agent Package Manager / https://github.com/microsoft/apm) との
+# 相互運用用マニフェスト。
+#
+# 本リポジトリは Claude Code plugin marketplace
+# (.claude-plugin/marketplace.json + plugins/<name>/.claude-plugin/plugin.json)
+# を一次配布フォーマットとする。apm は Claude Code 形式の marketplace.json と
+# plugin.json をネイティブに解釈するため、配布物の二重管理は発生しない。
+# このファイルは apm-aware であることを明示するためのメタデータのみを持つ。
+#
+# 利用方法は README.md の「利用方法 (apm 経由)」を参照。
+name: abeyuya-skills
+version: 0.1.0
+description: abeyuya 個人が利用する Claude Code 向け skill / plugin 群
+author: abeyuya
+includes: auto
+dependencies:
+  apm: []
+  mcp: []
