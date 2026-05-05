@@ -15,7 +15,10 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
   - `all` (デフォルト): すべての未 resolve スレッドを対象に、author 種別 (本レビュアー Bot / 他 Bot レビュアー / 人間レビュアー) を問わず resolve 候補にする。
   - `own`: 本アクション自身 (claude-code-action が用いる Bot) が author のスレッドのみ resolve 候補にする。判定は自身の過去コメントの `author.login` と一致するか否かで行う。判定が困難な場合は resolve しない。
   - `none`: 過去スレッドの resolve は一切行わない。本 skill 全体を skip する。
-- `SELF_LOGIN` (任意): `THREAD_RESOLVE_SCOPE=own` 時に「自身」を判定するための `author.login`。caller が判明していれば渡す。不明なら最近の自身レビューコメントから推定する。
+- `SELF_LOGIN` (任意): `THREAD_RESOLVE_SCOPE=own` 時に「自身」を判定するための `author.login`。caller が判明していれば渡す。未指定の場合は次の優先順で推定する:
+  1. PR の最近のレビュー / コメントを取得し、`*[bot]` サフィックスを持つ author のうち実行中のアクションと一致する Bot 名 (例: `claude-code-action` ベースなら `claude-bot[bot]` 等の運用上既知の名前)。
+  2. (1) で決まらない場合は、PR 内で最も投稿件数の多い `*[bot]` author。複数 Bot が同居する PR では別 Bot (`github-copilot[bot]` 等) を取り違えないこと。
+  3. (1) (2) いずれでも一意に決まらない場合は、scope=own としては誰のスレッドも resolve しないで終了する (誤判定で他者スレッドを畳むほうが害が大きい)。Step 5 で「SELF_LOGIN 推定不能で skip」と報告する。
 
 ## 共通の resolve 判定ルール
 
@@ -86,12 +89,14 @@ resolve する前に、なぜ resolve するのか根拠を一言コメントで
 
 #### 3-1. 対応 commit を特定する
 
-可能なら指摘箇所を修正した commit を特定し、その URL を根拠として添える。
+可能なら指摘箇所を修正した commit を特定し、その URL を根拠として添える。優先順は次の通り:
 
-- `git log --oneline -- <path>` で対象ファイルの commit 履歴を確認する。
-- `git blame <path> -L <line>,<line>` で該当行を最後に変更した commit を特定するのが最も確実。
-- PR 全体の commit は `gh pr view <PR_NUMBER> --json commits` でも取得できる。
-- commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
+1. caller から特定の commit SHA が明示されている場合はそれを採用する (caller の意図を尊重)。
+2. それ以外は `git blame <path> -L <line>,<line>` で該当行を最後に変更した commit を特定するのが最も確実。
+3. (2) で取れない場合は `git log --oneline -- <path>` で対象ファイルの commit 履歴から推定する。
+4. PR 全体の commit は `gh pr view <PR_NUMBER> --json commits` でも取得できる (補助情報)。
+
+commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
 
 特定できない場合 (リファクタで該当行が消えただけ等) は commit URL を省略し、根拠を文章で簡潔に書く。
 
@@ -136,9 +141,14 @@ gh api graphql \
 
 ### Step 5. caller への報告
 
-以下の件数をそれぞれ分けて caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように):
+以下の件数をそれぞれ分けて caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように)。**4 件種別の合計は「未 resolved スレッド総数」と一致**するように振り分ける (既 resolved は対象外で別枠):
 
 - resolve したスレッド件数 (Step 4 まで成功したもの)
 - コメント投稿失敗で resolve を見送った件数 (Step 3 の `addPullRequestReviewThreadReply` が失敗したもの)
-- resolve 実行失敗で見送った件数 (Step 3 のコメントは投稿済みだが Step 4 の `resolveReviewThread` が失敗したもの。手動 resolve が必要)
-- 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能なもの)
+- resolve 実行失敗で見送った件数 (Step 3 のコメントは投稿済みだが Step 4 の `resolveReviewThread` が失敗したもの。手動 resolve が必要。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
+- 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能 / scope=own で対象外、のもの)
+
+別枠で参考表示する項目 (4 件種別の合計には含めない):
+
+- 既に `isResolved=true` で対象外だったスレッド件数 (触っていない)
+- `THREAD_RESOLVE_SCOPE=own` で `SELF_LOGIN` 推定が困難で skill 自体を skip した場合は、その旨を明示する。
