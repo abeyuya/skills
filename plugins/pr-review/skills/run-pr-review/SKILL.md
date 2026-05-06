@@ -111,7 +111,7 @@ Step 5 で生成した `comments[]` のラベル (`[must]` / `[should]` / `[nit]
 - `conclusion`: 必ず `neutral`。merge を block する権限を持たないため。
 - `output.title`: 固定文言 `Code Review Summary`。
 - `output.summary`: 1 行サマリ。件数の総数と severity 内訳。
-- `output.text`: severity 順 (must → should → nit → question → pre_existing) に並べた表。表ヘッダは JSON スキーマ例の通り `| Severity | File:Line | Issue |`。各データ行は placeholder を山括弧で表し `| [label] | <path>:<line> | <1 行サマリ (Step 5 の本文先頭 1 行を要約)> |` の形 (`[label]` は `[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]` のいずれかリテラル)。表のあとに **空行 1 行を空けて** HTML コメント形式で `pr-review-severity:` JSON を 1 行で書く。指摘 0 件の場合は表の代わりに `特に指摘なし` の 1 行 + JSON。
+- `output.text`: severity 順 (must → should → nit → question → pre_existing) に並べた表。表ヘッダは JSON スキーマ例の通り `| Severity | File:Line | Issue |`。各データ行は placeholder を山括弧で表し `| [label] | <path>:<line> | <1 行サマリ (Step 5 の本文先頭 1 行を要約。Issue カラム内に含まれるパイプ記号 `|` は `\|` にエスケープし、改行は半角スペースに置換して 1 行に畳むこと。テーブルレイアウトの崩れを防ぐため必須)> |` の形 (`[label]` は `[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]` のいずれかリテラル)。表のあとに **空行 1 行を空けて** HTML コメント形式で `pr-review-severity:` JSON を 1 行で書く。指摘 0 件の場合は表の代わりに `特に指摘なし` の 1 行 + JSON。
 
 #### 7-3. `gh api` で投稿する
 
