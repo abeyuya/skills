@@ -101,7 +101,7 @@ Step 5 で生成した `comments[]` のラベル (`[must]` / `[should]` / `[nit]
   "output": {
     "title": "Code Review Summary",
     "summary": "5 件の指摘 (must: 2, should: 1, nit: 2, question: 0, pre_existing: 0)",
-    "text": "| Severity | File:Line | Issue |\n| --- | --- | --- |\n| [must] | src/auth.ts:42 | Token refresh races with logout |\n| [must] | src/db.ts:88 | Tenant scoping missing |\n| [should] | src/api.ts:14 | Error message leaks internals |\n| [nit] | src/util.ts:7 | Inconsistent naming |\n| [nit] | README.md:3 | Typo |\n\n<!-- pr-review-severity: {\"must\":2,\"should\":1,\"nit\":2,\"question\":0,\"pre_existing\":0} -->"
+    "text": "| Severity | File:Line | Issue |\n| --- | --- | --- |\n| [must] | src/auth.ts:42 | Token refresh races with logout |\n| [must] | src/db.ts:88 | Tenant scoping missing |\n| [should] | src/api.ts:14 | Error message contains raw \\| separator (must be escaped) |\n| [nit] | src/util.ts:7 | Inconsistent naming |\n| [nit] | README.md:3 | Typo |\n\n<!-- pr-review-severity: {\"must\":2,\"should\":1,\"nit\":2,\"question\":0,\"pre_existing\":0} -->"
   }
 }
 ```
@@ -111,7 +111,14 @@ Step 5 で生成した `comments[]` のラベル (`[must]` / `[should]` / `[nit]
 - `conclusion`: 必ず `neutral`。merge を block する権限を持たないため。
 - `output.title`: 固定文言 `Code Review Summary`。
 - `output.summary`: 1 行サマリ。件数の総数と severity 内訳。
-- `output.text`: severity 順 (must → should → nit → question → pre_existing) に並べた表。表ヘッダは JSON スキーマ例の通り `| Severity | File:Line | Issue |`。各データ行は placeholder を山括弧で表し `| [label] | <path>:<line> | <1 行サマリ (Step 5 の本文先頭 1 行を要約)> |` の形 (`[label]` は `[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]` のいずれかリテラル)。表のあとに **空行 1 行を空けて** HTML コメント形式で `pr-review-severity:` JSON を 1 行で書く。指摘 0 件の場合は表の代わりに `特に指摘なし` の 1 行 + JSON。
+- `output.text`: severity 順 (must → should → nit → question → pre_existing) に並べた表。
+  - 表ヘッダは JSON スキーマ例の通り `| Severity | File:Line | Issue |`。
+  - データ行は `| [label] | <path>:<line> | <summary> |` の形 (`[label]` は `[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]` のいずれかリテラル、`<path>` / `<line>` / `<summary>` は placeholder)。
+  - `<summary>` は Step 5 の本文先頭 1 行を要約したもの。テーブルレイアウト崩れを防ぐため、次のサニタイズを **必須** とする:
+    - Issue カラム内のパイプ `|` は `\|` にエスケープする。**`output.text` は JSON 文字列リテラルに格納されるため、JSON 値としては `\\|` (バックスラッシュ 2 つ + パイプ) と書くこと** (JSON 仕様で `\|` は無効なエスケープシーケンスとなり、strict な parser はエラー、GitHub Checks API 側の strictness も未保証。Step 7-2 のスキーマ例 `[should]` 行 `\\|` 参照)。
+    - 改行は半角スペースに置換して 1 行に畳む。
+  - 表のあとに **空行 1 行を空けて** HTML コメント形式で `pr-review-severity:` JSON を 1 行で書く。
+  - 指摘 0 件の場合は表の代わりに `特に指摘なし` の 1 行 + JSON。
 
 #### 7-3. `gh api` で投稿する
 

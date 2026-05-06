@@ -57,7 +57,7 @@ gh api graphql \
               id
               isResolved
               isOutdated
-              comments(first: 50) {
+              comments(first: 100) {
                 nodes {
                   author { login }
                   path
