@@ -14,7 +14,7 @@ PR 作成前のローカルブランチに対して AI レビューを行うた�
 
 - `BASE_BRANCH`: 比較対象のベースブランチ。省略時は既定ブランチ名を `git symbolic-ref refs/remotes/origin/HEAD` から取得し、**ローカルの同名ブランチ** を使う (詳細は Step 1)。取れない場合は `main` → `master` の順でフォールバックし、いずれも無ければエラーとして停止する。本 skill は `git fetch` を走らせない (`守ること` 参照) ため、ローカルのベースブランチが古いと差分が古い基準で計算される点に注意。最新で比較したい場合は caller 側で事前に fetch するか、`BASE_BRANCH=origin/main` のようにリモート追跡参照を明示指定する。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い (=`/pr-review-style-reference` 引数なしのデフォルト)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
-- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review-<timestamp>.md` (例: `/tmp/run-local-review-20260507T123456Z.md`)。`<timestamp>` は実行時に `date -u +%Y%m%dT%H%M%SZ` で取得した UTC 秒精度の文字列を使い、Step 6 の `生成日時` と同じ `date` 結果から導出することで毎回異なるパスになる (連続実行で衝突しない限りは上書きが起きない)。caller が明示的にパスを指定した場合は既存ファイルがあれば上書きする。
+- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review/{owner}-{repo}/{timestamp}-{branch-slug}-{short-sha}.md` (例: `/tmp/run-local-review/abeyuya-skills/20260507T123456Z-claude-unique-review-filenames-tpIhG-cee140b.md`)。各プレースホルダの導出規則は Step 6-1 を参照。caller が明示的にパスを指定した場合は既存ファイルがあれば上書きする。
 
 caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
 
@@ -96,7 +96,20 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 #### 6-1. markdown ファイル
 
-`OUTPUT_PATH` (省略時 `/tmp/run-local-review-<timestamp>.md`、`<timestamp>` は本 Step の 「生成日時」 と同じ `date` 結果から `+%Y%m%dT%H%M%SZ` で導出) に `Write` ツールで書き出す。スキーマは以下:
+`OUTPUT_PATH` (省略時 `/tmp/run-local-review/{owner}-{repo}/{timestamp}-{branch-slug}-{short-sha}.md`) に `Write` ツールで書き出す。
+
+`OUTPUT_PATH` 省略時の各プレースホルダは以下の規則で導出する。すべて読み取り専用の `git` / `date` 経由で取得し、`守ること` の制約に抵触しない。
+
+- `{owner}-{repo}`: `git remote get-url origin` の出力から末尾 2 セグメント (`<owner>/<repo>`) を抽出し、`.git` 拡張子を除去した上で `-` で連結する (例: `git@github.com:abeyuya/skills.git` / `https://github.com/abeyuya/skills.git` のいずれも `abeyuya-skills`)。`origin` が無い / parse 失敗の場合は `local-<basename>` (basename はリポジトリ root のディレクトリ名を後述の「ASCII slug 化」で変換したもの) で代替する。
+- `{timestamp}`: 本 Step の「生成日時」と同じ `date` 結果から `+%Y%m%dT%H%M%SZ` 形式 (ファイル名向けに `-` と `:` を除去) で導出する (例: `20260507T123456Z`)。`date` を二度叩かない (生成日時とパスを同一インスタントに揃える)。
+- `{branch-slug}`: Step 1 で取得した現在ブランチ名を「ASCII slug 化」して用いる。
+- `{short-sha}`: `git rev-parse --short HEAD` の結果 (例: `cee140b`)。取得失敗時は省略し、直前の `-` も合わせて削除する。
+
+「ASCII slug 化」の規則は次の通り: `[a-zA-Z0-9._-]` 以外の文字 (`/` や非 ASCII 含む) を `-` に置換 → 連続する `-` を 1 個に圧縮 → 両端の `-` を trim。日本語などの非 ASCII はそのまま削除し romaji 化はしない。slug 化結果が空文字になった場合は `branch` (ブランチ用) / 直前のセグメントを省略 (リポジトリ basename 用) を fallback とする。
+
+親ディレクトリ (`/tmp/run-local-review/{owner}-{repo}/`) が存在しない可能性があるため、`Write` 前に `Bash` ツールで `mkdir -p <parent>` を 1 回実行する。`/tmp/` 配下のためワーキングツリーやローカル ref への副作用は無く、`守ること` の制約に抵触しない。
+
+スキーマは以下:
 
 ```markdown
 # Local AI Review: <branch> (vs <base>)
@@ -127,7 +140,7 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 差分が空で Step 2〜5 を skip した場合でも、markdown のスキーマ (`## 総括` の「総合判断」「主要懸念 top3」「良かった点 1〜2」見出し / `## インライン指摘` 見出し) は保持し、本文は「なし (対象差分が空のため評価対象なし)」のように明示テキストで埋める (見出し削除や空セクション化はしない)。
 
-「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得した UTC 秒精度の ISO8601 を採用する (caller 環境で TZ が明示されていない場合のデフォルト)。`date` コマンドは読み取り専用 (副作用なし) のため `守ること` の制約に抵触しない。同じ `date` 結果から `OUTPUT_PATH` 既定値のタイムスタンプ (`+%Y%m%dT%H%M%SZ` 形式、ファイル名向けに `-` と `:` を除去) も導出し、両者を同一インスタントに揃える (`date` を二度叩かない)。`date` が利用できない環境では caller / 実行環境から提供される現在日時を使い、それも無ければ `生成日時` は `<unknown>` と記載し、`OUTPUT_PATH` 既定値のタイムスタンプ部はプロセス ID 等の単調増加しうる識別子で代替する (空文字にして `/tmp/run-local-review-.md` のような曖昧なパスにはしない)。
+「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得した UTC 秒精度の ISO8601 を採用する (caller 環境で TZ が明示されていない場合のデフォルト)。`date` コマンドは読み取り専用 (副作用なし) のため `守ること` の制約に抵触しない。`OUTPUT_PATH` 既定値の `{timestamp}` プレースホルダもこの同じ `date` 結果から導出すること (Step 6-1 の規則に従う)。`date` が利用できない環境では caller / 実行環境から提供される現在日時を使い、それも無ければ `生成日時` は `<unknown>` と記載し、`OUTPUT_PATH` 既定値の `{timestamp}` 部は UUID 等のユニークな識別子 (例: `uuidgen` / `cat /proc/sys/kernel/random/uuid` / `head -c16 /dev/urandom | xxd -p` の出力) で代替する。同一セッション内で連続実行しても確実に異なる値となる識別子を選び、PID のような重複しうる値は使わない。空文字にしてプレースホルダ部が抜け落ちた曖昧なパスにはしない。
 
 #### 6-2. チャット出力
 
@@ -150,5 +163,5 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 - 既存資産 (`/pr-review-style-reference`) は **必ず slash command 経由で利用** する。本 skill 内で重要度ラベル等のスタイル規約を再掲・再実装してはならない (`run-pr-review` と同じ理由: 二重管理を避けるため)。
 - GitHub への投稿は行わない。`post-pr-review` / `resolve-pr-threads` skill は呼ばない。`gh pr comment` / `gh pr review` / `gh api .../reviews` も使わない。
-- `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git rev-parse --verify`) のみ。
+- `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git rev-parse --verify` / `git remote get-url`) のみ。
 - 差分が空の場合も markdown 出力 + 報告は行う (skip しない)。
