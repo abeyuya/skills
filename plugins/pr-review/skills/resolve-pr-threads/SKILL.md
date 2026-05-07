@@ -87,6 +87,8 @@ gh api graphql \
 
 resolve する前に、なぜ resolve するのか根拠を一言コメントで残す。後から「なぜこのスレッドが畳まれたのか」を追えるようにするため。
 
+コメント本文は **必ず AI 自動投稿マーカーを先頭に付与する** (詳細は 3-2)。投稿主が人間 PAT であっても、内容は AI エージェントが生成したものであることを明示するため。
+
 #### 3-1. 対応 commit を特定する
 
 可能なら指摘箇所を修正した commit を特定し、その URL を根拠として添える。優先順は次の通り:
@@ -102,11 +104,31 @@ commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
 
 #### 3-2. スレッドへ返信コメントを投稿する
 
-`addPullRequestReviewThreadReply` mutation でスレッドに返信する。コメント本文は短く 1 文程度に抑える。
+`addPullRequestReviewThreadReply` mutation でスレッドに返信する。
+
+**本文の先頭には AI 自動投稿マーカーを必ず付与する**。本 skill が `gh api` を実行する以上、認証主体 (PAT 所有者など) がそのまま GitHub 上の投稿者として表示されるため、人間アカウントで投稿された場合でも「resolve 判定とコメント生成は AI エージェントが行った」ことを明示する必要がある。エージェント名 (Claude Code / Codex / Cursor 等) はマーカーに baked-in しない (本 skill は複数の AI エージェントから呼ばれうる前提)。
+
+マーカーと根拠コメントのテンプレート (`<根拠コメント本文>` は短く 1 文程度に抑える):
+
+```markdown
+> **[AI 自動投稿]** このコメントは AI エージェントによる自動投稿です。
+
+<根拠コメント本文>
+```
 
 例:
-- `[abc1234](https://github.com/<OWNER>/<REPO>/commit/abc1234) で対応済みのため resolve します。`
-- `指摘箇所のロジックを削除し別実装に置き換えたため resolve します ([abc1234](...))。`
+
+```markdown
+> **[AI 自動投稿]** このコメントは AI エージェントによる自動投稿です。
+
+[abc1234](https://github.com/<OWNER>/<REPO>/commit/abc1234) で対応済みのため resolve します。
+```
+
+```markdown
+> **[AI 自動投稿]** このコメントは AI エージェントによる自動投稿です。
+
+指摘箇所のロジックを削除し別実装に置き換えたため resolve します ([abc1234](...))。
+```
 
 ```bash
 gh api graphql \
