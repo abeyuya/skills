@@ -14,7 +14,7 @@ PR 作成前のローカルブランチに対して AI レビューを行うた�
 
 - `BASE_BRANCH`: 比較対象のベースブランチ。省略時は既定ブランチ名を `git symbolic-ref refs/remotes/origin/HEAD` から取得し、**ローカルの同名ブランチ** を使う (詳細は Step 1)。取れない場合は `main` → `master` の順でフォールバックし、いずれも無ければエラーとして停止する。本 skill は `git fetch` を走らせない (`守ること` 参照) ため、ローカルのベースブランチが古いと差分が古い基準で計算される点に注意。最新で比較したい場合は caller 側で事前に fetch するか、`BASE_BRANCH=origin/main` のようにリモート追跡参照を明示指定する。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い (=`/pr-review-style-reference` 引数なしのデフォルト)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
-- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review/{owner}-{repo}/{timestamp}-{branch-slug}-{short-sha}.md` (例: `/tmp/run-local-review/abeyuya-skills/20260507T123456Z-claude-unique-review-filenames-tpIhG-cee140b.md`)。各プレースホルダの導出規則は Step 6-1 を参照。caller が明示的にパスを指定した場合は既存ファイルがあれば上書きする。
+- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review/{owner}/{repo}/{timestamp}-{branch-slug}-{short-sha}.md` (例: `/tmp/run-local-review/abeyuya/skills/20260507T123456Z-claude-unique-review-filenames-tpIhG-cee140b.md`)。各プレースホルダの導出規則は Step 6-1 を参照。caller が明示的にパスを指定した場合は既存ファイルがあれば上書きする。
 
 caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
 
@@ -96,18 +96,18 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 #### 6-1. markdown ファイル
 
-`OUTPUT_PATH` (省略時 `/tmp/run-local-review/{owner}-{repo}/{timestamp}-{branch-slug}-{short-sha}.md`) に `Write` ツールで書き出す。
+`OUTPUT_PATH` (省略時 `/tmp/run-local-review/{owner}/{repo}/{timestamp}-{branch-slug}-{short-sha}.md`) に `Write` ツールで書き出す。
 
 `OUTPUT_PATH` 省略時の各プレースホルダは以下の規則で導出する。すべて読み取り専用の `git` / `date` 経由で取得し、`守ること` の制約に抵触しない。
 
-- `{owner}-{repo}`: `git remote get-url origin` の出力から末尾 2 セグメント (`<owner>/<repo>`) を抽出し、`.git` 拡張子を除去した上で `-` で連結する (例: `git@github.com:abeyuya/skills.git` / `https://github.com/abeyuya/skills.git` のいずれも `abeyuya-skills`)。`origin` が無い / parse 失敗の場合は `local-<basename>` (basename はリポジトリ root のディレクトリ名を後述の「ASCII slug 化」で変換したもの) で代替する。
+- `{owner}/{repo}`: `git remote get-url origin` の出力から末尾 2 セグメント (`<owner>/<repo>`) を抽出し、`.git` 拡張子を除去した上でそのままディレクトリ階層として用いる (例: `git@github.com:abeyuya/skills.git` / `https://github.com/abeyuya/skills.git` のいずれも `abeyuya/skills`)。`<owner>` / `<repo>` 各セグメントは後述の「ASCII slug 化」を適用する (FS 危険文字混入を防ぐ)。`origin` が無い / parse 失敗の場合は `local/<basename>` (basename はリポジトリ root のディレクトリ名を ASCII slug 化したもの) で代替する。
 - `{timestamp}`: 本 Step の「生成日時」と同じ `date` 結果から `+%Y%m%dT%H%M%SZ` 形式 (ファイル名向けに `-` と `:` を除去) で導出する (例: `20260507T123456Z`)。`date` を二度叩かない (生成日時とパスを同一インスタントに揃える)。
 - `{branch-slug}`: Step 1 で取得した現在ブランチ名を「ASCII slug 化」して用いる。
 - `{short-sha}`: `git rev-parse --short HEAD` の結果 (例: `cee140b`)。取得失敗時は省略し、直前の `-` も合わせて削除する。
 
 「ASCII slug 化」の規則は次の通り: `[a-zA-Z0-9._-]` 以外の文字 (`/` や非 ASCII 含む) を `-` に置換 → 連続する `-` を 1 個に圧縮 → 両端の `-` を trim。日本語などの非 ASCII はそのまま削除し romaji 化はしない。slug 化結果が空文字になった場合は `branch` (ブランチ用) / 直前のセグメントを省略 (リポジトリ basename 用) を fallback とする。
 
-親ディレクトリ (`/tmp/run-local-review/{owner}-{repo}/`) が存在しない可能性があるため、`Write` 前に `Bash` ツールで `mkdir -p <parent>` を 1 回実行する。`/tmp/` 配下のためワーキングツリーやローカル ref への副作用は無く、`守ること` の制約に抵触しない。
+親ディレクトリ (`/tmp/run-local-review/{owner}/{repo}/`) が存在しない可能性があるため、`Write` 前に `Bash` ツールで `mkdir -p <parent>` を 1 回実行する。`/tmp/` 配下のためワーキングツリーやローカル ref への副作用は無く、`守ること` の制約に抵触しない。
 
 スキーマは以下:
 
