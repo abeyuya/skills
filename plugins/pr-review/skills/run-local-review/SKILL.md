@@ -96,7 +96,11 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 #### 6-1. markdown ファイル
 
-`OUTPUT_PATH` (省略時 `/tmp/run-local-review/{repo}/{timestamp}-{branch}.md`、組み立て規則は「入力」セクションの `OUTPUT_PATH` 説明を参照) に `Write` ツールで書き出す。スキーマは以下:
+`OUTPUT_PATH` (省略時 `/tmp/run-local-review/{repo}/{timestamp}-{branch}.md`、組み立て規則は「入力」セクションの `OUTPUT_PATH` 説明を参照) に `Write` ツールで書き出す。
+
+`Write` ツールは中間ディレクトリの自動作成を保証していないため、書き出し前に Bash ツールで `mkdir -p "$(dirname <OUTPUT_PATH>)"` を実行して親ディレクトリを作成する (`mkdir -p` は冪等なため既存でも安全。親ディレクトリの作成は git 管理外のディレクトリ操作であり、ワーキングツリーや ref を書き換えないため `守ること` の不変条件に抵触しない)。caller が明示的にパスを指定したケースも同様に親ディレクトリを作成する。
+
+スキーマは以下:
 
 ```markdown
 # Local AI Review: <branch> (vs <base>)
