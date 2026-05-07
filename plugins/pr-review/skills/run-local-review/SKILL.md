@@ -14,7 +14,7 @@ PR 作成前のローカルブランチに対して AI レビューを行うた�
 
 - `BASE_BRANCH`: 比較対象のベースブランチ。省略時は既定ブランチ名を `git symbolic-ref refs/remotes/origin/HEAD` から取得し、**ローカルの同名ブランチ** を使う (詳細は Step 1)。取れない場合は `main` → `master` の順でフォールバックし、いずれも無ければエラーとして停止する。本 skill は `git fetch` を走らせない (`守ること` 参照) ため、ローカルのベースブランチが古いと差分が古い基準で計算される点に注意。最新で比較したい場合は caller 側で事前に fetch するか、`BASE_BRANCH=origin/main` のようにリモート追跡参照を明示指定する。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い (=`/pr-review-style-reference` 引数なしのデフォルト)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
-- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review.md`。既存ファイルがあれば上書きする。
+- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review-<timestamp>.md` (例: `/tmp/run-local-review-20260507T123456Z.md`)。`<timestamp>` は実行時に `date -u +%Y%m%dT%H%M%SZ` で取得した UTC 秒精度の文字列を使い、Step 6 の `生成日時` と同じ `date` 結果から導出することで毎回異なるパスになる (連続実行で衝突しない限りは上書きが起きない)。caller が明示的にパスを指定した場合は既存ファイルがあれば上書きする。
 
 caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
 
@@ -96,7 +96,7 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 #### 6-1. markdown ファイル
 
-`OUTPUT_PATH` (省略時 `/tmp/run-local-review.md`) に `Write` ツールで書き出す。スキーマは以下:
+`OUTPUT_PATH` (省略時 `/tmp/run-local-review-<timestamp>.md`、`<timestamp>` は本 Step の 「生成日時」 と同じ `date` 結果から `+%Y%m%dT%H%M%SZ` で導出) に `Write` ツールで書き出す。スキーマは以下:
 
 ```markdown
 # Local AI Review: <branch> (vs <base>)
@@ -127,7 +127,7 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 差分が空で Step 2〜5 を skip した場合でも、markdown のスキーマ (`## 総括` の「総合判断」「主要懸念 top3」「良かった点 1〜2」見出し / `## インライン指摘` 見出し) は保持し、本文は「なし (対象差分が空のため評価対象なし)」のように明示テキストで埋める (見出し削除や空セクション化はしない)。
 
-「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得した UTC 秒精度の ISO8601 を採用する (caller 環境で TZ が明示されていない場合のデフォルト)。`date` コマンドは読み取り専用 (副作用なし) のため `守ること` の制約に抵触しない。`date` が利用できない環境では caller / 実行環境から提供される現在日時を使い、それも無ければ `<unknown>` と記載する (skip ではなく明示)。
+「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得した UTC 秒精度の ISO8601 を採用する (caller 環境で TZ が明示されていない場合のデフォルト)。`date` コマンドは読み取り専用 (副作用なし) のため `守ること` の制約に抵触しない。同じ `date` 結果から `OUTPUT_PATH` 既定値のタイムスタンプ (`+%Y%m%dT%H%M%SZ` 形式、ファイル名向けに `-` と `:` を除去) も導出し、両者を同一インスタントに揃える (`date` を二度叩かない)。`date` が利用できない環境では caller / 実行環境から提供される現在日時を使い、それも無ければ `生成日時` は `<unknown>` と記載し、`OUTPUT_PATH` 既定値のタイムスタンプ部はプロセス ID 等の単調増加しうる識別子で代替する (空文字にして `/tmp/run-local-review-.md` のような曖昧なパスにはしない)。
 
 #### 6-2. チャット出力
 
