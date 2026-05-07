@@ -130,10 +130,12 @@ commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
 指摘箇所のロジックを削除し別実装に置き換えたため resolve します ([abc1234](...))。
 ```
 
+`body` パラメータには **上記テンプレート全体 (マーカー + `<根拠コメント本文>`)** を結合した文字列を渡す。マーカー部分を含めずに `<根拠コメント本文>` だけを渡すと、本ステップ冒頭で必須化したマーカーが API 送信時に落ちる。複数行文字列を扱いやすくするため、`Write` ツールで body をファイル (例: `/tmp/resolve-body.txt`) に書き出してから `-F body=@/tmp/resolve-body.txt` で読み込ませる方法を推奨する。
+
 ```bash
 gh api graphql \
   -F threadId=<THREAD_ID> \
-  -F body='<根拠コメント本文>' \
+  -F body=@/tmp/resolve-body.txt \
   -f query='
     mutation($threadId: ID!, $body: String!) {
       addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
