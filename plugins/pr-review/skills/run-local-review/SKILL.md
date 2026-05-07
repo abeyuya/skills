@@ -101,11 +101,11 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 `OUTPUT_PATH` 省略時の各プレースホルダは以下の規則で導出する。すべて読み取り専用の `git` / `date` 経由で取得し、`守ること` の制約に抵触しない。
 
 - `{owner}/{repo}`: `git remote get-url origin` の出力から末尾 2 セグメント (`<owner>/<repo>`) を抽出し、`.git` 拡張子を除去した上でそのままディレクトリ階層として用いる (例: `git@github.com:abeyuya/skills.git` / `https://github.com/abeyuya/skills.git` のいずれも `abeyuya/skills`)。`<owner>` / `<repo>` 各セグメントは後述の「ASCII slug 化」を適用する (FS 危険文字混入を防ぐ)。`origin` が無い / parse 失敗の場合は `local/<basename>` (basename はリポジトリ root のディレクトリ名を ASCII slug 化したもの) で代替する。
-- `{timestamp}`: 本 Step の「生成日時」と同じ `date` 結果から `+%Y%m%dT%H%M%SZ` 形式 (ファイル名向けに `-` と `:` を除去) で導出する (例: `20260507T123456Z`)。`date` を二度叩かない (生成日時とパスを同一インスタントに揃える)。
+- `{timestamp}`: 本 Step の「生成日時」(`date -u +%Y-%m-%dT%H:%M:%SZ` の出力) を 1 回だけ取得し、その ISO 文字列から `-` と `:` を文字列置換で除去した派生形を用いる (例: 生成日時 `2026-05-07T12:34:56Z` → `{timestamp}` `20260507T123456Z`)。`date` を 2 度呼ばず、1 回の出力から派生させて生成日時とパスを同一インスタントに揃える。
 - `{branch-slug}`: Step 1 で取得した現在ブランチ名を「ASCII slug 化」して用いる。
 - `{short-sha}`: `git rev-parse --short HEAD` の結果 (例: `cee140b`)。取得失敗時は省略し、直前の `-` も合わせて削除する。
 
-「ASCII slug 化」の規則は次の通り: `[a-zA-Z0-9._-]` 以外の文字 (`/` や非 ASCII 含む) を `-` に置換 → 連続する `-` を 1 個に圧縮 → 両端の `-` を trim。日本語などの非 ASCII はそのまま削除し romaji 化はしない。slug 化結果が空文字になった場合は `branch` (ブランチ用) / 直前のセグメントを省略 (リポジトリ basename 用) を fallback とする。
+「ASCII slug 化」の規則は次の通り: `[a-zA-Z0-9._-]` 以外の文字 (`/` や非 ASCII 含む) を `-` に置換 → 連続する `-` を 1 個に圧縮 → 両端の `-` を trim。日本語などの非 ASCII はそのまま削除し romaji 化はしない。slug 化結果が空文字になった場合の fallback は固定文字列を採用する: branch slug は `branch` 固定 (`{branch-slug}` 用)、リポジトリ basename slug は `repo` 固定 (`origin` 不在時の `local/<basename>` ケースのみ該当、例: `/tmp/run-local-review/local/repo/{timestamp}-...`)。これにより複数 caller で出力先が衝突せず、他ケース (`origin` あり / `branch` slug 空) と表現が揃う。
 
 親ディレクトリ (`/tmp/run-local-review/{owner}/{repo}/`) が存在しない可能性があるため、`Write` 前に `Bash` ツールで `mkdir -p <parent>` を 1 回実行する。`/tmp/` 配下のためワーキングツリーやローカル ref への副作用は無く、`守ること` の制約に抵触しない。
 
@@ -140,7 +140,7 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 差分が空で Step 2〜5 を skip した場合でも、markdown のスキーマ (`## 総括` の「総合判断」「主要懸念 top3」「良かった点 1〜2」見出し / `## インライン指摘` 見出し) は保持し、本文は「なし (対象差分が空のため評価対象なし)」のように明示テキストで埋める (見出し削除や空セクション化はしない)。
 
-「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得した UTC 秒精度の ISO8601 を採用する (caller 環境で TZ が明示されていない場合のデフォルト)。`date` コマンドは読み取り専用 (副作用なし) のため `守ること` の制約に抵触しない。`OUTPUT_PATH` 既定値の `{timestamp}` プレースホルダもこの同じ `date` 結果から導出すること (Step 6-1 の規則に従う)。`date` が利用できない環境では caller / 実行環境から提供される現在日時を使い、それも無ければ `生成日時` は `<unknown>` と記載し、`OUTPUT_PATH` 既定値の `{timestamp}` 部は UUID 等のユニークな識別子 (例: `uuidgen` / `cat /proc/sys/kernel/random/uuid` / `head -c16 /dev/urandom | xxd -p` の出力) で代替する。同一セッション内で連続実行しても確実に異なる値となる識別子を選び、PID のような重複しうる値は使わない。空文字にしてプレースホルダ部が抜け落ちた曖昧なパスにはしない。
+「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得した UTC 秒精度の ISO8601 を採用する (caller 環境で TZ が明示されていない場合のデフォルト)。`date` コマンドは読み取り専用 (副作用なし) のため `守ること` の制約に抵触しない。`OUTPUT_PATH` 既定値の `{timestamp}` プレースホルダもこの同じ `date` 結果から導出すること (Step 6-1 の規則に従う)。`date` が利用できない環境では caller / 実行環境から提供される現在日時 (ISO 8601 UTC 秒精度: `YYYY-MM-DDTHH:MM:SSZ`) を採用し、`生成日時` にはそのまま、`{timestamp}` にはそこから `-` と `:` を文字列置換で除去した派生形を用いる (`date` 利用時と同じ手順)。caller 提供値が ISO 8601 形式に整合せず派生形を作れない場合は次段に進み、`生成日時` は `<unknown>` と記載し、`OUTPUT_PATH` 既定値の `{timestamp}` 部は UUID 等のユニークな識別子 (例: `uuidgen` / `cat /proc/sys/kernel/random/uuid` / `head -c16 /dev/urandom | xxd -p` の出力) で代替する。同一セッション内で連続実行しても確実に異なる値となる識別子を選び、PID のような重複しうる値は使わない。空文字にしてプレースホルダ部が抜け落ちた曖昧なパスにはしない。
 
 #### 6-2. チャット出力
 
