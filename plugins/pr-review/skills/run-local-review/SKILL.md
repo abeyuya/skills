@@ -14,7 +14,7 @@ PR 作成前のローカルブランチに対して AI レビューを行うた�
 
 - `BASE_BRANCH`: 比較対象のベースブランチ。省略時は既定ブランチ名を `git symbolic-ref refs/remotes/origin/HEAD` から取得し、**ローカルの同名ブランチ** を使う (詳細は Step 1)。取れない場合は `main` → `master` の順でフォールバックし、いずれも無ければエラーとして停止する。本 skill は `git fetch` を走らせない (`守ること` 参照) ため、ローカルのベースブランチが古いと差分が古い基準で計算される点に注意。最新で比較したい場合は caller 側で事前に fetch するか、`BASE_BRANCH=origin/main` のようにリモート追跡参照を明示指定する。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い (=`/pr-review-style-reference` 引数なしのデフォルト)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
-- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review.md`。既存ファイルがあれば上書きする。
+- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review/{repo}/{timestamp}-{branch}.md` (例: `/tmp/run-local-review/skills/20260507T123456Z-claude-unique-review-filenames-tpIhG.md`)。`{repo}` は `git remote get-url origin` の URL 末尾セグメント (`.git` を除いたリポジトリ名、取得失敗時は `local`)、`{timestamp}` は `date -u +%Y%m%dT%H%M%SZ` の出力、`{branch}` は現在ブランチ名の英数記号以外 (`/` 等) を `-` に置換した形。caller が明示的にパスを指定した場合は既存ファイルがあれば上書きする。
 
 caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
 
@@ -96,7 +96,7 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 #### 6-1. markdown ファイル
 
-`OUTPUT_PATH` (省略時 `/tmp/run-local-review.md`) に `Write` ツールで書き出す。スキーマは以下:
+`OUTPUT_PATH` (省略時 `/tmp/run-local-review/{repo}/{timestamp}-{branch}.md`、組み立て規則は「入力」セクションの `OUTPUT_PATH` 説明を参照) に `Write` ツールで書き出す。スキーマは以下:
 
 ```markdown
 # Local AI Review: <branch> (vs <base>)
@@ -150,5 +150,5 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 - 既存資産 (`/pr-review-style-reference`) は **必ず slash command 経由で利用** する。本 skill 内で重要度ラベル等のスタイル規約を再掲・再実装してはならない (`run-pr-review` と同じ理由: 二重管理を避けるため)。
 - GitHub への投稿は行わない。`post-pr-review` / `resolve-pr-threads` skill は呼ばない。`gh pr comment` / `gh pr review` / `gh api .../reviews` も使わない。
-- `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git rev-parse --verify`) のみ。
+- `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git rev-parse --verify` / `git remote get-url`) のみ。
 - 差分が空の場合も markdown 出力 + 報告は行う (skip しない)。
