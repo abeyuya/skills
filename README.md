@@ -11,6 +11,15 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 詳細は [plugins/pr-review/README.md](plugins/pr-review/README.md) を参照。
 
+## 利用方法 (ローカル Claude Code)
+
+ローカルの Claude Code から本リポジトリを marketplace として登録し、plugin を install する:
+
+```
+/plugin marketplace add abeyuya/skills
+/plugin install pr-review@abeyuya-skills
+```
+
 ## 利用方法 (apm 経由)
 
 [apm (Agent Package Manager)](https://github.com/microsoft/apm) は Claude Code 形式の `marketplace.json` / `plugin.json` をネイティブに解釈するため、本リポジトリの配布物 (`.claude-plugin/marketplace.json` と `plugins/<name>/`) を **そのまま** 依存として扱える。`apm.yml` も同梱しているが、配布物の二重管理は発生しない (apm-aware であることを明示するためのメタデータのみ)。
