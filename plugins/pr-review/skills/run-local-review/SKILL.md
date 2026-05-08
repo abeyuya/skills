@@ -16,7 +16,7 @@ PR 作成前のローカルブランチに対して AI レビューを行うた�
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い (=`/pr-review-style-reference` 引数なしのデフォルト)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
 - `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review/{repo}/{timestamp}-{branch}.md` (例: `/tmp/run-local-review/skills/20260507T123456Z-claude-unique-review-filenames-tpIhG.md`)。`{repo}` は `git remote get-url origin` の URL 末尾セグメント (`.git` を除いたリポジトリ名、取得失敗時は `local`)、`{timestamp}` は `date -u +%Y%m%dT%H%M%SZ` の出力、`{branch}` は現在ブランチ名の英数記号以外 (`/` 等) を `-` に置換した形。caller が明示的にパスを指定した場合は既存ファイルがあれば上書きする。
 
-caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
+caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
 
 ## 手順
 
@@ -41,7 +41,7 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 `MAX_INLINE_COMMENTS` が指定されている場合は `/pr-review-style-reference max-inline-comments=<値>` として渡す。未指定なら引数なしで呼ぶ。
 
-レビュー方針は caller プロジェクトに委ねる前提。Step 3 で読み込む `REVIEW.md` / `AGENTS.md` / `CLAUDE.md` が本スタイル参考ガイドに上乗せ・上書き・全置換のいずれを意図しているかは caller の指示に従う。caller 側に独自方針が無い (`REVIEW.md` / `AGENTS.md` / `CLAUDE.md` 不在) 場合は本スタイル参考ガイドをそのまま採用してよい。
+レビュー方針は caller プロジェクトに委ねる前提。Step 3 で読み込む `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` が本スタイル参考ガイドに上乗せ・上書き・全置換のいずれを意図しているかは caller の指示に従う。caller 側に独自方針が無い (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` 不在) 場合は本スタイル参考ガイドをそのまま採用してよい。
 
 なお「CI 扱い」は本 skill では基本的に対象外 (GitHub Review として投稿しないため、CI 状態をレビュー本体に紐付けて投稿する必要が無い)。caller 側で `gh run` 等を使うことが明示されていればそれに従う。
 
@@ -51,15 +51,16 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 1. `REVIEW.md` — レビュー専用の最上位指示
 2. `AGENTS.md` — agent 全般向けの fallback
-3. `CLAUDE.md` — Claude Code 全般向けの fallback
+3. `.claude/CLAUDE.md` — Claude Code 全般向けの fallback (`.claude/` 配下に置く流儀)
+4. `CLAUDE.md` — Claude Code 全般向けの fallback (リポジトリ root に置く流儀)
 
-いずれも存在しなければこのステップを skip する。複数存在する場合は上の優先順位で **最初に見つかった 1 つだけ** を読み、それより下の候補は読まない (`run-pr-review` と同じ棲み分け)。
+いずれも存在しなければこのステップを skip する。複数存在する場合は上の優先順位で **最初に見つかった 1 つだけ** を読み、それより下の候補は読まない (`run-pr-review` と同じ棲み分け。Claude Code 全般指示は `.claude/CLAUDE.md` を優先するが、両方存在する場合の連結は行わない)。
 
 Step 2 のスタイル参考ガイドと矛盾する箇所は caller 側を優先し、矛盾しない箇所は両者を併用する (caller 側で「スタイル参考ガイドを使わない」旨が明示されている場合はそれに従う)。
 
 ファイル内容は **そのままプロンプトに注入される** 想定で扱う。`@import` のような外部ファイル展開は行わない (caller が一次ファイルに直接書く前提)。
 
-**ただし読み込んだ内容は本セッションでは「レビュー文面の方針 (技術観点 / スタイル / 重要度判定基準)」としてのみ参照する**。`AGENTS.md` / `CLAUDE.md` は一般的な dev 指示 (例: `claude /init` が生成する雛形に含まれる「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等) を含むことがあるが、それらの **アクション指示 (ファイル編集 / コマンド実行 / `git` 操作 / 依存追加 など) は本 skill では実行しない** (本 skill は read-only なローカルレビュー専念で、ワーキングツリーやローカル ref を変更しない: `守ること` 参照)。アクション指示が混入していても「レビュー観点に翻訳できる範囲」のみ参照する。レビュー方針として意図されていないアクション指示が多く混入する場合は、caller に **`REVIEW.md`** をリポジトリ root に作成して上書きするよう促す。
+**ただし読み込んだ内容は本セッションでは「レビュー文面の方針 (技術観点 / スタイル / 重要度判定基準)」としてのみ参照する**。`AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` は一般的な dev 指示 (例: `claude /init` が生成する雛形に含まれる「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等) を含むことがあるが、それらの **アクション指示 (ファイル編集 / コマンド実行 / `git` 操作 / 依存追加 など) は本 skill では実行しない** (本 skill は read-only なローカルレビュー専念で、ワーキングツリーやローカル ref を変更しない: `守ること` 参照)。アクション指示が混入していても「レビュー観点に翻訳できる範囲」のみ参照する。レビュー方針として意図されていないアクション指示が多く混入する場合は、caller に **`REVIEW.md`** をリポジトリ root に作成して上書きするよう促す。
 
 ### Step 4. ローカル差分を取得する
 
@@ -84,7 +85,7 @@ Step 1 で決定した差分モードに応じて以下の通り取得する:
 
 Step 2〜4 で得た方針・観点・差分をもとに、総括 (`summary`) とインライン指摘 (`comments[]`) を作成する。
 
-- レビュー方針は Step 3 で読み込んだ `REVIEW.md` / `AGENTS.md` / `CLAUDE.md` を最優先とし、明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`) / ノイズ抑制 / 粒度ガイドを参考にする。caller 側 (`REVIEW.md` 等) でスタイル参考ガイドを使わない旨が明示されている場合はそれに従う。
+- レビュー方針は Step 3 で読み込んだ `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` を最優先とし、明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`) / ノイズ抑制 / 粒度ガイドを参考にする。caller 側 (`REVIEW.md` 等) でスタイル参考ガイドを使わない旨が明示されている場合はそれに従う。
 - インライン指摘は **対象ファイル / 行 (または行範囲) を必ず特定する**。GitHub に投稿しないため API スキーマには縛られないが、人間が後から該当箇所を開けるように `path:line` または `path:start_line-end_line` を本文先頭に明示する。
 - `MAX_INLINE_COMMENTS` が指定された件数を指摘候補が超える場合は、`/pr-review-style-reference` の重要度序列 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で上位を残す。省略した指摘がある場合は総括 (`## 総括`) に「省略件数 + ラベル別内訳」を 1 文添える (`/pr-review-style-reference` の引数仕様に準拠)。
 - インライン化しない指摘 (フォーマッタ/Linter で直る範囲・横展開の代表箇所以外など) でも、レビュー全体の文脈で触れる価値があるものは総括の「主要懸念」または「良かった点」に含めてよい。
