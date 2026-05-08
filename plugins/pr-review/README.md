@@ -18,16 +18,17 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 1. `REVIEW.md` — レビュー専用の最上位指示 (推奨)
 2. `AGENTS.md` — agent 全般向けの fallback
-3. `CLAUDE.md` — Claude Code 全般向けの fallback
+3. `.claude/CLAUDE.md` — Claude Code 全般向けの fallback (`.claude/` 配下に置く流儀)
+4. `CLAUDE.md` — Claude Code 全般向けの fallback (リポジトリ root に置く流儀)
 
-個別ファイルパスを skill 引数で渡す方式は持たない。複数ファイルを束ねたい場合は caller 側 workflow で 1 ファイルに事前生成 (例: `cat docs/general.md docs/typescript.md > REVIEW.md`) してから skill を呼ぶ。
+個別ファイルパスを skill 引数で渡す方式は持たない。複数ファイルを束ねたい場合は caller 側 workflow で 1 ファイルに事前生成 (例: `cat docs/general.md docs/typescript.md > REVIEW.md`) してから skill を呼ぶ。Claude Code 全般指示が `.claude/CLAUDE.md` と `CLAUDE.md` の両方に存在する場合は `.claude/CLAUDE.md` のみが採用される (連結はしない)。
 
-### `AGENTS.md` / `CLAUDE.md` を fallback として使う際の注意
+### `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` を fallback として使う際の注意
 
-`AGENTS.md` / `CLAUDE.md` はもともとレビュー専用ではなく、`claude /init` が生成する雛形には「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等の **アクション指示** が含まれることが多い。本 skill (`run-pr-review` / `run-local-review`) は read-only レビュー専念で、これらのアクション指示は **実行しない** (レビュー観点に翻訳できる範囲のみ参照する) ように Step 3 で明示的に防いでいるが、念のため次のいずれかを推奨する:
+`AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` はもともとレビュー専用ではなく、`claude /init` が生成する雛形には「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等の **アクション指示** が含まれることが多い。本 skill (`run-pr-review` / `run-local-review`) は read-only レビュー専念で、これらのアクション指示は **実行しない** (レビュー観点に翻訳できる範囲のみ参照する) ように Step 3 で明示的に防いでいるが、念のため次のいずれかを推奨する:
 
-- レビュー方針として意図されていないアクション指示が多い場合は、リポジトリ root に **`REVIEW.md` を新規作成** してレビュー方針だけを書き、`AGENTS.md` / `CLAUDE.md` は読まれないようにする (上記優先順で `REVIEW.md` が最優先)。
-- `AGENTS.md` / `CLAUDE.md` 内でレビュー専用セクションを設けて他から分離する。
+- レビュー方針として意図されていないアクション指示が多い場合は、リポジトリ root に **`REVIEW.md` を新規作成** してレビュー方針だけを書き、`AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` は読まれないようにする (上記優先順で `REVIEW.md` が最優先)。
+- `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` 内でレビュー専用セクションを設けて他から分離する。
 
 ## 重要度ラベル
 
@@ -84,7 +85,7 @@ permissions:
       THREAD_RESOLVE_SCOPE: all
 
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・check run サマリ出力・過去スレッド resolve) を実行してください。
-      caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md / AGENTS.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。
+      caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。
     claude_args: |
       --allowedTools "Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*)"
 ```

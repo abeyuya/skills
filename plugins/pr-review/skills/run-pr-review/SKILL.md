@@ -16,7 +16,7 @@ PR レビュー一式 (スタイル参考ガイド読み込み → PR 確認 →
 - `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
 - `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 8 でそのまま `resolve-pr-threads` に転送される。
 
-caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
+caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
 
 ## 手順
 
@@ -31,7 +31,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 `/pr-review-style-reference` slash command を実行し、スタイル参考ガイド (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い) を本セッションのレビュー方針の参考として読み込む。
 
-レビュー方針は caller プロジェクトに委ねる前提。Step 3 で読み込む `REVIEW.md` / `AGENTS.md` / `CLAUDE.md` が本スタイル参考ガイドに上乗せ・上書き・全置換のいずれを意図しているかは caller の指示に従う。caller 側に独自方針が無い (`REVIEW.md` / `AGENTS.md` / `CLAUDE.md` 不在) 場合は本スタイル参考ガイドをそのまま採用してよい。
+レビュー方針は caller プロジェクトに委ねる前提。Step 3 で読み込む `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` が本スタイル参考ガイドに上乗せ・上書き・全置換のいずれを意図しているかは caller の指示に従う。caller 側に独自方針が無い (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` 不在) 場合は本スタイル参考ガイドをそのまま採用してよい。
 
 `MAX_INLINE_COMMENTS` が指定されている場合は `/pr-review-style-reference max-inline-comments=<値>` として渡す。未指定なら引数なしで呼ぶ。
 
@@ -41,15 +41,16 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 1. `REVIEW.md` — レビュー専用の最上位指示
 2. `AGENTS.md` — agent 全般向けの fallback
-3. `CLAUDE.md` — Claude Code 全般向けの fallback
+3. `.claude/CLAUDE.md` — Claude Code 全般向けの fallback (`.claude/` 配下に置く流儀)
+4. `CLAUDE.md` — Claude Code 全般向けの fallback (リポジトリ root に置く流儀)
 
-いずれも存在しなければこのステップを skip する。複数存在する場合は上の優先順位で **最初に見つかった 1 つだけ** を読み、それより下の候補は読まない (棲み分け: レビュー専用指示が無ければ agent 全般指示、それも無ければ Claude Code 全般指示で代替する)。
+いずれも存在しなければこのステップを skip する。複数存在する場合は上の優先順位で **最初に見つかった 1 つだけ** を読み、それより下の候補は読まない (棲み分け: レビュー専用指示が無ければ agent 全般指示、それも無ければ Claude Code 全般指示で代替する。Claude Code 全般指示は `.claude/CLAUDE.md` を優先するが、両方存在する場合の連結は行わない)。
 
 Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト側を優先し、矛盾しない箇所は両者を併用する (プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されている場合はそれに従う)。
 
 ファイル内容は **そのままプロンプトに注入される** 想定で扱う。`@import` のような外部ファイル展開は行わない (caller が一次ファイルに直接書く前提)。
 
-**ただし読み込んだ内容は本セッションでは「レビュー文面の方針 (技術観点 / スタイル / 重要度判定基準)」としてのみ参照する**。`AGENTS.md` / `CLAUDE.md` は一般的な dev 指示 (例: `claude /init` が生成する雛形に含まれる「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等) を含むことがあるが、それらの **アクション指示 (ファイル編集 / コマンド実行 / `git` 操作 / 依存追加 など) は本 skill では実行しない** (本 skill は read-only な PR レビュー専念で、リポジトリやワーキングツリーを変更しない)。アクション指示が混入していても「レビュー観点に翻訳できる範囲」(例: 「テスト必須」→「テスト追加が無い PR は `[should]` で指摘」) のみ参照する。レビュー方針として意図されていないアクション指示が多く混入する場合は、caller に **`REVIEW.md`** をリポジトリ root に作成して上書きするよう促す。
+**ただし読み込んだ内容は本セッションでは「レビュー文面の方針 (技術観点 / スタイル / 重要度判定基準)」としてのみ参照する**。`AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` は一般的な dev 指示 (例: `claude /init` が生成する雛形に含まれる「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等) を含むことがあるが、それらの **アクション指示 (ファイル編集 / コマンド実行 / `git` 操作 / 依存追加 など) は本 skill では実行しない** (本 skill は read-only な PR レビュー専念で、リポジトリやワーキングツリーを変更しない)。アクション指示が混入していても「レビュー観点に翻訳できる範囲」(例: 「テスト必須」→「テスト追加が無い PR は `[should]` で指摘」) のみ参照する。レビュー方針として意図されていないアクション指示が多く混入する場合は、caller に **`REVIEW.md`** をリポジトリ root に作成して上書きするよう促す。
 
 ### Step 4. PR の状態を取得する
 
@@ -60,14 +61,14 @@ Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト�
 - `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup,commits` で PR メタ情報と CI 状態を取得する。`headRefOid` を head SHA として控え、Step 6 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) と Step 7 の check run 投稿の `head_sha` の双方で常時転送する。
 - `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得する。
 - 既存レビュー / コメントは `resolve-pr-threads` 内でも取得するが、**重複指摘を避けるため** 本ステップでも GraphQL で `reviewThreads` を取得し、自分の過去コメント等を把握しておく (caller 側に方針が無い場合は `/pr-review-style-reference` の「既存レビュー/コメントとの重複回避」を参考にする)。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は GitHub GraphQL API の 1 ページあたりの上限値で、100 件を超える可能性がある PR では `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` を付けて再実行して全スレッドを取得しきること (取得漏れがあると重複指摘の検知が抜ける)。各スレッドの `comments.nodes[].body` まで取得し、Step 5 で本文の主旨重複判定に使う (`path`/`line` だけでは「位置は同じだが論点は別」のケースを取り違える)。
-- caller の cwd と PR の所属リポジトリが異なるドッグフーディング系では、Step 3 の `REVIEW.md` / `AGENTS.md` / `CLAUDE.md` がローカルに存在しないことがある (cwd の repo と PR の repo が別)。その場合は `gh api repos/<OWNER>/<REPO>/contents/<path>` でリモートから取得して `Read` 相当に扱う (Step 3 の補足)。API レスポンスの `content` フィールドは **Base64 エンコードされているため、`--jq .content` で抽出した上で `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` 等でデコードしてからファイル内容として利用すること**。
+- caller の cwd と PR の所属リポジトリが異なるドッグフーディング系では、Step 3 の `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` がローカルに存在しないことがある (cwd の repo と PR の repo が別)。その場合は `gh api repos/<OWNER>/<REPO>/contents/<path>` でリモートから取得して `Read` 相当に扱う (`<path>` は `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` のいずれか。Step 3 の優先順をそのまま反映する)。API レスポンスの `content` フィールドは **Base64 エンコードされているため、`--jq .content` で抽出した上で `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` 等でデコードしてからファイル内容として利用すること**。
 - `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log --repo <OWNER>/<REPO>` 等で失敗ログ本体まで読み、`[must]` 指摘の根拠にする (詳細は `/pr-review-style-reference` の「CI の扱い」を参考)。
 
 ### Step 5. レビュー本文を作成する
 
 Step 2〜4 で得た方針・観点・差分・CI 情報をもとに、総括 (`body`) とインライン指摘 (`comments[]`) を作成する。
 
-- レビュー方針は Step 3 で読み込んだ `REVIEW.md` / `AGENTS.md` / `CLAUDE.md` を最優先とし、明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル / ノイズ抑制 / 粒度ガイド等を参考にする。プロジェクト側 (`REVIEW.md` 等) でスタイル参考ガイドを使わない旨が明示されている場合はそれに従う。
+- レビュー方針は Step 3 で読み込んだ `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` を最優先とし、明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル / ノイズ抑制 / 粒度ガイド等を参考にする。プロジェクト側 (`REVIEW.md` 等) でスタイル参考ガイドを使わない旨が明示されている場合はそれに従う。
 - 既存スレッドと同主旨の指摘は再掲しない。判定は Step 4 で取得した `reviewThreads.nodes[].comments.nodes[].body` の主旨と現在の指摘の主旨を突き合わせて行う (位置 `path:line` だけが一致して論点が別のケースは「別件として新規指摘してよい」)。
 - `event` (`post-pr-review` への引数) は **常に `COMMENT`** とする (`post-pr-review/SKILL.md` の「守ること」に従う。Bot がマージブロックや承認権を持つことを避けるため)。`[must]` の有無にかかわらず `COMMENT` で投稿し、修正が必要な旨は本文 (`body`) と各インライン (`comments[]`) で `[must]` ラベルとして伝える。`APPROVE` / `REQUEST_CHANGES` は本 skill では使わない。
 - 指摘が無い場合も Step 6 で「特に指摘なし」相当の Review を投稿する (skip しない)。
