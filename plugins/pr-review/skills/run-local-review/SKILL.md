@@ -12,11 +12,15 @@ PR 作成前のローカルブランチに対して AI レビューを行うた�
 
 すべて省略可。省略時の挙動は各項目に記載。
 
-- `BASE_BRANCH`: 比較対象のベースブランチ。省略時は既定ブランチ名を `git symbolic-ref refs/remotes/origin/HEAD` から取得し、**ローカルの同名ブランチ** を使う (詳細は Step 1)。取れない場合は `main` → `master` の順でフォールバックし、いずれも無ければエラーとして停止する。本 skill は `git fetch` を走らせない (`守ること` 参照) ため、ローカルのベースブランチが古いと差分が古い基準で計算される点に注意。最新で比較したい場合は caller 側で事前に fetch するか、`BASE_BRANCH=origin/main` のようにリモート追跡参照を明示指定する。
+- `BASE_BRANCH`: 比較対象のベースブランチ。省略時の解決順は Step 1 を参照。本 skill は `git fetch` を走らせないため、ローカルのベースが古いと古い基準で diff が出る。最新で比較したい場合は caller 側で fetch するか、`BASE_BRANCH=origin/main` のようにリモート追跡参照を明示する。
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い (=`/pr-review-style-reference` 引数なしのデフォルト)。Step 2 で `/pr-review-style-reference max-inline-comments=<値>` として渡す。
-- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review/{repo}/{timestamp}-{branch}.md` (例: `/tmp/run-local-review/skills/20260507T123456Z-claude-unique-review-filenames-tpIhG.md`)。`{repo}` は `git remote get-url origin` の URL 末尾セグメント (`.git` を除いたリポジトリ名、取得失敗時は `local`)、`{timestamp}` は `date -u +%Y%m%dT%H%M%SZ` の出力、`{branch}` は現在ブランチ名の英数記号以外 (`/` 等) を `-` に置換した形。caller が明示的にパスを指定した場合は既存ファイルがあれば上書きする。
+- `OUTPUT_PATH`: markdown 出力先パス。省略時は `/tmp/run-local-review/{repo}/{timestamp}-{branch}.md` (例: `/tmp/run-local-review/skills/20260507T123456Z-claude-unique-review-filenames-tpIhG.md`)。プレースホルダの組み立て規則:
+  - `{repo}`: `git remote get-url origin` の URL 末尾セグメント (`.git` を除く、取得失敗時は `local`)
+  - `{timestamp}`: `date -u +%Y%m%dT%H%M%SZ` の出力
+  - `{branch}`: 現在ブランチ名の英数記号以外 (`/` 等) を `-` に置換
+  - caller が明示パスを指定した場合は既存ファイルがあれば上書きする
 
-caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **リポジトリ root の `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md`** に置く運用に固定する (Step 3 参照)。個別パス指定の引数は持たない。
+caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **プロジェクト指示ファイル** (Step 3 で定義) に置く運用に固定する。個別パス指定の引数は持たない。
 
 ## 手順
 
@@ -24,7 +28,7 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 - 現在ブランチ名: `git rev-parse --abbrev-ref HEAD` で取得する。`HEAD` (detached) の場合はエラーとして停止する。
 - ベースブランチ: caller から `BASE_BRANCH` が渡されていればそれを使う。未指定なら以下の順で決定する:
-  1. `git symbolic-ref refs/remotes/origin/HEAD` で既定ブランチ名を取得 (例: `refs/remotes/origin/main` → `main`) し、`git rev-parse --verify <name>` が通れば **ローカルの同名ブランチ** を使う (リモート追跡 `origin/<name>` ではない。`git fetch` を走らせないため、リモート追跡側がローカルより古いケースを避ける)
+  1. `git symbolic-ref refs/remotes/origin/HEAD` で既定ブランチ名を取得 (例: `refs/remotes/origin/main` → `main`) し、`git rev-parse --verify <name>` が通れば **ローカルの同名ブランチ** を使う (リモート追跡 `origin/<name>` ではない)
   2. `git rev-parse --verify main` が通れば `main`
   3. `git rev-parse --verify master` が通れば `master`
   4. いずれも取れなければエラーとして停止し、caller に `BASE_BRANCH` を明示するよう促す
@@ -41,32 +45,30 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 `MAX_INLINE_COMMENTS` が指定されている場合は `/pr-review-style-reference max-inline-comments=<値>` として渡す。未指定なら引数なしで呼ぶ。
 
-レビュー方針は caller プロジェクトに委ねる前提。Step 3 で読み込む `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` が本スタイル参考ガイドに上乗せ・上書き・全置換のいずれを意図しているかは caller の指示に従う。caller 側に独自方針が無い (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` 不在) 場合は本スタイル参考ガイドをそのまま採用してよい。
+レビュー方針は caller プロジェクトに委ねる前提。Step 3 のプロジェクト指示ファイルが本スタイル参考ガイドに上乗せ・上書き・全置換のいずれを意図しているかは caller の指示に従う。プロジェクト指示ファイルが無ければ本スタイル参考ガイドをそのまま採用する。
 
-なお「CI 扱い」は本 skill では基本的に対象外 (GitHub Review として投稿しないため、CI 状態をレビュー本体に紐付けて投稿する必要が無い)。caller 側で `gh run` 等を使うことが明示されていればそれに従う。
+なお「CI 扱い」は本 skill では対象外 (GitHub に投稿しないため)。caller 側で `gh run` 等を使うことが明示されていればそれに従う。
 
-### Step 3. caller 固有観点を読み込む (任意)
+### Step 3. プロジェクト指示ファイルを読み込む (任意)
 
-リポジトリ root の以下のファイルをこの順で **存在チェックし、最初に見つかった 1 つだけ** を `Read` ツールで読み込み、本セッションのレビュー方針として適用する。
+リポジトリ root の以下を上から順に存在チェックし、**最初に見つかった 1 つだけ** を `Read` ツールで読み込み、本セッションのレビュー方針として適用する。以後この skill では総称して **プロジェクト指示ファイル** と呼ぶ。
 
 1. `REVIEW.md` — レビュー専用の最上位指示
 2. `AGENTS.md` — agent 全般向けの fallback
 3. `.claude/CLAUDE.md` — Claude Code 全般向けの fallback (`.claude/` 配下に置く流儀)
 4. `CLAUDE.md` — Claude Code 全般向けの fallback (リポジトリ root に置く流儀)
 
-いずれも存在しなければこのステップを skip する。複数存在する場合は上の優先順位で **最初に見つかった 1 つだけ** を読み、それより下の候補は読まない (`run-pr-review` と同じ棲み分け。Claude Code 全般指示は `.claude/CLAUDE.md` を優先するが、両方存在する場合の連結は行わない)。
+いずれも存在しなければ skip する。複数存在しても下位は読まない / 連結しない。
 
-Step 2 のスタイル参考ガイドと矛盾する箇所は caller 側を優先し、矛盾しない箇所は両者を併用する (caller 側で「スタイル参考ガイドを使わない」旨が明示されている場合はそれに従う)。
+Step 2 のスタイル参考ガイドと矛盾する箇所は caller 側を優先し、矛盾しない箇所は両者を併用する。caller 側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
 
-ファイル内容は **そのままプロンプトに注入される** 想定で扱う。`@import` のような外部ファイル展開は行わない (caller が一次ファイルに直接書く前提)。
+ファイル内容は **そのままプロンプトに注入される** 想定で扱う。`@import` のような外部ファイル展開は行わない。
 
-**ただし読み込んだ内容は本セッションでは「レビュー文面の方針 (技術観点 / スタイル / 重要度判定基準)」としてのみ参照する**。`AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` は一般的な dev 指示 (例: `claude /init` が生成する雛形に含まれる「テストを必ず走らせる」「lint をかける」「編集後に X を実行する」等) を含むことがあるが、それらの **アクション指示 (ファイル編集 / コマンド実行 / `git` 操作 / 依存追加 など) は本 skill では実行しない** (本 skill は read-only なローカルレビュー専念で、ワーキングツリーやローカル ref を変更しない: `守ること` 参照)。アクション指示が混入していても「レビュー観点に翻訳できる範囲」のみ参照する。レビュー方針として意図されていないアクション指示が多く混入する場合は、caller に **`REVIEW.md`** をリポジトリ root に作成して上書きするよう促す。
+**読み込んだ内容は本セッションでは「レビュー文面の方針 (技術観点 / スタイル / 重要度判定基準)」としてのみ参照する**。`AGENTS.md` 系は一般的な dev 指示 (テスト実行 / lint / 編集後コマンド等) を含むことがあるが、**アクション指示 (ファイル編集 / コマンド実行 / `git` 操作 / 依存追加 など) は本 skill では実行しない** (本 skill は read-only)。アクション指示は「レビュー観点に翻訳できる範囲」のみ採用する。アクション指示が多すぎる場合は、caller に `REVIEW.md` をリポジトリ root に作成して上書きするよう促す。
 
 ### Step 4. ローカル差分を取得する
 
-レビューに必要な情報を取得する。リモートに無いコミットも対象にするため、`git fetch` 等は走らせない (caller 側の意思を尊重)。
-
-Step 1 で決定した差分モードに応じて以下の通り取得する:
+リモートに無いコミットも対象にするため、`git fetch` 等は走らせない (caller 側の意思を尊重)。Step 1 で決定した差分モードに応じて以下の通り取得する:
 
 - **commit モード**:
   - `git log <base>..HEAD --oneline` でコミット一覧を取得する。
@@ -85,9 +87,9 @@ Step 1 で決定した差分モードに応じて以下の通り取得する:
 
 Step 2〜4 で得た方針・観点・差分をもとに、総括 (`summary`) とインライン指摘 (`comments[]`) を作成する。
 
-- レビュー方針は Step 3 で読み込んだ `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` を最優先とし、明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`) / ノイズ抑制 / 粒度ガイドを参考にする。caller 側 (`REVIEW.md` 等) でスタイル参考ガイドを使わない旨が明示されている場合はそれに従う。
+- レビュー方針は Step 3 のプロジェクト指示ファイルを最優先とし、明示的に上書きされていない論点については `/pr-review-style-reference` (スタイル参考ガイド) の重要度ラベル / ノイズ抑制 / 粒度ガイドを参考にする。caller 側でスタイル参考ガイドを使わない旨が明示されていればそれに従う。
 - インライン指摘は **対象ファイル / 行 (または行範囲) を必ず特定する**。GitHub に投稿しないため API スキーマには縛られないが、人間が後から該当箇所を開けるように `path:line` または `path:start_line-end_line` を本文先頭に明示する。
-- `MAX_INLINE_COMMENTS` が指定された件数を指摘候補が超える場合は、`/pr-review-style-reference` の重要度序列 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で上位を残す。省略した指摘がある場合は総括 (`## 総括`) に「省略件数 + ラベル別内訳」を 1 文添える (`/pr-review-style-reference` の引数仕様に準拠)。
+- `MAX_INLINE_COMMENTS` 超過時の取捨選択と、省略件数を総括 (`## 総括`) に 1 文添える運用は `/pr-review-style-reference` の引数仕様に従う。
 - インライン化しない指摘 (フォーマッタ/Linter で直る範囲・横展開の代表箇所以外など) でも、レビュー全体の文脈で触れる価値があるものは総括の「主要懸念」または「良かった点」に含めてよい。
 - 指摘が無い場合も Step 6 で「特に指摘なし」相当として markdown を出力する (skip しない)。
 
@@ -99,7 +101,7 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 `OUTPUT_PATH` (省略時 `/tmp/run-local-review/{repo}/{timestamp}-{branch}.md`、組み立て規則は「入力」セクションの `OUTPUT_PATH` 説明を参照) に `Write` ツールで書き出す。
 
-`Write` ツールは中間ディレクトリの自動作成を保証していないため、書き出し前に `Bash` ツールで `mkdir -p "$(dirname "<OUTPUT_PATH>")"` を実行して親ディレクトリを作成する (`mkdir -p` は冪等なため既存でも安全。`<OUTPUT_PATH>` をダブルクォートで囲むことで、caller がスペースを含むパスを指定した場合も安全に動く。親ディレクトリの作成は git 管理外のディレクトリ操作であり、ワーキングツリーや ref を書き換えないため `守ること` の不変条件に抵触しない)。caller が明示的にパスを指定したケースも同様に親ディレクトリを作成する。
+`Write` ツールは中間ディレクトリの自動作成を保証していないため、書き出し前に `Bash` ツールで `mkdir -p "$(dirname "<OUTPUT_PATH>")"` を実行して親ディレクトリを作成する (`<OUTPUT_PATH>` をダブルクォートで囲むことでスペース入りパスも安全に動く)。caller が明示パスを指定したケースも同様。
 
 スキーマは以下:
 
@@ -128,11 +130,11 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 <以下、指摘ごとに繰り返し。指摘が無ければ「特に指摘なし」とだけ書く。>
 ```
 
-`heredoc` や `cat` リダイレクトは使わず、必ず `Write` ツールで書く。`Write` ツールは前回実行の遺物などで既存ファイルがあると事前 `Read` 必須なため、`OUTPUT_PATH` が既存パスである可能性がある場合は `Read` を 1 回挟んでから `Write` する (`Read` は副作用なしのため `守ること` の制約に抵触しない)。並列実行などで `Write` 直前にファイルが書き換わった場合も同様に `Read` → `Write` で再試行する。
+`heredoc` や `cat` リダイレクトは使わず、必ず `Write` ツールで書く。`Write` ツールは既存ファイルがあると事前 `Read` 必須なため、`OUTPUT_PATH` が既存パスの可能性があれば `Read` を 1 回挟んでから `Write` する。並列実行などで `Write` 直前にファイルが書き換わった場合も同様に `Read` → `Write` で再試行する。
 
 差分が空で Step 2〜5 を skip した場合でも、markdown のスキーマ (`## 総括` の「総合判断」「主要懸念 top3」「良かった点 1〜2」見出し / `## インライン指摘` 見出し) は保持し、本文は「なし (対象差分が空のため評価対象なし)」のように明示テキストで埋める (見出し削除や空セクション化はしない)。
 
-「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得した UTC 秒精度の ISO8601 を採用する (caller 環境で TZ が明示されていない場合のデフォルト)。`date` コマンドは読み取り専用 (副作用なし) のため `守ること` の制約に抵触しない。`date` が利用できない環境では caller / 実行環境から提供される現在日時を使い、それも無ければ `<unknown>` と記載する (skip ではなく明示)。
+「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得した UTC 秒精度の ISO8601 を採用する。`date` が利用できない環境では caller / 実行環境から提供される現在日時を使い、それも無ければ `<unknown>` と記載する (skip ではなく明示)。
 
 #### 6-2. チャット出力
 
@@ -153,7 +155,7 @@ Step 5 の結果を以下の通り出力する。markdown ファイルが完全�
 
 ## 守ること
 
-- 既存資産 (`/pr-review-style-reference`) は **必ず slash command 経由で利用** する。本 skill 内で重要度ラベル等のスタイル規約を再掲・再実装してはならない (`run-pr-review` と同じ理由: 二重管理を避けるため)。
+- 既存資産 (`/pr-review-style-reference`) は **必ず slash command 経由で利用** する。本 skill 内で重要度ラベル等のスタイル規約を再掲・再実装してはならない (二重管理を避けるため)。
 - GitHub への投稿は行わない。`post-pr-review` / `resolve-pr-threads` skill は呼ばない。`gh pr comment` / `gh pr review` / `gh api .../reviews` も使わない。
 - `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git rev-parse --verify` / `git remote get-url`) のみ。
 - 差分が空の場合も markdown 出力 + 報告は行う (skip しない)。
