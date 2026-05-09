@@ -16,9 +16,9 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
   - `own`: 本アクション自身 (claude-code-action が用いる Bot) が author のスレッドのみ resolve 候補にする。判定は自身の過去コメントの `author.login` と一致するか否かで行う。判定が困難な場合は resolve しない。
   - `none`: 過去スレッドの resolve は一切行わない。本 skill 全体を skip する。
 - `SELF_LOGIN` (任意): `THREAD_RESOLVE_SCOPE=own` 時に「自身」を判定するための `author.login`。caller が判明していれば渡す。未指定の場合は次の優先順で推定する:
-  1. PR の最近のレビュー / コメントを取得し、`*[bot]` サフィックスを持つ author のうち実行中のアクションと一致する Bot 名 (例: `claude-code-action` ベースなら `claude-bot[bot]` 等の運用上既知の名前)。
-  2. (1) で決まらない場合は、PR 内で最も投稿件数の多い `*[bot]` author。複数 Bot が同居する PR では別 Bot (`github-copilot[bot]` 等) を取り違えないこと。
-  3. (1) (2) いずれでも一意に決まらない場合は、scope=own としては誰のスレッドも resolve しないで終了する (誤判定で他者スレッドを畳むほうが害が大きい)。Step 5 で「SELF_LOGIN 推定不能で skip」と報告する。
+  1. 直近の review / comment から `*[bot]` author で実行中アクションと一致するもの。
+  2. それで決まらなければ、PR 内で `*[bot]` 投稿件数最多の author。複数 Bot 同居時は別 Bot (`github-copilot[bot]` 等) との取り違えに注意。
+  3. 一意に決まらなければ scope=own をまるごと skip し、Step 5 で「SELF_LOGIN 推定不能」と報告する。
 
 ## 共通の resolve 判定ルール
 
@@ -38,9 +38,9 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 
 ### Step 1. レビュースレッド一覧を取得する
 
-GraphQL でスレッド一覧を取得する。`isResolved` / `isOutdated` / 各コメントの `author.login` / `path` / `line` / `body` を見て、未 resolve スレッドすべてを判定対象とする。
+`isResolved` / `isOutdated` / 各コメントの `author.login` / `path` / `line` / `body` を GraphQL で取得し、未 resolve スレッドすべてを判定対象とする。
 
-`reviewThreads(first: 100)` は GitHub GraphQL API の 1 ページあたりの上限値。100 件を超える可能性がある場合はページネーションすること (取得漏れに気付かないと resolve すべきスレッドの取りこぼしにつながる)。
+`reviewThreads(first: 100)` は GitHub GraphQL API の 1 ページあたりの上限値。100 件を超える可能性がある場合はページネーションする。
 
 ```bash
 gh api graphql \
@@ -87,7 +87,7 @@ gh api graphql \
 
 resolve する前に、なぜ resolve するのか根拠を一言コメントで残す。後から「なぜこのスレッドが畳まれたのか」を追えるようにするため。
 
-コメント本文は **必ず AI 自動投稿マーカーを先頭に付与する** (詳細は 3-2)。投稿主が人間 PAT であっても、内容は AI エージェントが生成したものであることを明示するため。
+コメント本文には **必ず AI 自動投稿マーカーを先頭に付与する** (テンプレートと根拠は 3-2 参照)。
 
 #### 3-1. 対応 commit を特定する
 
@@ -106,7 +106,7 @@ commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
 
 `addPullRequestReviewThreadReply` mutation でスレッドに返信する。
 
-**本文の先頭には AI 自動投稿マーカーを必ず付与する**。本 skill が `gh api` を実行する以上、認証主体 (PAT 所有者など) がそのまま GitHub 上の投稿者として表示されるため、人間アカウントで投稿された場合でも「resolve 判定とコメント生成は AI エージェントが行った」ことを明示する必要がある。エージェント名 (Claude Code / Codex / Cursor 等) はマーカーに baked-in しない (本 skill は複数の AI エージェントから呼ばれうる前提)。
+**本文の先頭には AI 自動投稿マーカーを必ず付与する**。認証主体が人間 PAT でも投稿内容は AI 生成であることを明示するため。エージェント名 (Claude Code / Codex / Cursor 等) はマーカーに含めない (本 skill は複数の AI エージェントから呼ばれうる前提)。
 
 マーカーと根拠コメントのテンプレート (`<根拠コメント本文>` は短く 1 文程度に抑える):
 
@@ -124,13 +124,7 @@ commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
 [abc1234](https://github.com/<OWNER>/<REPO>/commit/abc1234) で対応済みのため resolve します。
 ```
 
-```markdown
-> **[AI 自動投稿]** このコメントは AI エージェントによる自動投稿です。内容の判断は AI が行っています。
-
-指摘箇所のロジックを削除し別実装に置き換えたため resolve します ([abc1234](...))。
-```
-
-`body` パラメータには **上記テンプレート全体 (マーカー + `<根拠コメント本文>`)** を結合した文字列を渡す。マーカー部分を含めずに `<根拠コメント本文>` だけを渡すと、本ステップ冒頭で必須化したマーカーが API 送信時に落ちる。複数行文字列を扱いやすくするため、`Write` ツールで body をファイル (例: `/tmp/resolve-body.txt`) に書き出してから `-F body=@/tmp/resolve-body.txt` で読み込ませる方法を推奨する。
+`body` には **テンプレート全体 (マーカー + `<根拠コメント本文>`)** を結合した文字列を渡す。複数行文字列を扱いやすくするため、`Write` ツールで body をファイル (例: `/tmp/resolve-body.txt`) に書き出してから `-F body=@/tmp/resolve-body.txt` で読み込ませる方法を推奨する。
 
 ```bash
 gh api graphql \
@@ -169,7 +163,7 @@ gh api graphql \
 
 - resolve したスレッド件数 (Step 4 まで成功したもの)
 - コメント投稿失敗で resolve を見送った件数 (Step 3 の `addPullRequestReviewThreadReply` が失敗したもの)
-- resolve 実行失敗で見送った件数 (Step 3 のコメントは投稿済みだが Step 4 の `resolveReviewThread` が失敗したもの。手動 resolve が必要。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
+- resolve 実行失敗で見送った件数 (Step 4 の `resolveReviewThread` が失敗したもの。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
 - 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能 / scope=own で対象外、のもの)
 
 別枠で参考表示する項目 (4 件種別の合計には含めない):
