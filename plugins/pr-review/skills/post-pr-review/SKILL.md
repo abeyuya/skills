@@ -14,7 +14,7 @@ PR レビュー結果を **1回の API コールで「1つの Review」として
 - 個別投稿系のツール (`mcp__github_inline_comment__create_inline_comment`、`gh pr comment` 等) は **使わない**。
 - `event` は **常に `COMMENT`**。`APPROVE` / `REQUEST_CHANGES` は使わない (Bot がマージブロックや承認権を持つことを避けるため)。
 - インラインコメントの本文フォーマット (重要度ラベル等) は **caller のレビュー方針に従う**。本 skill は手続きのみを担い、レビュー文面の規約は規定しない。
-- 総括 `body` の先頭には **AI 自動投稿マーカーを必ず付与する** (詳細は手順 1)。認証主体が人間 PAT でも投稿内容は AI 生成であることを明示するため。caller 側で事前に付与する必要はなく、本 skill が一律に prepend する。エージェント名 (Claude Code / Codex / Cursor 等) はマーカーに含めない (本 skill は複数の AI エージェントから呼ばれうる前提)。
+- 総括 `body` の先頭には **AI 自動投稿マーカーを必ず付与する** (詳細は「手順 1」参照)。認証主体が人間 PAT でも投稿内容は AI 生成であることを明示するため。caller 側で事前に付与する必要はなく、本 skill が一律に prepend する。エージェント名 (Claude Code / Codex / Cursor 等) はマーカーに含めない (本 skill は複数の AI エージェントから呼ばれうる前提)。
 
 ## 入力 (caller から prompt 経由で渡される想定)
 
@@ -70,7 +70,7 @@ caller から渡された総括本文 (Markdown 可) はマーカーと区切り
 - 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。
 - `commit_id` は caller から `COMMIT_ID` が渡された場合のみ含める (詳細は「入力」参照)。
 - 指摘がない場合: `body` はマーカー + 区切り線 + 「特に指摘なし」相当の文言、`comments` は `[]`、`event` は `COMMENT` で投稿する。
-- インラインコメント (`comments[].body`) には個別マーカーを付けない (Review 本文側のマーカーで帰属は十分。`[must]` 等の重要度ラベルとの衝突や冗長さも避けるため)。
+- インラインコメント (`comments[].body`) には個別マーカーを付けない (Review 本文側のマーカーで帰属は十分であり、`[must]` 等の重要度ラベルとの衝突や冗長さも避けるため)。
 
 ### 2. `gh api` を1回だけ実行して投稿する
 
