@@ -58,7 +58,7 @@ Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト�
 
 - `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup,commits` で PR メタ情報と CI 状態を取得する。`headRefOid` を head SHA として控え、Step 6 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) と Step 7 の check run 投稿の `head_sha` の双方で常時転送する。
 - `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得する。
-- 既存レビュー / コメント (重複指摘の検知用) を GraphQL で `reviewThreads` を取得する。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `comments.nodes[].body` まで取得し、Step 5 で本文主旨の重複判定に使う (位置 `path:line` だけでは論点違いのケースを取り違えるため)。
+- 既存レビュー / コメント (重複指摘の検知用) は GraphQL で `reviewThreads` を取得する。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `comments.nodes[].body` まで取得し、Step 5 で本文主旨の重複判定に使う (位置 `path:line` だけでは論点違いのケースを取り違えるため)。
 - caller の cwd と PR の所属リポジトリが異なるドッグフーディング系では、Step 3 のプロジェクト指示ファイルがローカルに存在しないことがある。その場合は `gh api repos/<OWNER>/<REPO>/contents/<path>` でリモートから取得して `Read` 相当に扱う (`<path>` は Step 3 の優先順で最初に見つかった 1 つ)。API レスポンスの `content` フィールドは Base64 なので、`--jq .content` で抽出して `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` 等でデコードしてから利用する。
 - `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log --repo <OWNER>/<REPO>` 等で失敗ログ本体まで読み、`[must]` 指摘の根拠にする (詳細は `/pr-review-style-reference` の「CI の扱い」を参考)。
 
