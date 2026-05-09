@@ -38,7 +38,7 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 
 ### Step 1. レビュースレッド一覧を取得する
 
-`isResolved` / `isOutdated` / 各コメントの `author.login` / `path` / `line` / `body` を GraphQL で取得し、未 resolve スレッドすべてを判定対象とする。
+`id` (Step 4 の `resolveReviewThread` mutation で必須) / `isResolved` / `isOutdated` / 各コメントの `author.login` / `path` / `line` / `body` を GraphQL で取得し、未 resolve スレッドすべてを判定対象とする。
 
 `reviewThreads(first: 100)` は GitHub GraphQL API の 1 ページあたりの上限値。100 件を超える可能性がある場合はページネーションする。
 
