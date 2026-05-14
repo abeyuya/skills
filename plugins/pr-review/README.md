@@ -40,32 +40,14 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 - `[question]` 質問。実装者の意図確認のみで修正要求ではない。
 - `[pre_existing]` 本 PR で導入されたものではない既存バグ。マージ判断には影響させない。
 
-## Check Run 出力 (`run-pr-review` のみ)
-
-`run-pr-review` は GitHub Review 投稿に加えて、PR の Checks タブに **`pr-review (abeyuya/skills)`** という名前の check run を作成する。Details ページに severity 順の指摘索引表 (`file:line` + 1 行サマリ) が出力され、末尾に機械可読な集計 JSON が HTML コメントとして埋め込まれる:
-
-```
-<!-- pr-review-severity: {"must":2,"should":1,"nit":2,"question":0,"pre_existing":0} -->
-```
-
-caller 側 CI で merge gate を組みたい場合は次のように parse できる:
-
-```bash
-gh api repos/$OWNER/$REPO/check-runs/$CHECK_RUN_ID \
-  --jq '.output.text | match("pr-review-severity:\\s*({[^}]+})") | .captures[0].string | fromjson'
-```
-
-`conclusion` は常に `neutral` 固定で、本 check run 自体は merge を block しない。check run 作成は best-effort で、403 等の権限不足 (fork PR 等) で失敗しても Review 投稿は成功扱いとする。check run 作成には `checks: write` 権限が必要。
-
 ## 利用方法 (GitHub Actions)
 
-`run-pr-review` の動作には以下の権限が必要。job の `permissions:` で明示する (Review 投稿 / 過去スレッド resolve / check run 出力で使用):
+`run-pr-review` の動作には以下の権限が必要。job の `permissions:` で明示する (Review 投稿 / 過去スレッド resolve で使用):
 
 ```yaml
 permissions:
   contents: read         # PR 差分 / リポジトリ root のレビュー方針ファイル参照
   pull-requests: write   # Review 投稿 / 過去スレッドへの reply / resolve (GraphQL)
-  checks: write          # check run 出力 (run-pr-review Step 7)
 ```
 
 > 本 skill 群はトップレベル PR コメント (`POST /repos/.../issues/{n}/comments` 経路) を投稿しないため `issues: write` は不要。caller が `claude-code-action` 等を経由している場合は action 側の要件で `issues: write` が要求されることがあるため、その場合のみ caller が追加する。
@@ -84,7 +66,7 @@ permissions:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       THREAD_RESOLVE_SCOPE: all
 
-      run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・check run サマリ出力・過去スレッド resolve) を実行してください。
+      run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
       caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。
     claude_args: |
       --allowedTools "Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*)"
