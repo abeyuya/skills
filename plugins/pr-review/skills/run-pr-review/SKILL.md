@@ -116,7 +116,7 @@ Step 5 で生成した `candidate_findings[]` を `verify-pr-review-findings` sk
 `candidate_findings[]` の各 candidate について、以下を Verifier に渡せる形に整形する。範囲の数値は `verify-pr-review-findings/SKILL.md` の「数値リテラル一覧」を参照し、本 skill 側では再定義しない。
 
 - **DIFF**: Step 4 で取得済みの `gh pr diff` の出力をそのまま使う。
-- **FILE_EXCERPTS**: 各 candidate の周辺 `FILE_EXCERPT_RANGE` (= ±50 行) を、PR の head SHA から `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>` で取得し Base64 デコード、必要範囲のみ抜粋。同 path で重複する範囲はマージして 1 件にまとめる。`gh api` が 404 (新規追加で base 側に存在しない場合を含む) / サイズ超過などで取得失敗した candidate は、その entry を `FILE_EXCERPTS` に含めないだけで Verifier 呼び出しは続行する (Verifier 側 Step 0 で欠損許容)。
+- **FILE_EXCERPTS**: 各 candidate の周辺 `FILE_EXCERPT_RANGE` (= ±50 行) を、PR の head SHA から `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>` で取得し、レスポンス JSON の `.content` フィールドを抽出して Base64 デコード、必要範囲のみ抜粋。同 path で重複する範囲はマージして 1 件にまとめる。`gh api` が 404 (新規追加で base 側に存在しない場合を含む) / サイズ超過などで取得失敗した candidate は、その entry を `FILE_EXCERPTS` に含めないだけで Verifier 呼び出しは続行する (Verifier 側 Step 0 で欠損許容)。
 - **RELATED_THREADS**: Step 4 で取得済みの `reviewThreads` から、各 candidate と同 `path` かつ `RELATED_THREAD_RANGE` (= ±10 行) に該当するスレッド本文を抜粋。なければ空配列。
 - **CANDIDATES**: `candidate_findings[]` の `id` / `path` / `line` / `severity` / `body` をそのまま渡す。
 
@@ -135,7 +135,7 @@ skill 呼び出し自体が例外 / 応答なしで失敗した場合は、`veri
 1. **フィルタ**:
    - `verdict == "likely_false_positive"` かつ `confidence >= 80` → 除外 (FP として確信のあるもの)
    - `confidence < CONFIDENCE_THRESHOLD` (デフォルト 80) → 除外
-   - `CONFIDENCE_THRESHOLD=all` のときは閾値フィルタを skip
+   - `CONFIDENCE_THRESHOLD=all` のときは閾値フィルタを skip し、すべて本体に残す
    - その他は採用
 
 2. **本文書き換え**: 採用した各指摘の `body` 先頭を `[<severity>] (conf:<NN>) <元本文の severity ラベル除去後>` に書き換える (例: `[must] Token refresh...` → `[must] (conf:87) Token refresh...`)。`severity` は元の `candidate.severity` を使う (Verifier の `severity_suggestion` は本リポジトリ運用では破棄: `verify-pr-review-findings/SKILL.md` の出力スキーマ注記参照)。
