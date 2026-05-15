@@ -1,10 +1,11 @@
 # pr-review plugin
 
-PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
+PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、一次レビュー候補を独立コンテキストで再検証する Verifier、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
 
 ## 提供 skill / command
 
 - `skills/run-pr-review`: PR レビュー一式 (スタイル参考ガイド読み込み → PR 取得 → レビュー作成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。
+- `skills/verify-pr-review-findings`: 一次レビューの候補指摘を独立コンテキストのサブエージェントで再検証し、`verdict` と confidence を付与する Verifier skill。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する skill (GitHub 投稿は行わない)。スタイル参考ガイドと caller 固有観点の読み込みは `run-pr-review` と共通。
@@ -42,12 +43,13 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 ## 利用方法 (GitHub Actions)
 
-`run-pr-review` の動作には以下の権限が必要。job の `permissions:` で明示する (Review 投稿 / 過去スレッド resolve で使用):
+`run-pr-review` の動作には以下の権限が必要。job の `permissions:` で明示する (Review 投稿 / 過去スレッド resolve / Check Run 出力で使用):
 
 ```yaml
 permissions:
   contents: read         # PR 差分 / リポジトリ root のレビュー方針ファイル参照
   pull-requests: write   # Review 投稿 / 過去スレッドへの reply / resolve (GraphQL)
+  checks: write          # Checks タブへのレビューサマリ出力
 ```
 
 > 本 skill 群はトップレベル PR コメント (`POST /repos/.../issues/{n}/comments` 経路) を投稿しないため `issues: write` は不要。caller が `claude-code-action` 等を経由している場合は action 側の要件で `issues: write` が要求されることがあるため、その場合のみ caller が追加する。

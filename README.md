@@ -7,7 +7,7 @@ abeyuya 個人が利用する Claude Code 向け skill / plugin 群を集約し�
 
 ### [`pr-review`](plugins/pr-review/README.md)
 
-PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
+PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、一次レビュー候補を独立コンテキストで再検証する Verifier、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
 
 詳細は [plugins/pr-review/README.md](plugins/pr-review/README.md) を参照。
 
@@ -54,6 +54,8 @@ plugins/
       pr-review-style-reference.md
     skills/
       run-pr-review/
+        SKILL.md
+      verify-pr-review-findings/
         SKILL.md
       post-pr-review/
         SKILL.md

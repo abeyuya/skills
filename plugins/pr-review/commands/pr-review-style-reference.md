@@ -1,11 +1,13 @@
 ---
-description: PR レビュー時のスタイル参考ガイド (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い) を読み込む。
 argument-hint: '[max-inline-comments=N]'
+description: PR レビュー時のスタイル参考ガイド (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い) を読み込む。
 ---
 
 # PR レビュー時のスタイル参考ガイド
 
 本ガイドは **書き方・体裁** のみを対象にします。レビューで何を見るか (技術観点) は本ファイルの対象外で、caller 側で別途指定する想定です。
+
+Confidence Scoring (0-100) と Verifier の運用ロジックは呼び出し側 skill (`run-pr-review` / `run-local-review`) と `verify-pr-review-findings` skill の責務であり本ガイドの対象外。本ガイドは表示書式のみを扱う。
 
 レビュー方針は caller プロジェクト (ユーザー) に委ねる前提で、以下のいずれの使い方でも構いません。
 
@@ -40,6 +42,14 @@ caller がラベル種別を独自定義した場合 (例: `[should]` / `[nit]` 
 - `[nit]` 軽微・好み寄りの指摘。実装者が無視してよい。
 - `[question]` 質問。実装者の意図を確認したいだけのもの (修正要求ではない)。
 - `[pre_existing]` 本 PR で導入されたものではないが、レビュー中に発見した既存バグ。本 PR でのマージ判断には影響させない (= マージ前対応の必須化はしない) が、別途 issue 化や別 PR での修正を促すために残す。
+
+## Confidence 表示
+
+Verifier 経由で confidence (0-100 の整数) が付与された場合、各インライン指摘は **ラベル直後にスペース 1 つを挟んで `(conf:NN)`** を続けてください。
+
+- 例: `[must] (conf:87) Token refresh races with logout...`
+- Verifier の状態 (`verifier_status`) が `ok` 以外 (`skipped:*` のいずれか) のときは `(conf:NN)` を付与しない (未検証であることを書式で区別するため)。状態の正確な enum と語彙は呼び出し側 skill 配下の `verify-pr-review-findings/SKILL.md` の「Verifier 状態 enum」を canonical な参照点とする (本ガイドでは再列挙しない)。
+- severity と confidence は独立軸として扱う。`[must]` に対する最低 confidence の強制は行わない (caller が一次レビューの精度で担保する)。
 
 ## ノイズ抑制ルール
 
