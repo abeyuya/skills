@@ -71,8 +71,10 @@ permissions:
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
       caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。
     claude_args: |
-      --allowedTools "Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*)"
+      --allowedTools "Task,Read,Write,Glob,Grep,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(python3:*)"
 ```
+
+Verifier はサブエージェント起動に `Task` を使うため、`SKIP_VERIFIER=true` で無効化しない限り `Task` を allowed tools に含める。
 
 ## 利用方法 (ローカル Claude Code)
 
@@ -95,6 +97,8 @@ apm install abeyuya/skills/plugins/pr-review
 ```
 
 `apm install` 後、`pr-review` plugin の skill / command は consumer 側の `.claude/skills/` および `.claude/commands/` に展開される (ローカル Claude Code 経由で `/plugin install` した場合と同じファイルがインストールされる)。
+
+GitHub Actions で apm 経由に寄せる場合は、claude-code-action の plugin marketplace 指定ではなく、事前 step で apm install 済みの workspace を Claude に渡す。`run-pr-review` が使う権限と allowed tools は上記「利用方法 (GitHub Actions)」と同じで、特に Verifier 用の `Task`、Check Run 用の `checks: write`、リモート方針ファイル取得用の `Bash(gh api:*)` を落とさない。
 
 ## 開発時 (このリポジトリ自身で plugin を編集しながら使う)
 

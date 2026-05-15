@@ -35,6 +35,8 @@ apm install abeyuya/skills/plugins/pr-review
 
 `apm install` 後、各 plugin の skill / command は consumer 側の `.claude/skills/` および `.claude/commands/` に展開される (ローカル Claude Code 経由で `/plugin install` した場合と同じファイルがインストールされる)。
 
+GitHub Actions で apm 経由に寄せる場合は、consumer リポジトリ側の workflow で apm install 済みの workspace を Claude に渡す。`pr-review` は Verifier サブエージェントに `Task`、Check Run 出力に `checks: write`、PR/contents 取得に `gh api` を使うため、allowed tools と job permissions は [plugins/pr-review/README.md](plugins/pr-review/README.md) の GitHub Actions 例に合わせる。
+
 plugin 個別の利用方法 (GitHub Actions / ローカル Claude Code / 開発時) は各 plugin の README を参照:
 
 - [`pr-review`](plugins/pr-review/README.md)
