@@ -1,0 +1,9 @@
+{
+  "name": "create-pullrequest",
+  "version": "0.1.0",
+  "description": "コミット済みブランチに対して、履歴と差分から Pull Request のタイトルと本文を組み立て、Draft PR を作成する skill を提供する。",
+  "author": {
+    "name": "abeyuya",
+    "url": "https://github.com/abeyuya"
+  }
+}

@@ -5,6 +5,12 @@ abeyuya 個人が利用する Claude Code 向け skill / plugin 群を集約し�
 
 ## 提供 plugin
 
+### [`create-pullrequest`](plugins/create-pullrequest/README.md)
+
+コミット済みブランチに対して、コミット履歴・差分・リポジトリの PR テンプレートから Pull Request のタイトルと本文を組み立て、Draft PR を作成する skill を提供する。
+
+詳細は [plugins/create-pullrequest/README.md](plugins/create-pullrequest/README.md) を参照。
+
 ### [`pr-review`](plugins/pr-review/README.md)
 
 PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
@@ -17,6 +23,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 ```
 /plugin marketplace add abeyuya/skills
+/plugin install create-pullrequest@abeyuya-skills
 /plugin install pr-review@abeyuya-skills
 ```
 
@@ -27,9 +34,11 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 ```bash
 # marketplace 経由 (recommended)
 apm marketplace add abeyuya/skills
+apm install create-pullrequest@abeyuya-skills
 apm install pr-review@abeyuya-skills
 
 # または subdirectory を直接指定する primitive form
+apm install abeyuya/skills/plugins/create-pullrequest
 apm install abeyuya/skills/plugins/pr-review
 ```
 
@@ -37,6 +46,7 @@ apm install abeyuya/skills/plugins/pr-review
 
 plugin 個別の利用方法 (GitHub Actions / ローカル Claude Code / 開発時) は各 plugin の README を参照:
 
+- [`create-pullrequest`](plugins/create-pullrequest/README.md)
 - [`pr-review`](plugins/pr-review/README.md)
 
 ## 構成
@@ -46,6 +56,13 @@ apm.yml                                # apm 相互運用用マニフェスト
 .claude-plugin/
   marketplace.json                     # Claude Code marketplace 索引 (apm からも参照される)
 plugins/
+  create-pullrequest/
+    README.md
+    .claude-plugin/
+      plugin.json
+    skills/
+      create-pullrequest/
+        SKILL.md
   pr-review/
     README.md
     .claude-plugin/
