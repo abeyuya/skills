@@ -27,7 +27,7 @@ permissions:
     prompt: |
       create-pullrequest skill を呼び、現在のブランチから Draft PR を作成してください。
     claude_args: |
-      --allowedTools "Read,Write,Glob,Grep,Bash(git status:*),Bash(git rev-parse:*),Bash(git log:*),Bash(git diff:*),Bash(git push:*),Bash(gh repo view:*),Bash(gh auth status:*),Bash(gh pr list:*),Bash(gh pr create:*),Bash(mktemp:*),Bash(date:*)"
+      --allowedTools "Read,Write,Glob,Grep,Bash(git status:*),Bash(git rev-parse:*),Bash(git log:*),Bash(git diff:*),Bash(git push:*),Bash(gh repo view:*),Bash(gh auth status:*),Bash(gh pr list:*),Bash(gh pr create:*),Bash(mktemp:*),Bash(cat:*)"
 ```
 
 ## 利用方法 (ローカル Claude Code)

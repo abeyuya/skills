@@ -13,7 +13,7 @@ description: GitHub Pull Request を作成したいときに使う。コミッ�
 
 すべて省略可。省略時は本文の手順で自動取得・推測する。
 
-- `BASE_BRANCH`: PR のマージ先ブランチ。省略時は `main`。
+- `BASE_BRANCH`: PR のマージ先ブランチ。省略時は送信先リポジトリの default branch。
 - `READY`: `true` を渡すと Draft ではなく Ready の PR として作る。省略時は Draft。
 
 ## 手順
@@ -28,9 +28,10 @@ description: GitHub Pull Request を作成したいときに使う。コミッ�
 
 ### Step 2. リポジトリ識別情報の取得
 
-- `gh repo view --json nameWithOwner -q .nameWithOwner` で `OWNER/REPO` を取得する。
+- `gh repo view --json nameWithOwner,parent --jq '.parent.nameWithOwner // .nameWithOwner'` で PR の送信先リポジトリ (`TARGET_REPO`) を取得する。現在の checkout が fork の場合は parent を優先し、fork ではない場合は現在の repository を使う。
+- `gh repo view --json nameWithOwner -q .nameWithOwner` で現在の checkout に対応するリポジトリ (`HEAD_REPO`) も取得する。`HEAD_REPO` と `TARGET_REPO` が異なる場合、Step 9 の `--head` には `<HEAD_OWNER>:<branch>` を使う。
 - 取得失敗時は `gh auth status` を案内して停止する。
-- `BASE_BRANCH` が未指定なら `main` を採用する。
+- `BASE_BRANCH` が未指定なら `gh repo view <TARGET_REPO> --json defaultBranchRef --jq .defaultBranchRef.name` で送信先リポジトリの default branch を取得して採用する。取得できなければ停止し、`BASE_BRANCH` の明示を促す。
 
 ### Step 3. push 状態の確認
 
@@ -126,18 +127,22 @@ description: GitHub Pull Request を作成したいときに使う。コミッ�
 ### Step 9. Draft で PR を作成
 
 - 本文は `Write` ツールで一時ファイルに書き出し、`gh pr create` には `--body-file` で渡す。HEREDOC 渡しはエスケープ事故の温床なので使わない。
-- 一時ファイルの命名規約: `mktemp -t pr-body` で生成するか、明示的に `/tmp/pr-body-$(date +%s)-$$.md` 形式を採用する（並列実行時の衝突回避が目的）。
-- 実行コマンド（`<OWNER>` / `<REPO>` / `<BASE_BRANCH>` / `<branch>` / `<title>` / `<tmpfile>` は **必ず実値に置換** してから実行する。プレースホルダのまま走らせない）:
+- 一時ファイルは `mktemp -t pr-body.XXXXXX` で生成する。`XXXXXX` を含むテンプレートにすることで Linux (GNU coreutils) / macOS (BSD) の両方で動く形にする。
+- PR タイトルも shell quote 事故を避けるため、一時ファイルに 1 行で書き出して `--title "$(cat <titlefile>)"` で渡す。タイトル内にダブルクォート等が含まれていても、コマンド文字列へ直接埋め込まない。
+- title 一時ファイルも `mktemp -t pr-title.XXXXXX` で生成する。
+- 実行コマンド（`<TARGET_REPO>` / `<BASE_BRANCH>` / `<HEAD_REF>` / `<titlefile>` / `<bodyfile>` は **必ず実値に置換** してから実行する。プレースホルダのまま走らせない）:
 
   ```sh
   gh pr create \
-    --repo <OWNER>/<REPO> \
+    --repo <TARGET_REPO> \
     --base <BASE_BRANCH> \
-    --head <branch> \
-    --title "<title>" \
-    --body-file <tmpfile> \
+    --head <HEAD_REF> \
+    --title "$(cat <titlefile>)" \
+    --body-file <bodyfile> \
     --draft
   ```
+
+- `<HEAD_REF>` は、`HEAD_REPO == TARGET_REPO` なら `<branch>`、異なるなら `<HEAD_OWNER>:<branch>` とする。
 
 - `READY=true` が明示されている場合のみ `--draft` を外す。デフォルトは Draft で作成する。
 - レビュアー (`--reviewer`) / ラベル (`--label`) / マイルストーン / プロジェクトは **指定しない**。CODEOWNERS による自動アサインに任せる。
