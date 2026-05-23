@@ -50,15 +50,16 @@ plugins/
     README.md
     .claude-plugin/
       plugin.json
-    commands/
-      pr-review-style-reference.md
     skills/
       run-pr-review/
         SKILL.md
+      run-local-review/
+        SKILL.md
+      compose-review/
+        SKILL.md
+        style-reference.md             # compose-review skill が Read で読み込むスタイル参考ガイド
       post-pr-review/
         SKILL.md
       resolve-pr-threads/
-        SKILL.md
-      run-local-review/
         SKILL.md
 ```

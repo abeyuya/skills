@@ -1,11 +1,8 @@
----
-description: PR レビュー時のスタイル参考ガイド (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い) を読み込む。
-argument-hint: '[max-inline-comments=N]'
----
-
 # PR レビュー時のスタイル参考ガイド
 
 本ガイドは **書き方・体裁** のみを対象にします。レビューで何を見るか (技術観点) は本ファイルの対象外で、caller 側で別途指定する想定です。
+
+本ファイルは `compose-review` skill が `Read` で読み込むことを前提とした **skill 内部参照** です。slash command としては公開しません (旧 `/pr-review-style-reference` は廃止)。`compose-review` の caller (`run-pr-review` / `run-local-review` など) からは直接読まず、必ず `compose-review` 経由で参照してください。
 
 レビュー方針は caller プロジェクト (ユーザー) に委ねる前提で、以下のいずれの使い方でも構いません。
 
@@ -20,16 +17,16 @@ caller がラベル種別を独自定義した場合 (例: `[should]` / `[nit]` 
 - 不具合・データ整合性・脆弱性に直結する内容は最上位ラベル (caller 定義の `[must]` 等) に寄せる。
 - 好み寄り・軽微な改善は「出さない」(ノイズ抑制ルール優先)。質問用の下位ラベルに水増ししない。
 
-## 引数 (`$ARGUMENTS`)
+## `MAX_INLINE_COMMENTS` の扱い
 
-インライン指摘 (GitHub Review API の `comments[]`) の総数の扱いを切り替える。いずれのモードでも「ノイズ抑制ルール」(フォーマッタレベルは出さない / 同一事象は集約 / 好み寄りの指摘は控える 等) は厳守する。
+`compose-review` skill の入力 `MAX_INLINE_COMMENTS` (正の整数 or `unlimited`) でインライン指摘 (`comments[]`) の総数の扱いを切り替える。いずれのモードでも「ノイズ抑制ルール」(フォーマッタレベルは出さない / 同一事象は集約 / 好み寄りの指摘は控える 等) は厳守する。
 
-- 引数なし (デフォルト): `max-inline-comments=unlimited` と同じ扱い。件数制限を設けず、発見した指摘はできる限り全てインラインコメントとして出す。
-- `max-inline-comments=N` (N は正の整数): インライン指摘の総数を最大 N 件に絞る。
+- 未指定 (デフォルト): `unlimited` と同じ扱い。件数制限を設けず、発見した指摘はできる限り全てインラインコメントとして出す。
+- 正の整数 N: インライン指摘の総数を最大 N 件に絞る。
   - 優先順: `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]` の高い順に残す。
   - **N 超過で省略した指摘がある場合のみ**、総括 (`body`) に「省略した件数 + ラベル別内訳 (例: `[should]` 2 件 / `[nit]` 1 件)」を 1 文添える (代表ファイル名は任意)。
   - 「ノイズ抑制ルール」起因の非掲載はこの言及対象外。
-- `max-inline-comments=unlimited`: 引数なしと同じ (明示指定用)。
+- `unlimited`: 未指定と同じ (明示指定用)。
 
 ## 重要度ラベル
 
@@ -54,18 +51,18 @@ caller がラベル種別を独自定義した場合 (例: `[should]` / `[nit]` 
 - 行・範囲が特定できる指摘は GitHub Review API の `comments[]` (インライン) として投稿する。
 - 横断的・総括的な懸念や変更全体の評価は同 API の `body` (総括セクション) にまとめる。
 - 総括セクションは「総合判断」「主要懸念 top3」「良かった点 1〜2」を簡潔にまとめる。
-- インライン指摘の件数は冒頭「引数 (`$ARGUMENTS`)」セクションの指定に従う。いずれのモードでも「ノイズ抑制ルール」は厳守する。
+- インライン指摘の件数は冒頭「`MAX_INLINE_COMMENTS` の扱い」セクションの指定に従う。いずれのモードでも「ノイズ抑制ルール」は厳守する。
 
 ## 既存レビュー/コメントとの重複回避
 
-- 既存 reviews / comments を読み、自分の過去コメントと同主旨の指摘は再掲しない。
+- 既存 reviews / comments を読み、自分の過去コメントと同主旨の指摘は再掲しない (重複判定材料は `compose-review` skill の `EXISTING_THREADS_CONTEXT` 入力経由で caller から供給される)。
 - 総括セクション (Review の `body`) で「前回指摘事項に対応済み / 未対応」のように1文だけ触れる。
 
 ## CI の扱い
 
-- `gh pr view --json statusCheckRollup` で取得できるのは各ジョブの状態 (`SUCCESS` / `FAILURE` / `PENDING` 等) と URL のみ。失敗内容を読みたい場合は `detailsUrl` から run ID を取得し、`gh run view <run-id> --log` または `gh run view --job=<job-id> --log` で失敗ログ本体を取得すること。
-- `FAILURE` のジョブがあれば上記手順でログ詳細まで読み、関連箇所への `[must]` の根拠として使う。
+- CI 失敗ログの **取得** は `compose-review` skill では行わない (caller 側の責務)。caller が `gh run view --log` 等で取得したサマリを `CI_FAILURE_CONTEXT` 入力で渡してくる前提で扱う。
+- `CI_FAILURE_CONTEXT` が渡された場合、関連箇所への `[must]` の根拠として使う。
   - 失敗ログから関連ファイル / 行が特定できる場合は、その箇所をインラインの係留点 (anchor) にする。
-  - 失敗ログから関連箇所が特定できない / 取得自体に失敗した場合は、インラインを無理に貼らず **総括 (`body`) の「主要懸念」に CI failure として 1 項目追加** する (anchor 不明のまま YAML 先頭に貼ると無関係な diff に紐づくため)。
+  - 失敗ログから関連箇所が特定できない場合は、インラインを無理に貼らず **総括 (`body`) の「主要懸念」に CI failure として 1 項目追加** する (anchor 不明のまま YAML 先頭に貼ると無関係な diff に紐づくため)。
   - 失敗の中身が **フォーマッタ / Linter レベル** (例: `prefer-const` のみ) のときは、ノイズ抑制ルールに従いインライン指摘は出さず、総括の CI セクションでの 1 文言及に留める。
 - ワークフローや CI 設定 (`.github/workflows/`) 自体に **本 PR の差分が含まれている** 場合のみ、追加観点として GitHub Actions の権限スコープ・secrets 取り扱い・再現性も確認する。job が失敗しただけ (定義変更なし) ならこの追加観点は対象外。
