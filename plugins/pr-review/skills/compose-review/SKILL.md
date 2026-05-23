@@ -40,7 +40,10 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 - `OWNER` / `REPO` / `PR_NUMBER` をそのまま採用する。
 - `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid` で head SHA を取得し、Step 6 の出力 JSON `commit_id` として控える。
-- 取得失敗時 (権限不足 / PR 不在は致命) はエラーとして停止する。ただし **GitHub API の transient 失敗 (5xx / timeout)** の場合は最大 2 回まで再試行し、それでも取れなければ `commit_id` を **省略** して以降の Step に進む (`post-pr-review` は `COMMIT_ID` を任意としているため、SHA 未確定でも Review 自体は投稿できる)。caller への報告で「commit_id 未確定で投稿した」旨を 1 文添える。
+- 取得失敗時は HTTP ステータス / エラー種別で扱いを分ける:
+  - **致命 (即停止)**: 401 / 403 (権限不足) / 404 (PR or リポジトリ不在) / 422 など、再試行しても変わらない種類。caller に PR_NUMBER / 権限の見直しを促す。
+  - **transient (再試行 → 省略)**: 5xx / network timeout / DNS 失敗 / ECONNRESET / 429 (rate limit) / 403 with `Retry-After` ヘッダ (secondary rate limit) など、時間を置けば回復が期待できる種類。**最大 2 回** まで再試行し (`gh` は exit code 経由でしか詳細が見えないので、`gh api -i ...` 等で status を確認するか、stderr を読む)、各再試行の間に **指数 backoff** (`sleep 2` → `sleep 4`) を入れる。2 回目も失敗したら `commit_id` を **省略** して以降の Step に進む (`post-pr-review` は `COMMIT_ID` を任意としているため、SHA 未確定でも Review 自体は投稿できる)。caller への報告で「commit_id 未確定で投稿した」旨を 1 文添える。
+  - 判別が困難な場合 (生エラー文字列だけ取れる等) は **transient 扱い** に倒す (recall 重視。誤って即停止するより SHA 省略で進めた方が運用上の損失が小さい)。
 - TOCTOU 注意: 本 SHA 取得から Step 4 の `gh pr diff` 実行までの間に PR が force-push されると `commit_id` と diff の line 番号が食い違う。リスクが高いリポジトリ (頻繁な force-push) では、Step 4 の `gh pr diff` 直後に `gh pr view --json headRefOid` を再取得して値が変わっていれば「再実行を推奨」と caller に報告して停止することも検討する (デフォルトは再取得しない)。
 
 #### ローカル diff モード
@@ -97,7 +100,7 @@ Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト�
 
 - `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得する。
 - cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう `--repo <OWNER>/<REPO>` を必ず明示する。
-- **差分が空の場合** (例: 全変更が revert された / generated file の filter 後に何も残らない等) は、ローカル diff モードの「差分なし」分岐と同様に **Step 5 を skip して Step 6 へ直行** する。出力 JSON は `body` を「対象差分なし (評価対象なし)」、`comments` を `[]` にする。`mode` は `"pr"` のまま、`commit_id` は Step 1 で取得済みのものをそのまま含める。
+- **差分が空の場合** (例: 全変更が revert された / generated file の filter 後に何も残らない等) は、ローカル diff モードの「差分なし」分岐と同様に **Step 5 を skip して Step 6 へ直行** する。出力 JSON は `body` を「対象差分なし (評価対象なし)」、`comments` を `[]` にする。`mode` は `"pr"` のまま。`commit_id` は Step 1 で取得済みならそのまま含め、Step 1 で transient 失敗のため省略した場合は本分岐でも引き続き省略する (`gh api .../reviews` に空文字を渡すと 422 になるため未定義値を入れない)。
 
 #### ローカル diff モード
 
@@ -176,7 +179,7 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 - 単一行コメントは `path` / `line` / `side` を指定する。
 - 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。
 - `commit_id` は **PR モードのみ** 含める。ローカルモードでは省略する。PR モードで Step 1 の head SHA 取得が transient 失敗で諦めた場合も省略する (詳細は Step 1 PR モード参照)。
-- `base_branch` / `diff_mode` は **ローカル diff モードのみ** 含める。`base_branch` は Step 1 で解決したベースブランチ名 (`main` / `master` / caller 指定値)、`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか (`"none"` は差分なしで Step 2〜5 を skip した場合)。orchestrator (`run-local-review`) はこの 2 フィールドを caller への報告に使う。
+- `base_branch` / `diff_mode` は **ローカル diff モードでは必須** (省略不可)、PR モードでは含めない。`base_branch` は Step 1 で解決したベースブランチ名 (`main` / `master` / caller 指定値)、`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか (`"none"` は差分なしで Step 2〜5 を skip した場合)。orchestrator (`run-local-review`) はこの 2 フィールドが必ず存在する前提で caller への報告に使う。
 - 指摘が無い場合: `body` は「特に指摘なし」相当の文言、`comments` は `[]`。
 - 差分が空で Step 2〜5 を skip した場合: `body` は「対象差分なし (評価対象なし)」相当、`comments` は `[]`。ローカルモードでは `diff_mode: "none"`、PR モードでは PR 自体には差分が存在しないため通常運用では発生しにくいが同様に空 `comments[]` で返す。
 

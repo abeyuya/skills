@@ -24,10 +24,12 @@ caller プロジェクト固有のレビュー方針 (技術観点 / スタイ�
 
 ### Step 1. PR 識別情報を確定する
 
-caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを使う。揃っていない値だけ以下で補う:
+caller から `OWNER` / `REPO` / `PR_NUMBER` が **非空の値で** 渡されていればそれを使う。空文字 (`""`) は GitHub Actions 等で env 変数が未設定だと展開されうるので **未指定と同等に扱い、補完対象とする**。揃っていない値だけ以下で補う:
 
 - `OWNER` / `REPO`: `gh repo view --json nameWithOwner -q .nameWithOwner` で `OWNER/REPO` 形式を取得し分解する。
 - `PR_NUMBER`: `gh pr view --json number -q .number` で現在のブランチに紐づく PR 番号を取得する。紐づく PR が無い場合はエラーとして停止し、caller に明示的に PR 番号を渡すよう促す。
+
+補完後も 3 つのいずれかが確定できなかった場合は **エラーとして停止する** (`compose-review` を呼ばない)。`compose-review` 側のモード判定 (3 つ揃わなければ局所 diff モードへ退化) は本 skill の用途と意図が合わないため、本 skill では混在 / 部分欠落を弾く責務を持つ。
 
 ### Step 2. CI / 既存スレッドの context を収集する
 
@@ -53,7 +55,7 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
 - `CI_FAILURE_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
 - `EXISTING_THREADS_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
 
-`compose-review` は fenced JSON ブロックで以下のフィールドを返す: `mode` (= `"pr"`) / `body` / `event` / `comments[]` / `commit_id` (任意)。これを Step 4 でそのまま `post-pr-review` に転送する。
+`compose-review` は fenced JSON ブロックで以下のフィールドを返す: `mode` (= `"pr"`) / `body` / `event` / `comments[]` / `commit_id` (任意)。Step 4 では下記対応表のフィールドだけを `post-pr-review` に転送する (`mode` は対応表に無いため転送しない)。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 
