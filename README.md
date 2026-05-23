@@ -7,7 +7,7 @@ abeyuya 個人が利用する Claude Code 向け skill / plugin 群を集約し�
 
 ### [`pr-review`](plugins/pr-review/README.md)
 
-PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
+PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行い結果を JSON でチャットに返す skill、およびレビュー本文生成本体を担う skill (`compose-review`、レビューコメントのスタイル参考ガイドを内包) を提供する。
 
 詳細は [plugins/pr-review/README.md](plugins/pr-review/README.md) を参照。
 
@@ -33,7 +33,7 @@ apm install pr-review@abeyuya-skills
 apm install abeyuya/skills/plugins/pr-review
 ```
 
-`apm install` 後、各 plugin の skill / command は consumer 側の `.claude/skills/` および `.claude/commands/` に展開される (ローカル Claude Code 経由で `/plugin install` した場合と同じファイルがインストールされる)。
+`apm install` 後、各 plugin の skill は consumer 側の `.claude/skills/` に展開される (ローカル Claude Code 経由で `/plugin install` した場合と同じファイルがインストールされる)。`pr-review` plugin はスラッシュコマンドを提供しないため `.claude/commands/` には展開されない。
 
 plugin 個別の利用方法 (GitHub Actions / ローカル Claude Code / 開発時) は各 plugin の README を参照:
 

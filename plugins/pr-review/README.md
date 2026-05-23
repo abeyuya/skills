@@ -32,7 +32,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 ## 重要度ラベル
 
-インライン指摘は以下のいずれかのラベルで開始する (詳細は `plugins/pr-review/skills/compose-review/style-reference.md`):
+インライン指摘は以下のいずれかのラベルで開始する (詳細は `compose-review` skill 配下の `style-reference.md`、ソース上の絶対パスは [`skills/compose-review/style-reference.md`](skills/compose-review/style-reference.md)):
 
 - `[must]` 不具合・脆弱性。マージ前対応必須。
 - `[should]` 設計・保守性で強く推奨される改善。放置すると次の修正で `[must]` 化する蓋然性が高いもの。

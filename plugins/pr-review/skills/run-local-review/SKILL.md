@@ -21,10 +21,9 @@ caller プロジェクト固有のレビュー方針 (技術観点 / スタイ�
 
 ### Step 1. 報告用にブランチ情報を取得する
 
-caller への最終報告 (Step 3) で使う情報のみ取得する。差分取得・ベース解決は `compose-review` に任せる。
+caller への最終報告 (Step 3) で使う「現在ブランチ名」だけ取得する。`BASE_BRANCH` と差分モードの確定は `compose-review` に委譲し、その戻り値経由で受け取る。
 
-- 現在ブランチ名: `git rev-parse --abbrev-ref HEAD`。`HEAD` (detached) の場合はエラーとして停止する。
-- ベースブランチ: caller から `BASE_BRANCH` が渡されていればそのまま控える。未指定の場合は本 step では特定しない (`compose-review` の Step 1 内部解決に委ねる) — 報告時は `compose-review` 戻り値経由で判別する。
+- 現在ブランチ名: `git rev-parse --abbrev-ref HEAD`。`HEAD` (detached) の場合はエラーとして停止する (このチェックは `compose-review` 側にも入っているが、orchestrator 段階で早期に弾くことで Skill 呼び出しコストを節約する)。
 
 ### Step 2. `compose-review` skill を呼び出す
 
@@ -33,17 +32,25 @@ Skill ツールで `compose-review` をローカル diff モードで呼ぶ。�
 - `BASE_BRANCH` (caller から渡されていれば)
 - `MAX_INLINE_COMMENTS` (caller から渡されていれば)
 
-`OWNER` / `REPO` / `PR_NUMBER` は **渡さない** (渡すと PR モードに切り替わるため)。
+`OWNER` / `REPO` / `PR_NUMBER` は **渡さない** (渡すと PR モードに切り替わるため。空文字を渡すのも不可 — `compose-review` 側は空文字を未指定と同等に扱うがミスの温床なので **そもそも渡さない**)。
 
-`compose-review` は fenced JSON ブロックで `mode: "local"` / `body` / `event` / `comments[]` を返す。`commit_id` はローカルモードでは含まれない。
+`compose-review` は fenced JSON ブロックで以下のフィールドを返す:
+
+- `mode`: `"local"`
+- `base_branch`: 解決済みのベースブランチ名 (`main` / `master` / caller 指定値)
+- `diff_mode`: `"commit"` / `"staged"` / `"worktree"` / `"none"`
+- `body` / `event` / `comments[]`
+
+`commit_id` はローカルモードでは含まれない。
 
 ### Step 3. caller への報告
 
 `compose-review` の戻り値をそのまま chat 表示するのに加え、以下を簡潔に caller へ返す:
 
-- レビュー対象のブランチ (Step 1 で取得)
+- レビュー対象のブランチ (Step 1 で取得した現在ブランチ名) と ベース (`compose-review` 戻り値の `base_branch`)
+- 差分モード (`compose-review` 戻り値の `diff_mode`)
 - インライン指摘件数 (`compose-review` 戻り値の `comments[]` 長)
-- 差分なしだった場合はその旨 (`compose-review` が `body` に「対象差分なし」と書いて返す)
+- `diff_mode == "none"` だった場合はその旨を明示する
 
 ## 守ること
 

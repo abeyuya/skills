@@ -31,18 +31,18 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 ### Step 2. CI / 既存スレッドの context を収集する
 
-`compose-review` に渡す追加コンテキストを集める。本 step では **diff は取らない** (取得は `compose-review` 内で行う)。`gh` コマンドはいずれも `--repo <OWNER>/<REPO>` を必ず明示する (cwd の git remote と PR の所属リポジトリが異なる場合に意図しない PR を参照しないため)。
+`compose-review` に渡す追加コンテキストを集める。本 step では **diff は取らない** (取得は `compose-review` 内で行う)。`gh pr view` / `gh pr diff` / `gh run view` 等の **REST 系 `gh` コマンドには `--repo <OWNER>/<REPO>` を必ず明示する** (cwd の git remote と PR の所属リポジトリが異なる場合に意図しない PR を参照しないため)。`gh api graphql` は `--repo` フラグを受け付けないので **対象を `-F owner=<OWNER> -F name=<REPO>` で渡す** (本 step 内の GraphQL 呼び出しは例外扱い)。
 
 - **CI failure 情報**:
   - `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json statusCheckRollup` で CI 状態を取得する。
   - `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log --repo <OWNER>/<REPO>` 等で失敗ログ本体まで読み、関連箇所と失敗理由のサマリを自然言語で組み立てる。これを `compose-review` の `CI_FAILURE_CONTEXT` 入力として転送する。
   - 失敗ジョブが無ければ `CI_FAILURE_CONTEXT` は渡さない (空文字も渡さない)。
 - **既存 reviewThreads サマリ (重複回避用)**:
-  - GraphQL で `reviewThreads` を取得する。`-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は 1 ページ上限なので `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。
-  - 各スレッドの `comments.nodes[].body` まで取得し、未 resolve のものを中心に主旨を簡潔にまとめる。位置 `path:line` も併記する。
+  - GraphQL で `reviewThreads` を取得する。`-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`PR_NUMBER` は GraphQL の `Int!` 型なので **必ず `-F` (型推論あり) を使い、`-f` (文字列固定) は使わない**。`reviewThreads(first: 100)` は 1 ページ上限なので `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。
+  - 各スレッドの `comments.nodes[].body` まで取得し、未 resolve のものを中心に主旨を簡潔にまとめる。**`path:line` は要約の段落本文にではなく、各スレッドごとの 1 項目ずつのリスト形式で明示** する (例: `- src/foo.ts:42 — [should] ここは A の代わりに B を使うべき`)。compose-review 側で位置情報に基づく dedupe を効かせるために構造を保つ。
   - まとめた内容を `compose-review` の `EXISTING_THREADS_CONTEXT` 入力として転送する。既存スレッドが無ければ渡さない。
 
-`gh pr view --json headRefOid` 等で head SHA を取る必要は **無い** (Step 3 で `compose-review` 側が `commit_id` を埋めて返してくる)。
+`gh pr view --json headRefOid` 等で head SHA を取る必要は **無い** (Step 3 で `compose-review` 側が `commit_id` を埋めて返してくる)。`compose-review` が transient 失敗で `commit_id` を省略して返してきても、`post-pr-review` の `COMMIT_ID` は任意なので Step 4 はそのまま続行できる (本 skill 側で head SHA を再取得する fallback は不要)。
 
 ### Step 3. `compose-review` skill でレビュー本文を生成する
 
@@ -53,13 +53,25 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
 - `CI_FAILURE_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
 - `EXISTING_THREADS_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
 
-`compose-review` は fenced JSON ブロックで `body` / `event` / `comments[]` / `commit_id` を返す。これを Step 4 でそのまま `post-pr-review` に転送する。
+`compose-review` は fenced JSON ブロックで以下のフィールドを返す: `mode` (= `"pr"`) / `body` / `event` / `comments[]` / `commit_id` (任意)。これを Step 4 でそのまま `post-pr-review` に転送する。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 
-Step 3 で得た JSON (`body` / `event` / `comments[]` / `commit_id`) と Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` を `post-pr-review` skill に渡し、**1回の API コールで1つの Review として** 投稿する。`gh pr comment` や `gh pr review` での個別投稿はしない。
+Step 3 で得た JSON と Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` を `post-pr-review` skill に渡し、**1回の API コールで1つの Review として** 投稿する。`gh pr comment` や `gh pr review` での個別投稿はしない。
 
-起動方法は **Skill ツールで `post-pr-review` を呼ぶ**。`compose-review` が返した JSON の各フィールドを `post-pr-review/SKILL.md` のスキーマに従って起動時の引数として渡す (`commit_id` は `COMMIT_ID` として転送)。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
+起動方法は **Skill ツールで `post-pr-review` を呼ぶ**。フィールド対応関係は次の通り (`post-pr-review` 側はこの入力名で受け取り、`/tmp/review.json` を組み立てる):
+
+| compose-review 戻り値 | post-pr-review 入力名 | 備考 |
+| --- | --- | --- |
+| `body` | `body` | 文字列。AI 自動投稿マーカーは `post-pr-review` が prepend するので **そのまま渡す**。 |
+| `event` | `event` | 文字列 `"COMMENT"` 固定。 |
+| `comments` | `comments` | 配列。要素のキー (`path` / `line` / `side` / `start_line` / `start_side` / `body`) はそのまま。 |
+| `commit_id` | `COMMIT_ID` | 文字列。`compose-review` が省略してきた場合は本入力も省略する。 |
+| (本 skill が確定済み) | `OWNER` / `REPO` / `PR_NUMBER` | Step 1 の値。 |
+
+`commit_id` だけ uppercase に rename する点に注意 (`body` / `event` / `comments` は **lowercase のまま**)。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
+
+`compose-review` が「対象差分なし」相当の JSON (`comments: []` / `body` に「対象差分なし」相当の文言) を返してきた場合も、上記対応関係で `post-pr-review` を呼ぶ (Review 自体は投稿する)。
 
 ### Step 5. `resolve-pr-threads` skill で過去スレッドを整理する
 
