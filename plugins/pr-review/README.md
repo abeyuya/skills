@@ -30,6 +30,19 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 - レビュー方針として意図されていないアクション指示が多い場合は、リポジトリ root に **`REVIEW.md` を新規作成** してレビュー方針だけを書き、`AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` は読まれないようにする (上記優先順で `REVIEW.md` が最優先)。
 - `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` 内でレビュー専用セクションを設けて他から分離する。
 
+## `post-pr-review` を他から呼ぶ場合
+
+`skills/post-pr-review` は **「レビュー本文を受け取って GitHub Review として 1 回の API コールで投稿する」専用の投稿 skill** として、`run-pr-review` 経由だけでなく外部 skill / 外部ワークフロー / 人手起動からも直接呼べる設計になっている。「レビューを書く」フェーズと「レビューを投稿する」フェーズを分離したい場合、書く側 (別 skill / 別エージェント / 人) が下記 Payload を生成して post-pr-review に流し込めばよい。
+
+Payload (caller が渡す JSON 相当) の概要:
+
+- `body` (string, 必須): 総括コメント本文。AI 自動投稿マーカーは skill 側で自動 prepend するため caller は付けない。
+- `event` (literal `"COMMENT"`, 必須): `APPROVE` / `REQUEST_CHANGES` は禁止。
+- `comments` (array, 必須・空配列可): インライン指摘の配列。各要素は単一行 (`path` / `line` / `side` / `body`) または複数行範囲 (上に加えて `start_line` / `start_side`)。
+- `commit_id` (string, 任意): head commit の SHA。force-push / rebase での行ズレ防止に推奨。
+
+詳細なスキーマ・呼び出し経路 (Skill ツール経由 / prompt 経由) は [`skills/post-pr-review/SKILL.md`](skills/post-pr-review/SKILL.md#public-payload-interface) を参照。インライン指摘本文の規約 (`[must]` / `[should]` 等の重要度ラベル) は本 skill では規定せず caller のレビュー方針に従う想定で、当 plugin 既定の体裁は `/pr-review-style-reference` を参考にできる。
+
 ## 重要度ラベル
 
 インライン指摘は以下のいずれかのラベルで開始する (詳細は `/pr-review-style-reference`):
