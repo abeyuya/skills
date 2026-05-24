@@ -13,6 +13,9 @@ version: 0.1.0
 description: abeyuya 個人が利用する Claude Code 向け skill / plugin 群
 author: abeyuya
 includes: auto
+targets:
+  - claude
 dependencies:
-  apm: []
+  apm:
+    - mizchi/skills/empirical-prompt-tuning
   mcp: []
