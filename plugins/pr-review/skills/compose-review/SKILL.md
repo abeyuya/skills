@@ -112,7 +112,7 @@ Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト�
 - cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう `--repo <OWNER>/<REPO>` を必ず明示する。
 - **大きな PR で diff が一度に取りきれない場合** (環境によっては `Output too large` 等で persisted-output 経由になる) は、ローカル diff モードと同様に **ファイル単位で追い読み** する:
   1. `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO> --name-only` でファイル一覧を取得する。
-  2. ファイル単位で `gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch` フィールドを使う) または `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO> -- <path>` (環境によって受け付けるか確認) で必要な範囲だけ追い読みする。
+  2. ファイル単位で `gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch` フィールドを使う) で必要な範囲だけ追い読みする。`gh pr diff` は現時点 (`gh` 2.x) では path filter 引数を受け付けない (`accepts at most 1 arg(s)` で失敗する) ため、`gh pr diff -- <path>` 形式は使わない。
   3. レビュー観点上重要そうなファイル (テスト・設定・SQL・migration・workflow 等) を優先的に読み、明らかにレビュー対象外 (lockfile / generated file / `*.snap`) は skip してよい。skip したファイル群があれば総括 (`body`) に「`<件数>` 件を分量過多のため未レビュー (代表: …)」と 1 文添えて caller に明示する。
 - **差分が空の場合** (例: 全変更が revert された / generated file の filter 後に何も残らない等) は、ローカル diff モードの「差分なし」分岐と同様に **Step 5 を skip して Step 6 へ直行** する。出力 JSON は `body` を「対象差分なし (評価対象なし)」、`comments` を `[]` にする。`mode` は `"pr"` のまま。`commit_id` は Step 1 で取得済みならそのまま含め、Step 1 で transient 失敗のため省略した場合は本分岐でも引き続き省略する (`gh api .../reviews` に空文字を渡すと 422 になるため未定義値を入れない)。
 

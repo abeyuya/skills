@@ -44,7 +44,10 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が **非空の値で** 渡され�
   - 失敗ジョブが無ければ `CI_FAILURE_CONTEXT` は渡さない (空文字も渡さない)。
 - **既存 reviewThreads サマリ (重複回避用)**:
   - GraphQL で `reviewThreads` を取得する。`-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`PR_NUMBER` は GraphQL の `Int!` 型なので **必ず `-F` (型推論あり) を使い、`-f` (文字列固定) は使わない**。`reviewThreads(first: 100)` は 1 ページ上限なので `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。
-  - クエリで取得するフィールドは **重複排除に必要な最小セット** に絞る (出力サイズ削減): スレッドレベルで `id` / `isResolved`、`comments(first: 50)` の各要素で `path` / `line` / `originalLine` / `body` / `author.login`。`originalLine` はコメント先のコミットが進んで `line` が `null` になっているスレッドで位置情報を保つために併記する。**`side` は `PullRequestReviewComment` 型に存在しないため絶対にクエリに含めない** (`undefinedField` で 422 になる; dedupe は `path` / `line` / `body` の組み合わせで充分)。
+  - クエリで取得するフィールドは **必要最小限のセット** に絞る (出力サイズ削減):
+    - dedupe 本体用 (path:line + body 突合): `comments(first: 50)` 要素の `path` / `line` / `originalLine` / `body`。`originalLine` はコメント先のコミットが進んで `line` が `null` になっているスレッドで位置情報を保つために併記。
+    - filter / 拡張用: スレッドレベルの `id` (将来 `resolve-pr-threads` 側と参照を揃える用途) / `isResolved` (本 step でクライアント側 filter する) / `comments.nodes[].author.login` (将来 `THREAD_RESOLVE_SCOPE=own` 時の自己判定で再利用する想定)。
+    - **`side` は `PullRequestReviewComment` 型に存在しないため絶対にクエリに含めない** (`undefinedField` で 422 になる; dedupe は `path` / `line` / `body` の組み合わせで充分)。
   - 取得対象は **`isResolved: false` のスレッドに絞る** (resolve 済みは既に修正反映済みなので dedupe 対象外)。GitHub GraphQL の `reviewThreads` 引数で直接 filter する手段は無いため、`first: 100` で全件取得した上で **クライアント側で `isResolved == false` のものだけ残す**。
   - 各スレッドの主旨を簡潔にまとめる。**`path:line` は要約の段落本文にではなく、各スレッドごとの 1 項目ずつのリスト形式で明示** する (例: `- src/foo.ts:42 — [should] ここは A の代わりに B を使うべき`)。compose-review 側で位置情報に基づく dedupe を効かせるために構造を保つ。
   - まとめた内容を `compose-review` の `EXISTING_THREADS_CONTEXT` 入力として転送する。未 resolve スレッドが 0 件なら渡さない (resolve 済みのみのケースを含む)。
