@@ -2,6 +2,12 @@
 
 PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行う skill、およびレビュー本文生成本体を切り出した skill (compose-review) を提供する。
 
+## Breaking changes (v0.2.0)
+
+- 新 skill `compose-review` の追加と、`run-pr-review` / `run-local-review` の thin orchestrator 化。レビュー本文生成 / スタイル参考ガイド読み込み / プロジェクト指示ファイル読み込みが `compose-review` に集約された。
+- `run-local-review` の **`OUTPUT_PATH` 引数と markdown ファイル出力を廃止**。代替: `compose-review` の JSON 戻り値を caller 側で markdown 化。`apm` / `/plugin install` でバージョン固定をしていない consumer は、本リリース後「markdown ファイルが出なくなった」状態になる点に注意。
+- スラッシュコマンド `/pr-review-style-reference` を廃止し、内容を `compose-review/style-reference.md` に移設。直接 `/pr-review-style-reference` を呼んでいた caller は呼び出しを削除すること (`compose-review` が内部で `Read` する)。
+
 ## 提供 skill
 
 - `skills/run-pr-review`: PR レビュー一式 (PR 状態取得 → 本文生成 → 投稿 → 過去スレッド resolve) を1コマンドで実行するオーケストレーション skill。caller はこれを呼ぶだけで済む。

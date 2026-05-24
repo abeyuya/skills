@@ -29,6 +29,7 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 
 - `EXISTING_THREADS_CONTEXT`: caller が既に GraphQL `reviewThreads` を取得済みの場合、既存スレッドの主旨サマリを自然言語で注入するためのオプション。Step 5 の重複回避判定に使う。
 - `CI_FAILURE_CONTEXT`: caller が既に `gh run view --log` 等で取得済みの CI 失敗ログのサマリを自然言語で注入するためのオプション。Step 5 で `[must]` の根拠付けに使う (詳細扱いは `style-reference.md` の「CI の扱い」セクション参照)。
+- `RECHECK_HEAD_SHA`: 真偽値 (`true` / `false`)。デフォルト `false`。`true` を渡すと Step 4 の `gh pr diff` 直後に head SHA を再取得し、Step 1 時点と値が変わっていれば「force-push 検知のため再実行を推奨」として停止する。force-push が頻繁な PR をドッグフーディング系 caller から扱う場合に使う (詳細は Step 1 PR モードの TOCTOU 注意)。
 
 caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **プロジェクト指示ファイル** (Step 3 で定義) に置く運用に固定する。個別パス指定の引数は持たない。
 
@@ -44,13 +45,13 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
   - **致命 (即停止)**: 401 / 403 (権限不足) / 404 (PR or リポジトリ不在) / 422 など、再試行しても変わらない種類。caller に PR_NUMBER / 権限の見直しを促す。
   - **transient (再試行 → 省略)**: 5xx / network timeout / DNS 失敗 / ECONNRESET / 429 (rate limit) / 403 with `Retry-After` ヘッダ (secondary rate limit) など、時間を置けば回復が期待できる種類。**最大 2 回** まで再試行し (`gh` は exit code 経由でしか詳細が見えないので、`gh api -i ...` 等で status を確認するか、stderr を読む)、各再試行の間に **指数 backoff** (`sleep 2` → `sleep 4`) を入れる。2 回目も失敗したら `commit_id` を **省略** して以降の Step に進む (`post-pr-review` は `COMMIT_ID` を任意としているため、SHA 未確定でも Review 自体は投稿できる)。caller への報告で「commit_id 未確定で投稿した」旨を 1 文添える。
   - 判別が困難な場合 (生エラー文字列だけ取れる等) は **transient 扱い** に倒す (recall 重視。誤って即停止するより SHA 省略で進めた方が運用上の損失が小さい)。
-- TOCTOU 注意: 本 SHA 取得から Step 4 の `gh pr diff` 実行までの間に PR が force-push されると `commit_id` と diff の line 番号が食い違う。リスクが高いリポジトリ (頻繁な force-push) では、Step 4 の `gh pr diff` 直後に `gh pr view --json headRefOid` を再取得して値が変わっていれば「再実行を推奨」と caller に報告して停止することも検討する (デフォルトは再取得しない)。
+- TOCTOU 注意: 本 SHA 取得から Step 4 の `gh pr diff` 実行までの間に PR が force-push されると `commit_id` と diff の line 番号が食い違う。デフォルトでは再取得しないが、caller が `RECHECK_HEAD_SHA=true` を明示的に渡してきた場合は Step 4 の `gh pr diff` 直後に `gh pr view --json headRefOid` を再取得して値が変わっていれば「再実行を推奨」と caller に報告して停止する (`compose-review` の入力としては optional な真偽値。frequent force-push PR のドッグフーディング系 caller が利用する想定)。
 
 #### ローカル diff モード
 
 - 現在ブランチ名: `git rev-parse --abbrev-ref HEAD` で取得する。`HEAD` (detached) の場合はエラーとして停止する。
 - ベースブランチ: caller から `BASE_BRANCH` が渡されていればそれを使う。未指定なら以下の順で決定する:
-  1. `git symbolic-ref refs/remotes/origin/HEAD` で既定ブランチ名を取得 (例: `refs/remotes/origin/main` → `main`) し、`git rev-parse --verify <name>` が通れば **ローカルの同名ブランチ** を使う (リモート追跡 `origin/<name>` ではない)
+  1. `git symbolic-ref refs/remotes/origin/HEAD` で既定ブランチの **フルパス** (例: `refs/remotes/origin/main`) を取得し、**末尾セグメントだけ取り出して**純粋なブランチ名にする (例: `git symbolic-ref --short refs/remotes/origin/HEAD` を使えば `origin/main` まで簡約されるので、さらに `sed 's@^origin/@@'` で `main` になる。`--short` が無い `git` の場合は `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'`)。フルパスのまま `git rev-parse --verify <name>` に渡してはならない (検証は通っても以降の `git diff <base>...HEAD` 等で意図しないリモート追跡参照を比較対象にしてしまうため)。`git rev-parse --verify <branch_name>` が通れば **ローカルの同名ブランチ** を使う (リモート追跡 `origin/<branch_name>` ではない)
   2. `git rev-parse --verify main` が通れば `main`
   3. `git rev-parse --verify master` が通れば `master`
   4. いずれも取れなければエラーとして停止し、caller に `BASE_BRANCH` を明示するよう促す
@@ -86,7 +87,7 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 #### 取得方法
 
 - **ローカル diff モード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。
-- **PR モード**: 上記 4 候補それぞれについて、まず cwd 直下を `Read` で試し、見つからなければ `gh api repos/<OWNER>/<REPO>/contents/<path>` でリモートから取得する。**4 候補全ての remote fetch まで fall-through** して初めて「プロジェクト指示ファイルなし」と判定する (途中で 404 になっただけで残り候補をスキップしてはならない)。API レスポンスの `content` フィールドは Base64 なので `--jq .content` で抽出する。デコードは `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` か、`python3` が無い環境では `base64 -d` (GNU coreutils) を使う。
+- **PR モード**: 上記 4 候補それぞれについて、まず cwd 直下を `Read` で試し、見つからなければリモートから取得する。**4 候補全ての remote fetch まで fall-through** して初めて「プロジェクト指示ファイルなし」と判定する (途中で 404 になっただけで残り候補をスキップしてはならない)。リモート取得時の API パスは **PR head ref を `?ref=` で必ず指定する**: `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>"` (`<HEAD_SHA>` は Step 1 で取得済みの `headRefOid`)。`?ref=` を省略するとデフォルトブランチから取られるため、PR 内で `REVIEW.md` 等を新設・編集している場合に新方針が反映されない (または逆に古い方針でレビューされる) 不整合が出る。Step 1 で `commit_id` を transient 失敗で省略した場合は `<HEAD_SHA>` の代わりに PR の headRefName (`gh pr view --json headRefName` で再取得) を使う。API レスポンスの `content` フィールドは Base64 なので `--jq .content` で抽出する。デコードは `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` か、`python3` が無い環境では `base64 -d` (GNU coreutils) を使う。
 
 Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト側を優先し、矛盾しない箇所は両者を併用する。プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
 
@@ -100,6 +101,10 @@ Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト�
 
 - `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得する。
 - cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう `--repo <OWNER>/<REPO>` を必ず明示する。
+- **大きな PR で diff が一度に取りきれない場合** (環境によっては `Output too large` 等で persisted-output 経由になる) は、ローカル diff モードと同様に **ファイル単位で追い読み** する:
+  1. `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO> --name-only` でファイル一覧を取得する。
+  2. ファイル単位で `gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch` フィールドを使う) または `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO> -- <path>` (環境によって受け付けるか確認) で必要な範囲だけ追い読みする。
+  3. レビュー観点上重要そうなファイル (テスト・設定・SQL・migration・workflow 等) を優先的に読み、明らかにレビュー対象外 (lockfile / generated file / `*.snap`) は skip してよい。skip したファイル群があれば総括 (`body`) に「`<件数>` 件を分量過多のため未レビュー (代表: …)」と 1 文添えて caller に明示する。
 - **差分が空の場合** (例: 全変更が revert された / generated file の filter 後に何も残らない等) は、ローカル diff モードの「差分なし」分岐と同様に **Step 5 を skip して Step 6 へ直行** する。出力 JSON は `body` を「対象差分なし (評価対象なし)」、`comments` を `[]` にする。`mode` は `"pr"` のまま。`commit_id` は Step 1 で取得済みならそのまま含め、Step 1 で transient 失敗のため省略した場合は本分岐でも引き続き省略する (`gh api .../reviews` に空文字を渡すと 422 になるため未定義値を入れない)。
 
 #### ローカル diff モード
@@ -134,6 +139,8 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 ### Step 6. チャットに JSON を返す
 
 `post-pr-review` のスキーマに揃った JSON を **fenced ブロック** で返す。fenced ブロックの **前** に 1〜2 行の人間向けサマリ (例: `インライン指摘 3 件 / 主要懸念 2 件`) を添える。orchestrator (`run-pr-review` / `run-local-review`) は fenced JSON 本体をパースして後続 skill に転送する。
+
+**この JSON は orchestrator 向けの中間成果物** であり、caller (人間) への最終 deliverable ではない。`run-pr-review` から呼ばれた場合、後続の `post-pr-review` で GitHub に投稿されて初めて caller の目に触れる形になる。fenced JSON が「成果物っぽい」見た目をしていても、本 skill 単独実行 (= `run-local-review` から呼ばれた場合は別) ではここで終わらせず、orchestrator 側の手順を継続すること。
 
 スキーマ (PR モード例):
 

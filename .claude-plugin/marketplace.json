@@ -12,7 +12,7 @@
       "name": "pr-review",
       "source": "./plugins/pr-review",
       "description": "PR レビュー本文生成 (compose-review) / 投稿 (post-pr-review) / 過去スレッド resolve (resolve-pr-threads) / ローカルブランチ向け AI レビュー (run-local-review) / PR レビュー一式オーケストレーション (run-pr-review) の skill を提供する",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }

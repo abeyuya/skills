@@ -17,6 +17,7 @@ PR レビュー一式 (PR 状態取得 → レビュー本文生成 → 投稿 �
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い。Step 3 で `compose-review` にそのまま転送する。
 - `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
 - `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 5 でそのまま `resolve-pr-threads` に転送される。
+- `RECHECK_HEAD_SHA` (任意): 真偽値 (`true` / `false`)。`true` を渡すと Step 3 経由で `compose-review` に転送され、Step 4 の diff 取得直後に head SHA を再取得 → force-push 検知時に「再実行を推奨」として停止する。frequent force-push PR (ドッグフーディング系 caller) で誤投稿を防ぎたい場合に使う。省略時は `false` 扱い。
 
 caller プロジェクト固有のレビュー方針 (技術観点 / スタイル上書き / 全方針置換) は **プロジェクト指示ファイル** (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` の優先順で最初の 1 つだけ) に置く運用に固定する。読み込み自体は `compose-review` 側で行うため本 skill では扱わない。
 
@@ -41,8 +42,10 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が **非空の値で** 渡され�
   - 失敗ジョブが無ければ `CI_FAILURE_CONTEXT` は渡さない (空文字も渡さない)。
 - **既存 reviewThreads サマリ (重複回避用)**:
   - GraphQL で `reviewThreads` を取得する。`-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`PR_NUMBER` は GraphQL の `Int!` 型なので **必ず `-F` (型推論あり) を使い、`-f` (文字列固定) は使わない**。`reviewThreads(first: 100)` は 1 ページ上限なので `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。
-  - 各スレッドの `comments.nodes[].body` まで取得し、未 resolve のものを中心に主旨を簡潔にまとめる。**`path:line` は要約の段落本文にではなく、各スレッドごとの 1 項目ずつのリスト形式で明示** する (例: `- src/foo.ts:42 — [should] ここは A の代わりに B を使うべき`)。compose-review 側で位置情報に基づく dedupe を効かせるために構造を保つ。
-  - まとめた内容を `compose-review` の `EXISTING_THREADS_CONTEXT` 入力として転送する。既存スレッドが無ければ渡さない。
+  - クエリで取得するフィールドは **重複排除に必要な最小セット** に絞る (出力サイズ削減): スレッドレベルで `id` / `isResolved`、`comments(first: 50)` の各要素で `path` / `line` / `side` / `body` / `author.login`。`path` や `line` 等の API キー名は **GitHub GraphQL の正確なスペル** をそのまま使う (例: `line` (snake_case 風だが GraphQL では一語) / `originalLine` (resolved 後の位置確認用、必要なら追加))。
+  - 取得対象は **`isResolved: false` のスレッドに絞る** (resolve 済みは既に修正反映済みなので dedupe 対象外)。GitHub GraphQL の `reviewThreads` 引数で直接 filter する手段は無いため、`first: 100` で全件取得した上で **クライアント側で `isResolved == false` のものだけ残す**。
+  - 各スレッドの主旨を簡潔にまとめる。**`path:line` は要約の段落本文にではなく、各スレッドごとの 1 項目ずつのリスト形式で明示** する (例: `- src/foo.ts:42 — [should] ここは A の代わりに B を使うべき`)。compose-review 側で位置情報に基づく dedupe を効かせるために構造を保つ。
+  - まとめた内容を `compose-review` の `EXISTING_THREADS_CONTEXT` 入力として転送する。未 resolve スレッドが 0 件なら渡さない (resolve 済みのみのケースを含む)。
 
 `gh pr view --json headRefOid` 等で head SHA を取る必要は **無い** (Step 3 で `compose-review` 側が `commit_id` を埋めて返してくる)。`compose-review` が transient 失敗で `commit_id` を省略して返してきても、`post-pr-review` の `COMMIT_ID` は任意なので Step 4 はそのまま続行できる (本 skill 側で head SHA を再取得する fallback は不要)。
 
@@ -54,8 +57,11 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
 - `MAX_INLINE_COMMENTS` (caller から渡されていれば)
 - `CI_FAILURE_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
 - `EXISTING_THREADS_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
+- `RECHECK_HEAD_SHA` (caller から渡されていれば。デフォルト未指定 = `false` 扱い)
 
 `compose-review` は fenced JSON ブロックで以下のフィールドを返す: `mode` (= `"pr"`) / `body` / `event` / `comments[]` / `commit_id` (任意)。Step 4 では下記対応表のフィールドだけを `post-pr-review` に転送する (`mode` は対応表に無いため転送しない)。
+
+**ここで止まらない**: `compose-review` が返す fenced JSON は本 orchestrator 向けの **中間成果物** で、caller (人間) への最終 deliverable ではない。出力フォーマットが「成果物っぽい」見た目をしていても、ターンを終えず **そのまま Step 4 (`post-pr-review`) に進む**。caller への最終報告は Step 6 まで保留する。Step 4 が実行されないと PR への投稿が抜けてしまい、本 skill の主目的 (= GitHub への 1 Review 投稿) が達成されない。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 

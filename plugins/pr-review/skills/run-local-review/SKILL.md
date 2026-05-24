@@ -8,6 +8,8 @@ description: 現在のローカルブランチを対象に、PR を作る前段�
 PR 作成前のローカルブランチに対して AI レビューを行うための thin orchestrator skill。
 レビュー本文の生成は `compose-review` skill (ローカル diff モード) に委譲する。本 skill は呼び出しと caller 報告のみを担う。
 
+> **Breaking change (v0.2.0)**: 旧版 (v0.1.x) の `OUTPUT_PATH` 引数と markdown ファイル出力 (`/tmp/run-local-review/...`) は廃止された。新版は `compose-review` の JSON 戻り値をそのまま chat に出す挙動のみ。旧 caller が `OUTPUT_PATH=...` を渡しても黙って無視される (エラーにはならない)。markdown 形式が必要な場合は caller 側で JSON 戻り値を加工する。
+
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
 すべて省略可。
