@@ -1,6 +1,6 @@
 ---
 name: compose-review
-description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。スタイル参考ガイド (skill 配下の style-reference.md) とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON をチャットに返す。GitHub 投稿 / 過去スレッド resolve は行わない (post-pr-review / resolve-pr-threads は呼ばない)。
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。スタイル参考ガイド (skill 配下の style-reference.md) とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を返す。出力先は `OUTPUT_DESTINATION` 入力で chat (デフォルト、人間直読用) と file (`/tmp/compose-review-output.json`、`run-pr-review` orchestrator 経由用) を切り替える。GitHub 投稿 / 過去スレッド resolve は行わない (post-pr-review / resolve-pr-threads は呼ばない)。
 ---
 
 # compose-review skill
@@ -54,15 +54,19 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 - 現在ブランチ名: `git rev-parse --abbrev-ref HEAD` で取得する。`HEAD` (detached) の場合はエラーとして停止する。
 - ベースブランチ: caller から `BASE_BRANCH` が渡されていればそれを使う。未指定なら以下の順で決定する:
-  1. `git symbolic-ref refs/remotes/origin/HEAD` で既定ブランチの **フルパス** (例: `refs/remotes/origin/main`) を取得し、**末尾セグメントだけ取り出して**純粋なブランチ名にする (例: `git symbolic-ref --short refs/remotes/origin/HEAD` を使えば `origin/main` まで簡約されるので、さらに `sed 's@^origin/@@'` で `main` になる。`--short` が無い `git` の場合は `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'`)。フルパスのまま `git rev-parse --verify <name>` に渡してはならない (検証は通っても以降の `git diff <base>...HEAD` 等で意図しないリモート追跡参照を比較対象にしてしまうため)。`git rev-parse --verify <branch_name>` が通れば **ローカルの同名ブランチ** を使う (リモート追跡 `origin/<branch_name>` ではない)
+  1. `git symbolic-ref` でリモートの既定ブランチ名を取得し、末尾セグメントだけ取り出して純粋なブランチ名にする:
+     - **推奨 1 行 (最短経路)**: `git symbolic-ref --short refs/remotes/origin/HEAD | sed 's@^origin/@@'` → `main` のような純粋ブランチ名を得る。
+     - **互換ノート**: `--short` が無い古い `git` では `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'` を使う (出力フルパス `refs/remotes/origin/main` から接頭辞を剥がす)。
+     - **NG**: フルパス (`refs/remotes/origin/main`) をそのまま `git rev-parse --verify <name>` に渡してはならない。検証は通っても以降の `git diff <base>...HEAD` 等で意図しないリモート追跡参照を比較対象にしてしまう。
+     - 得られた純粋ブランチ名 (例: `main`) を `git rev-parse --verify <branch_name>` で確認し、通れば **ローカルの同名ブランチ** を base に採用する (リモート追跡 `origin/<branch_name>` ではない)。
   2. `git rev-parse --verify main` が通れば `main`
   3. `git rev-parse --verify master` が通れば `master`
   4. いずれも取れなければエラーとして停止し、caller に `BASE_BRANCH` を明示するよう促す
-- `git diff <base>...HEAD` を実行し、差分モードを以下の優先順位で決定する:
-  1. **commit モード**: 差分が空でない → 通常どおり `git diff <base>...HEAD` をレビュー対象とする。
-  2. **staged モード**: commit モードの差分が空 → `git diff --cached` を確認し、空でなければそれをレビュー対象とする。
-  3. **worktree モード**: staged モードも空 → `git diff` を確認し、空でなければそれをレビュー対象とする。
-  4. **差分なし**: 上記すべてが空 → **Step 2〜5 を skip して Step 6 へ直行** する。出力 JSON は `body` を「対象差分なし (評価対象なし)」、`comments` を `[]`、`diff_mode` を `"none"` にする。
+- `git diff <base>...HEAD` を実行し、差分モードを以下の優先順位で決定する。**本 step では差分の空 / 非空判定のみを行い、`diff_mode` を確定する**。差分本体 (各行の patch) を読むのは Step 4 で改めて行う (本 step で取得した結果を Step 4 で使い回してもよいが、Step 4 の手順自体は省略しない):
+  1. **commit モード**: 差分が空でない → `diff_mode = "commit"`。Step 4 で `git diff <base>...HEAD` をレビュー対象として取得する。
+  2. **staged モード**: commit モードの差分が空 → `git diff --cached` を確認し、空でなければ `diff_mode = "staged"`。Step 4 で `git diff --cached` をレビュー対象として取得する。
+  3. **worktree モード**: staged モードも空 → `git diff` を確認し、空でなければ `diff_mode = "worktree"`。Step 4 で `git diff` をレビュー対象として取得する。
+  4. **差分なし**: 上記すべてが空 → `diff_mode = "none"` とし、**Step 2〜5 を skip して Step 6 へ直行** する。出力 JSON は `body` を「対象差分なし (評価対象なし)」、`comments` を `[]` にする。
 - 現在ブランチがベースブランチ自身の場合は commit モードの差分は必ず空になるため、上記フォールバック順に従う。
 - 採用した差分モード (`commit` / `staged` / `worktree` / `none`) と解決済みの `base_branch` 名は Step 6 の出力 JSON にそのまま含める (`run-local-review` の caller 報告で使う)。
 
@@ -143,7 +147,13 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 - `event` は **常に `"COMMENT"`** とする (`post-pr-review` の規約)。`[must]` の有無にかかわらず `COMMENT` で投稿し、修正の要否は本文 (`body`) と各インライン (`comments[]`) の `[must]` ラベルで伝える。
 - 指摘が無い場合も Step 6 で「特に指摘なし」相当の JSON を返す (skip しない)。
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が一律 prepend するため)。`body` は生本文。
-- `MAX_INLINE_COMMENTS` が正の整数で渡されている場合は、style-reference の「`MAX_INLINE_COMMENTS` の扱い」セクションに従って **`comments[]` の総数を N 件以下に絞る**。優先度は `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`。N 超過で省略した指摘がある場合は `body` に「省略した件数 + ラベル別内訳」を 1 文添える。
+- `MAX_INLINE_COMMENTS` が正の整数で渡されている場合は、style-reference の「`MAX_INLINE_COMMENTS` の扱い」セクションに従って **`comments[]` の総数を N 件以下に絞る**。優先度は `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`。N 超過で省略した指摘がある場合は `body` に「省略した件数 + ラベル別内訳」を 1 文添える。`comments[]` を組み立てる **手順の順序** は次に固定する (順序が変わると同じ件数でも残る指摘が変わる):
+  1. 差分から生指摘を抽出する。
+  2. `EXISTING_THREADS_CONTEXT` が渡されていれば、既存スレッドと同主旨の指摘を **dedupe で落とす**。
+  3. ノイズ抑制ルール (フォーマッタレベル除外 / 同一事象は代表 1 箇所のみ等) を適用する。
+  4. 重要度ラベルで優先度ソート (`[must]` > `[should]` > ...) する。
+  5. `MAX_INLINE_COMMENTS` 指定があれば、上位から N 件にカットする (`unlimited` ならカットしない)。
+  6. N 超過で省略があれば `body` の総括に省略件数とラベル別内訳を 1 文添える。
 
 ### Step 6. JSON を出力する
 
@@ -166,7 +176,7 @@ compose-review (中間成果物): /tmp/compose-review-output.json 生成完了 (
 その他の制約:
 
 - **fenced JSON ブロックを chat に出さない**。chat 上に大きなアウトプットを残さないことで、orchestrator が「JSON 出力 = タスク完了」と誤認する構造的リスクを取り除く。
-- `Write` ツールは中間ディレクトリの自動作成を保証しないが `/tmp/` は通常存在するので `mkdir -p` は不要。既に同名ファイルがあった場合に備え、`Write` 前に `Read` で確認しておく (Write tool の制約)。
+- `Write` ツールは中間ディレクトリの自動作成を保証しないが `/tmp/` は通常存在するので `mkdir -p` は不要。**Claude Code の Write tool は「同一セッション中に Read されていない既存ファイルへの上書き」を拒否する仕様**のため、`/tmp/compose-review-output.json` は前回呼び出しで残存している可能性を考慮し、Write 前に `Read` を 1 回挟む (ファイル不在なら Read エラーは無視してそのまま Write、存在すれば Read 後に Write)。
 
 #### `OUTPUT_DESTINATION=chat` (デフォルト、`run-local-review` から呼ばれる際の挙動)
 
