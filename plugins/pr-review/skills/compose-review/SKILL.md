@@ -22,7 +22,7 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い。詳細は `style-reference.md` の「`MAX_INLINE_COMMENTS` の扱い」セクション参照。
 - `OUTPUT_DESTINATION`: 出力先の切り替え。`chat` (デフォルト) または `file`。詳細は Step 6 参照。
   - `chat` (`run-local-review` から呼ばれる場合のデフォルト): fenced JSON ブロックをそのままチャットに出力。caller (人間) が直接読む用途。
-  - `file` (`run-pr-review` から呼ばれる際に明示指定する): `/tmp/compose-review-output.json` に JSON 本体を `Write` し、チャットには 1 行サマリのみ出す。chat 上に「成果物っぽい大きなアウトプット」を残さず、orchestrator が JSON 解釈の終わりを「Step 完了」と誤認するのを構造的に防ぐ。
+  - `file` (`run-pr-review` から呼ばれる場合は **必須**。緩い「推奨」扱いではない): `/tmp/compose-review-output.json` に JSON 本体を `Write` し、チャットには 1 行サマリのみ出す。chat 上に「成果物っぽい大きなアウトプット」を残さず、orchestrator が JSON 解釈の終わりを「Step 完了」と誤認するのを構造的に防ぐ。PR #34 で 3 回踏み抜かれた踏み外しパターンへの構造的防止策の **要所** のため、`run-pr-review` 側で必須化されている。別 orchestrator から呼ぶ場合も同様の安全策が必要なら `file` を明示指定すること。
 
 ### ローカル diff モードのみ
 
@@ -159,7 +159,7 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 
 `post-pr-review` のスキーマに揃った JSON を、入力 `OUTPUT_DESTINATION` に応じて出力先を切り替える。
 
-#### `OUTPUT_DESTINATION=file` (`run-pr-review` から呼ばれる際の推奨)
+#### `OUTPUT_DESTINATION=file` (`run-pr-review` から呼ばれる際は必須)
 
 `Write` ツールで JSON 本体を `/tmp/compose-review-output.json` に書き出す。チャット側は **「次にやること」を含む 1 行** を出力する。
 

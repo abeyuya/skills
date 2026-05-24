@@ -21,6 +21,22 @@ caller プロジェクト固有のレビュー方針 (技術観点 / スタイ�
 
 ## 手順
 
+### Step 0. 廃止入力の検知 (silent failure 防止)
+
+caller から **v0.1.x で受け付けていた廃止入力** (`OUTPUT_PATH` 等) が渡されていないか確認し、渡されていれば **chat に 1 行警告** を出してから次の step に進む (skill 自体は停止しない)。本 skill は v0.2.0 でこれらを silent ignore する仕様だが、`apm` / `/plugin install` でバージョン固定をしていない consumer (CI / GitHub Actions) が旧入力を渡し続けたまま「markdown ファイルだけ出なくなる」silent failure を踏むのを防ぐため、明示的に気付かせる。
+
+警告フォーマット (固定文言、逐語):
+
+```
+[run-local-review] WARNING: 廃止された入力 `<NAME>=...` が渡されましたが、v0.2.0 で廃止済みのため無視します。代替: <代替手段の 1 行>
+```
+
+廃止入力と代替の対応:
+
+- `OUTPUT_PATH=...`: 代替 = 「`compose-review` の JSON 戻り値を caller 側で markdown 化する」
+
+将来廃止入力を追加する場合は本リストを更新する。
+
 ### Step 1. 報告用にブランチ情報を取得する
 
 caller への最終報告 (Step 3) で使う「現在ブランチ名」だけ取得する。`BASE_BRANCH` と差分モードの確定は `compose-review` に委譲し、その戻り値経由で受け取る。
