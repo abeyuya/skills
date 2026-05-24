@@ -36,6 +36,8 @@ Skill ツールで `compose-review` をローカル diff モードで呼ぶ。�
 
 `OWNER` / `REPO` / `PR_NUMBER` は **渡さない** (渡すと PR モードに切り替わるため。空文字を渡すのも不可 — `compose-review` 側は空文字を未指定と同等に扱うがミスの温床なので **そもそも渡さない**)。
 
+`OUTPUT_DESTINATION` も **渡さない** (デフォルト `chat` を採用する)。`compose-review` から chat に fenced JSON が出力され、それを本 skill 経由で caller (人間) が直接読む運用にする (`run-pr-review` は orchestrator 経由で `post-pr-review` まで連鎖させるために `file` を指定するが、本 skill は Step 4 以降を持たないため file 出力にする必要がない)。
+
 `compose-review` は fenced JSON ブロックで以下のフィールドを返す:
 
 - `_intermediate: false` (ローカル diff モードでは本 skill が最終 caller なので最終成果物扱い)

@@ -60,22 +60,24 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
 - `CI_FAILURE_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
 - `EXISTING_THREADS_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
 - `RECHECK_HEAD_SHA` (caller から渡されていれば。デフォルト未指定 = `false` 扱い)
+- `OUTPUT_DESTINATION=file` (**必ず `file` を明示指定する**)
 
-`compose-review` は fenced JSON ブロックで以下のフィールドを返す:
+`OUTPUT_DESTINATION=file` を指定することで、`compose-review` は JSON 本体を `/tmp/compose-review-output.json` に書き出し、chat には 1 行サマリのみを返す。**chat に fenced JSON が出ない** ことで、orchestrator (実装エージェント) が「JSON が出たからタスク完了」と誤認するリスクを構造的に取り除く (PR #34 で実害が発生した既知の踏み外しパターン)。
 
-- `_intermediate: true` (中間成果物マーカー)
-- `next_step: "post-pr-review"` (次に呼ぶべき skill)
-- `mode` (= `"pr"`)
-- `body` / `event` / `comments[]`
-- `commit_id` (任意)
+### Step 3.5. `_intermediate` を確認し Step 4 に進む準備をする
 
-Step 4 では下記対応表のフィールドだけを `post-pr-review` に転送する (`_intermediate` / `next_step` / `mode` は orchestrator 内部用の meta フィールドのため転送しない)。
+**本 step は意図的に独立 step として番号を振っている**。Step 3 で `compose-review` の呼び出しが完了した直後、chat 上に成果物っぽい出力が無いとはいえ、ここで「タスク完了」と判定してはならない。
 
-**ここで止まらない**: `compose-review` が返す JSON には `_intermediate: true` が含まれている時点で、本 step は **未完了**。fenced JSON を chat に出力した「区切り感」に惑わされず、ターンを終えず **そのまま Step 4 (`post-pr-review`) に進む**。`_intermediate: false` (もしくは無い) を確認しないまま終わってはならない。caller への最終報告は Step 6 まで保留する。Step 4 が実行されないと PR への投稿が抜けてしまい、本 skill の主目的 (= GitHub への 1 Review 投稿) が達成されない。CI 内で人間不在のまま走る運用 (claude-code-action 等) では Step 4 抜けは無音の事故になるため、再発防止を最優先で守ること。
+1. `Read` ツールで `/tmp/compose-review-output.json` を読み込む。
+2. パースして `_intermediate` フィールドを確認する。
+   - `_intermediate: true` であることを確認する (PR モードでは必ずこの値)。
+   - `next_step: "post-pr-review"` であることを確認する (次に呼ぶべき skill 名)。
+3. 後続で `post-pr-review` に転送する各フィールド (`body` / `event` / `comments` / `commit_id`) を JSON から取り出す。`_intermediate` / `next_step` / `mode` は orchestrator 内部用の meta フィールドのため転送しない。
+4. ここで **絶対にターンを終えない**。本 step を読了したらそのまま Step 4 に続けて進む。本 step を独立 step として置いている目的は「Step 3 で JSON を受け取った直後の "区切り感" よりも強い継続フック」を作ること。`_intermediate: true` を確認したまま終わったら本 skill の主目的 (= GitHub への 1 Review 投稿) は達成されない。CI 内で人間不在のまま走る運用 (claude-code-action 等) では Step 4 抜けは無音の事故になるため、本 step を読了 → Step 4 へ進む、を機械的に守ること。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 
-Step 3 で得た JSON と Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` を `post-pr-review` skill に渡し、**1回の API コールで1つの Review として** 投稿する。`gh pr comment` や `gh pr review` での個別投稿はしない。
+Step 3.5 で `/tmp/compose-review-output.json` から取り出したフィールドと Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` を `post-pr-review` skill に渡し、**1回の API コールで1つの Review として** 投稿する。`gh pr comment` や `gh pr review` での個別投稿はしない。
 
 起動方法は **Skill ツールで `post-pr-review` を呼ぶ**。フィールド対応関係は次の通り (`post-pr-review` 側はこの入力名で受け取り、`/tmp/review.json` を組み立てる):
 

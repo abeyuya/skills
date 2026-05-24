@@ -20,6 +20,9 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 ### 共通
 
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い。詳細は `style-reference.md` の「`MAX_INLINE_COMMENTS` の扱い」セクション参照。
+- `OUTPUT_DESTINATION`: 出力先の切り替え。`chat` (デフォルト) または `file`。詳細は Step 6 参照。
+  - `chat` (`run-local-review` から呼ばれる場合のデフォルト): fenced JSON ブロックをそのままチャットに出力。caller (人間) が直接読む用途。
+  - `file` (`run-pr-review` から呼ばれる際に明示指定する): `/tmp/compose-review-output.json` に JSON 本体を `Write` し、チャットには 1 行サマリのみ出す。chat 上に「成果物っぽい大きなアウトプット」を残さず、orchestrator が JSON 解釈の終わりを「Step 完了」と誤認するのを構造的に防ぐ。
 
 ### ローカル diff モードのみ
 
@@ -142,11 +145,24 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が一律 prepend するため)。`body` は生本文。
 - `MAX_INLINE_COMMENTS` が正の整数で渡されている場合は、style-reference の「`MAX_INLINE_COMMENTS` の扱い」セクションに従って **`comments[]` の総数を N 件以下に絞る**。優先度は `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`。N 超過で省略した指摘がある場合は `body` に「省略した件数 + ラベル別内訳」を 1 文添える。
 
-### Step 6. チャットに JSON を返す
+### Step 6. JSON を出力する
 
-`post-pr-review` のスキーマに揃った JSON を **fenced ブロック** で返す。fenced ブロックの **前** に 1〜2 行の人間向けサマリ (例: `インライン指摘 3 件 / 主要懸念 2 件`) を添える。orchestrator (`run-pr-review` / `run-local-review`) は fenced JSON 本体をパースして後続 skill に転送する。
+`post-pr-review` のスキーマに揃った JSON を、入力 `OUTPUT_DESTINATION` に応じて出力先を切り替える。
 
-**この JSON は orchestrator 向けの中間成果物** であり、caller (人間) への最終 deliverable ではない。`run-pr-review` から呼ばれた場合、後続の `post-pr-review` で GitHub に投稿されて初めて caller の目に触れる形になる。fenced JSON が「成果物っぽい」見た目をしていても、本 skill 単独実行 (= `run-local-review` から呼ばれた場合は別) ではここで終わらせず、orchestrator 側の手順を継続すること。
+#### `OUTPUT_DESTINATION=file` (`run-pr-review` から呼ばれる際の推奨)
+
+`Write` ツールで JSON 本体を `/tmp/compose-review-output.json` に書き出す。チャット側は **1 行サマリのみ** を出力する (例: `compose-review: PR モードで JSON を /tmp/compose-review-output.json に書き出しました。インライン指摘 3 件 / 主要懸念 2 件。orchestrator は Step 3.5 で本ファイルを Read してください。`)。
+
+- **fenced JSON ブロックを chat に出さない**。chat 上に大きなアウトプットを残さないことで、orchestrator が「JSON 出力 = タスク完了」と誤認する構造的リスクを取り除く。
+- `Write` ツールは中間ディレクトリの自動作成を保証しないが `/tmp/` は通常存在するので `mkdir -p` は不要。既に同名ファイルがあった場合に備え、`Write` 前に `Read` で確認しておく (Write tool の制約)。
+
+#### `OUTPUT_DESTINATION=chat` (デフォルト、`run-local-review` から呼ばれる際の挙動)
+
+JSON を fenced ブロックで chat に出力する。fenced ブロックの **前** に 1〜2 行の人間向けサマリ (例: `インライン指摘 3 件 / 主要懸念 2 件`) を添える。caller (人間) が直接読めるようにする用途。
+
+#### 共通
+
+**本 step を実行したからといって、本 skill (orchestrator から呼ばれている場合) の責務は終わりではない**。`_intermediate: true` を含む JSON を返した場合、orchestrator は **後続 skill (`post-pr-review` 等) まで実行責任がある**。本 skill から見れば本 step で出力が完了するが、本 skill を呼んだ orchestrator は出力を受け取った後で必ず次 step (run-pr-review なら Step 3.5 → 4 → 5 → 6) まで進む前提。
 
 スキーマ (PR モード例):
 
