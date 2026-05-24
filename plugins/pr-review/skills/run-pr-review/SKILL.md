@@ -117,7 +117,7 @@ Step 3.5 で `/tmp/compose-review-output.json` から取り出したフィール
 | `body` | `body` | 文字列。AI 自動投稿マーカーは `post-pr-review` が prepend するので **そのまま渡す**。 |
 | `event` | `event` | 文字列 `"COMMENT"` 固定。 |
 | `comments` | `comments` | 配列。要素のキー (`path` / `line` / `side` / `start_line` / `start_side` / `body`) はそのまま。**ここでの `side` は GitHub Review REST API (`POST /repos/.../reviews`) の `comments[]` 入力スキーマで `"RIGHT"` / `"LEFT"` を取る正規フィールドであり、Step 2 で「クエリに含めるな」とした GraphQL の `PullRequestReviewComment` 型の `side` (存在しない) とは別物。文脈 (REST POST vs GraphQL Read) で扱いが反転する点に注意。** |
-| `commit_id` | `COMMIT_ID` | 文字列。`compose-review` が省略してきた場合 (transient 失敗による省略 / 「対象差分なし」分岐で commit_id が含まれていなかった場合等、理由を問わず) は本入力も省略する。空文字を渡さない (`gh api .../reviews` が 422 で失敗するため)。 |
+| `commit_id` | `COMMIT_ID` | 文字列。**`compose-review` の戻り値 JSON に `commit_id` キーが含まれていない場合は理由を問わず本入力も省略する** (空文字を渡さない: `gh api .../reviews` が 422 で失敗するため)。省略理由は `compose-review` 側の責務で、典型的には Step 1 PR モードの head SHA 取得が transient 失敗したケースが該当する (なお Step 4 の「対象差分なし」分岐は Step 1 で SHA が取れていれば `commit_id` を含めて返すので、本表の判定には影響しない)。 |
 | `_intermediate` / `next_step` / `mode` | (転送しない) | orchestrator 内部用の meta フィールド。`post-pr-review` には渡さない。 |
 | (本 skill が確定済み) | `OWNER` / `REPO` / `PR_NUMBER` | Step 1 の値。`post-pr-review` の入力名 (`post-pr-review/SKILL.md` の入力セクション参照) もこの **大文字スネークケースそのまま**。改名 / 小文字化はしない。 |
 

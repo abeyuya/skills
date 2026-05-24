@@ -25,6 +25,13 @@ caller プロジェクト固有のレビュー方針 (技術観点 / スタイ�
 
 caller から **v0.1.x で受け付けていた廃止入力** (`OUTPUT_PATH` 等) が渡されていないか確認し、渡されていれば **chat に 1 行警告** を出してから次の step に進む (skill 自体は停止しない)。本 skill は v0.2.0 でこれらを silent ignore する仕様だが、`apm` / `/plugin install` でバージョン固定をしていない consumer (CI / GitHub Actions) が旧入力を渡し続けたまま「markdown ファイルだけ出なくなる」silent failure を踏むのを防ぐため、明示的に気付かせる。
 
+検知ロジック (機械的に再現できるよう手順を固定):
+
+- 対象: Skill ツールに渡された `args` 文字列 (caller からの prompt 全体)。
+- マッチ規則: 各廃止入力名 `<NAME>` について、**正規表現 `(?:^|\s)<NAME>=` (大文字小文字を区別する)** で 1 件以上ヒットしたら警告対象とする。トークン形式 (`OUTPUT_PATH=...`) のみを拾い、自由文中の `OUTPUT_PATH` への言及 (例: 「過去の OUTPUT_PATH 議論」) は誤検知しない。
+- 1 つの args 内に複数の廃止入力があれば、それぞれ 1 行ずつ警告する (1 廃止入力 = 1 warning 行)。
+- 警告は **必ず chat に出力する** (本 skill のレポート本文より前、Step 1 開始前に出すこと)。
+
 警告フォーマット (固定文言、逐語):
 
 ```
@@ -35,7 +42,7 @@ caller から **v0.1.x で受け付けていた廃止入力** (`OUTPUT_PATH` 等
 
 - `OUTPUT_PATH=...`: 代替 = 「`compose-review` の JSON 戻り値を caller 側で markdown 化する」
 
-将来廃止入力を追加する場合は本リストを更新する。
+将来廃止入力を追加する場合は本リスト (廃止入力名 + 代替手段) を更新する。マッチ規則と警告フォーマットは共通のまま使い回す。
 
 ### Step 1. 報告用にブランチ情報を取得する
 
@@ -66,12 +73,14 @@ Skill ツールで `compose-review` をローカル diff モードで呼ぶ。�
 
 ### Step 3. caller への報告
 
-`compose-review` の戻り値をそのまま chat 表示するのに加え、以下を簡潔に caller へ返す:
+Step 2 で `compose-review` が **既に fenced JSON ブロックを chat に出力済み** なので、本 skill から **同じ JSON を再出力しない**。本 skill が追加で出す chat は以下の人間向けサマリ 1 段落のみ:
 
 - レビュー対象のブランチ (Step 1 で取得した現在ブランチ名) と ベース (`compose-review` 戻り値の `base_branch`)
 - 差分モード (`compose-review` 戻り値の `diff_mode`)
 - インライン指摘件数 (`compose-review` 戻り値の `comments[]` 長)
 - `diff_mode == "none"` だった場合はその旨を明示する
+
+最終的に chat には「`compose-review` 由来の fenced JSON ブロック (`OUTPUT_DESTINATION=chat` のデフォルト挙動による)」+「本 skill の追加サマリ 1 段落」の **2 つが並ぶ** 形になる。
 
 ## 守ること
 
