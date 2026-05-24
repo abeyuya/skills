@@ -13,17 +13,13 @@ PR レビュー一式 (PR 状態取得 → レビュー本文生成 → 投稿 �
 
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
-すべて省略可。省略時の挙動は各項目に記載。
+すべて省略可。各項目に「省略時の挙動」と「Step N への forward 仕様」を併記する。
 
-- `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR の識別情報。省略時は後述の手順で自動取得する。
-- `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い。Step 3 で `compose-review` にそのまま転送する。
-- `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
-- `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 5 でそのまま `resolve-pr-threads` に転送される。
-- `RECHECK_HEAD_SHA` (任意): 真偽値 (`true` / `false`)。省略時は `false` 扱い。
-  - **受信者**: `compose-review` skill (本 skill は Step 3 で素通し転送するだけで、本 skill 内では参照しない)。
-  - **影響を与える step**: `compose-review` 内の Step 4 (PR diff 取得直後)。
-  - **実挙動**: `true` の場合、`compose-review` Step 4 で diff を取得した直後に `gh pr view --json headRefOid` を再取得し、Step 1 で控えた値と異なれば「force-push 検知のため再実行を推奨」として `compose-review` 自体が停止する (停止時の chat 出力は通常の中間成果物サマリではなくエラー扱い)。本 skill 側 (`run-pr-review`) ではこの停止を受けて Step 4 以降を実行せずに caller に異常終了を報告する。
-  - **使いどころ**: frequent force-push PR (ドッグフーディング系 caller) で誤投稿を防ぎたいケース。通常運用では `false` で良い。
+- `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR の識別情報。**省略時**は Step 1 の手順で自動取得 (空文字も未指定扱い)。
+- `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。**省略時** は Step 3 で `compose-review` に渡さない (`compose-review` 側のデフォルト `unlimited` が適用される)。
+- `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。**省略時** は `all` を明示的に Step 5 へ渡す。
+- `SELF_LOGIN` (`THREAD_RESOLVE_SCOPE=own` 時のみ意味を持つ): 自身を判定するための `author.login`。**省略時** は Step 5 で `resolve-pr-threads` に渡さない。
+- `RECHECK_HEAD_SHA`: 真偽値 (`true` / `false`)。**省略時** は Step 3 で `compose-review` に渡さない (`compose-review` 側のデフォルト `false` が適用される)。`true` を指定すると force-push 検知時に `compose-review` が停止し本 skill も Step 4 以降を実行せずに caller へ異常終了を報告する (詳細仕様は `compose-review/SKILL.md` の Step 1 PR モード TOCTOU 注意を参照)。force-push が頻繁な PR をドッグフーディング系 caller から扱う場合のみ使う。
 
 caller プロジェクト固有のレビュー方針 (技術観点 / スタイル上書き / 全方針置換) は **プロジェクト指示ファイル** (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` の優先順で最初の 1 つだけ) に置く運用に固定する。読み込み自体は `compose-review` 側で行うため本 skill では扱わない。
 
@@ -47,7 +43,33 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が **非空の値で** 渡され�
   - `statusCheckRollup` に `FAILURE` のジョブがあれば `gh run view --log --repo <OWNER>/<REPO>` 等で失敗ログ本体まで読み、関連箇所と失敗理由のサマリを自然言語で組み立てる。これを `compose-review` の `CI_FAILURE_CONTEXT` 入力として転送する。
   - 失敗ジョブが無ければ `CI_FAILURE_CONTEXT` は渡さない (空文字も渡さない)。
 - **既存 reviewThreads サマリ (重複回避用)**:
-  - GraphQL で `reviewThreads` を取得する。`-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`PR_NUMBER` は GraphQL の `Int!` 型なので **必ず `-F` (型推論あり) を使い、`-f` (文字列固定) は使わない**。`reviewThreads(first: 100)` は 1 ページ上限なので `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。
+  - GraphQL で `reviewThreads` を取得する。`-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`PR_NUMBER` は GraphQL の `Int!` 型なので **必ず `-F` (型推論あり) を使い、`-f` (文字列固定) は使わない**。`reviewThreads(first: 100)` は 1 ページ上限なので `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。クエリ雛形は次の通り (初回は `$after` を `null` として呼び、以降 `-F after=<endCursor>` を追加する):
+
+    ```graphql
+    query($owner: String!, $name: String!, $number: Int!, $after: String) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              isResolved
+              comments(first: 50) {
+                nodes {
+                  path
+                  line
+                  originalLine
+                  body
+                  author { login }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    ```
+
   - クエリで取得するフィールドは **必要最小限のセット** に絞る (出力サイズ削減):
     - dedupe 本体用 (path:line + body 突合): `comments(first: 50)` 要素の `path` / `line` / `originalLine` / `body`。`originalLine` はコメント先のコミットが進んで `line` が `null` になっているスレッドで位置情報を保つために併記。
     - filter / 拡張用: スレッドレベルの `id` (将来 `resolve-pr-threads` 側と参照を揃える用途) / `isResolved` (本 step でクライアント側 filter する) / `comments.nodes[].author.login` (将来 `THREAD_RESOLVE_SCOPE=own` 時の自己判定で再利用する想定)。
@@ -97,7 +119,7 @@ Step 3.5 で `/tmp/compose-review-output.json` から取り出したフィール
 | `comments` | `comments` | 配列。要素のキー (`path` / `line` / `side` / `start_line` / `start_side` / `body`) はそのまま。**ここでの `side` は GitHub Review REST API (`POST /repos/.../reviews`) の `comments[]` 入力スキーマで `"RIGHT"` / `"LEFT"` を取る正規フィールドであり、Step 2 で「クエリに含めるな」とした GraphQL の `PullRequestReviewComment` 型の `side` (存在しない) とは別物。文脈 (REST POST vs GraphQL Read) で扱いが反転する点に注意。** |
 | `commit_id` | `COMMIT_ID` | 文字列。`compose-review` が省略してきた場合 (transient 失敗による省略 / 「対象差分なし」分岐で commit_id が含まれていなかった場合等、理由を問わず) は本入力も省略する。空文字を渡さない (`gh api .../reviews` が 422 で失敗するため)。 |
 | `_intermediate` / `next_step` / `mode` | (転送しない) | orchestrator 内部用の meta フィールド。`post-pr-review` には渡さない。 |
-| (本 skill が確定済み) | `OWNER` / `REPO` / `PR_NUMBER` | Step 1 の値。 |
+| (本 skill が確定済み) | `OWNER` / `REPO` / `PR_NUMBER` | Step 1 の値。`post-pr-review` の入力名 (`post-pr-review/SKILL.md` の入力セクション参照) もこの **大文字スネークケースそのまま**。改名 / 小文字化はしない。 |
 
 `commit_id` だけ uppercase に rename する点に注意 (`body` / `event` / `comments` は **lowercase のまま**)。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
 
