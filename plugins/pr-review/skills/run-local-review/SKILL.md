@@ -38,12 +38,13 @@ Skill ツールで `compose-review` をローカル diff モードで呼ぶ。�
 
 `compose-review` は fenced JSON ブロックで以下のフィールドを返す:
 
+- `_intermediate: false` (ローカル diff モードでは本 skill が最終 caller なので最終成果物扱い)
 - `mode`: `"local"`
 - `base_branch`: 解決済みのベースブランチ名 (`main` / `master` / caller 指定値)
 - `diff_mode`: `"commit"` / `"staged"` / `"worktree"` / `"none"`
 - `body` / `event` / `comments[]`
 
-`commit_id` はローカルモードでは含まれない。
+`commit_id` / `next_step` はローカルモードでは含まれない。本 skill は Step 4 以降を持たないため、`_intermediate: false` を確認してそのまま caller に提示する。
 
 ### Step 3. caller への報告
 

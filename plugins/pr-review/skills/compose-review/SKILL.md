@@ -86,8 +86,14 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 #### 取得方法
 
-- **ローカル diff モード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。
-- **PR モード**: 上記 4 候補それぞれについて、まず cwd 直下を `Read` で試し、見つからなければリモートから取得する。**4 候補全ての remote fetch まで fall-through** して初めて「プロジェクト指示ファイルなし」と判定する (途中で 404 になっただけで残り候補をスキップしてはならない)。リモート取得時の API パスは **PR head ref を `?ref=` で必ず指定する**: `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>"` (`<HEAD_SHA>` は Step 1 で取得済みの `headRefOid`)。`?ref=` を省略するとデフォルトブランチから取られるため、PR 内で `REVIEW.md` 等を新設・編集している場合に新方針が反映されない (または逆に古い方針でレビューされる) 不整合が出る。Step 1 で `commit_id` を transient 失敗で省略した場合は `<HEAD_SHA>` の代わりに PR の headRefName (`gh pr view --json headRefName` で再取得) を使う。API レスポンスの `content` フィールドは Base64 なので `--jq .content` で抽出する。デコードは `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` か、`python3` が無い環境では `base64 -d` (GNU coreutils) を使う。
+- **ローカル diff モード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。見つかった時点でその内容を採用して終了。
+- **PR モード**: 上記 4 候補について、優先順で 1 候補ずつ以下の (1)〜(3) を試す:
+  1. cwd 直下を `Read`。見つかればその内容を採用して終了。
+  2. (1) で見つからなければ `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>"` で remote fetch。見つかればその内容を採用して終了。
+  3. remote fetch が 404 (またはそれ以外の取得失敗) なら **次の候補に進む** (この時点では「プロジェクト指示ファイルなし」と判定しない)。
+  - 4 候補すべての (1)〜(3) が空振りした場合のみ「プロジェクト指示ファイルなし」と判定する。
+  - リモート取得の `?ref=<HEAD_SHA>` は **PR head ref を必ず指定する** (`<HEAD_SHA>` は Step 1 で取得済みの `headRefOid`)。省略するとデフォルトブランチから取られるため、PR 内で `REVIEW.md` 等を新設・編集している場合に新方針が反映されない (または逆に古い方針でレビューされる) 不整合が出る。Step 1 で `commit_id` を transient 失敗で省略した場合は `<HEAD_SHA>` の代わりに PR の headRefName (`gh pr view --json headRefName` で再取得) を使う。
+  - API レスポンスの `content` フィールドは Base64 なので `--jq .content` で抽出する。デコードは `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` か、`python3` が無い環境では `base64 -d` (GNU coreutils) を使う。
 
 Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト側を優先し、矛盾しない箇所は両者を併用する。プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
 
@@ -146,6 +152,8 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 
 ```json
 {
+  "_intermediate": true,
+  "next_step": "post-pr-review",
   "mode": "pr",
   "body": "総括コメント本文 (Markdown 可)",
   "event": "COMMENT",
@@ -173,6 +181,7 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 
 ```json
 {
+  "_intermediate": false,
   "mode": "local",
   "base_branch": "main",
   "diff_mode": "commit",
@@ -182,6 +191,8 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 }
 ```
 
+- `_intermediate`: 真偽値 (必須)。**`true` なら orchestrator は本 JSON を中間成果物として扱い、`next_step` で示される後続 skill にそのまま転送する**。`false` なら本 JSON は最終成果物として caller に提示してよい (`run-local-review` 経由のローカル diff モードがこのケース)。fenced JSON ブロックを返したら処理完了、と orchestrator が誤認するのを防ぐためのメタ情報。
+- `next_step`: 次に呼ぶべき skill 名 (`_intermediate: true` の場合のみ含める)。現状は PR モードで `"post-pr-review"` 固定。ローカルモードでは省略。
 - `mode` は `"pr"` または `"local"`。**実行モードを正しく反映する**。caller が分岐しやすいよう常に含める。PR モード例の `"pr"` をローカルモードでもコピー貼り付けすると caller の分岐が壊れるので注意。
 - 単一行コメントは `path` / `line` / `side` を指定する。
 - 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。

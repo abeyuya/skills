@@ -9,6 +9,8 @@ PR レビュー一式 (PR 状態取得 → レビュー本文生成 → 投稿 �
 
 レビュー方針の読み込み (スタイル参考ガイド / プロジェクト指示ファイル) と本文生成は `compose-review` skill に委譲する。本 skill はその前後 (PR 識別 / CI・既存スレッド context 収集 / 投稿 / resolve / 報告) のみを担う。
 
+> **重要**: Step 3 で `compose-review` が返す fenced JSON は **中間成果物** で、Step 4 (`post-pr-review`) で初めて GitHub に投稿される。chat に成果物っぽい JSON が出力されても **ここで終わってはならない**。Step 6 (caller 報告) まで実行して初めて本 skill の主目的 (GitHub への 1 Review 投稿) が達成される。CI 内 (人間不在) で実行された場合、Step 4 が抜けると無音で終わるため再発防止対策を Step 3 と Step 4 の両方に置いている。
+
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
 すべて省略可。省略時の挙動は各項目に記載。
@@ -42,7 +44,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が **非空の値で** 渡され�
   - 失敗ジョブが無ければ `CI_FAILURE_CONTEXT` は渡さない (空文字も渡さない)。
 - **既存 reviewThreads サマリ (重複回避用)**:
   - GraphQL で `reviewThreads` を取得する。`-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`PR_NUMBER` は GraphQL の `Int!` 型なので **必ず `-F` (型推論あり) を使い、`-f` (文字列固定) は使わない**。`reviewThreads(first: 100)` は 1 ページ上限なので `pageInfo { hasNextPage endCursor }` を取得し、`hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。
-  - クエリで取得するフィールドは **重複排除に必要な最小セット** に絞る (出力サイズ削減): スレッドレベルで `id` / `isResolved`、`comments(first: 50)` の各要素で `path` / `line` / `side` / `body` / `author.login`。`path` や `line` 等の API キー名は **GitHub GraphQL の正確なスペル** をそのまま使う (例: `line` (snake_case 風だが GraphQL では一語) / `originalLine` (resolved 後の位置確認用、必要なら追加))。
+  - クエリで取得するフィールドは **重複排除に必要な最小セット** に絞る (出力サイズ削減): スレッドレベルで `id` / `isResolved`、`comments(first: 50)` の各要素で `path` / `line` / `originalLine` / `body` / `author.login`。`originalLine` はコメント先のコミットが進んで `line` が `null` になっているスレッドで位置情報を保つために併記する。**`side` は `PullRequestReviewComment` 型に存在しないため絶対にクエリに含めない** (`undefinedField` で 422 になる; dedupe は `path` / `line` / `body` の組み合わせで充分)。
   - 取得対象は **`isResolved: false` のスレッドに絞る** (resolve 済みは既に修正反映済みなので dedupe 対象外)。GitHub GraphQL の `reviewThreads` 引数で直接 filter する手段は無いため、`first: 100` で全件取得した上で **クライアント側で `isResolved == false` のものだけ残す**。
   - 各スレッドの主旨を簡潔にまとめる。**`path:line` は要約の段落本文にではなく、各スレッドごとの 1 項目ずつのリスト形式で明示** する (例: `- src/foo.ts:42 — [should] ここは A の代わりに B を使うべき`)。compose-review 側で位置情報に基づく dedupe を効かせるために構造を保つ。
   - まとめた内容を `compose-review` の `EXISTING_THREADS_CONTEXT` 入力として転送する。未 resolve スレッドが 0 件なら渡さない (resolve 済みのみのケースを含む)。
@@ -59,9 +61,17 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
 - `EXISTING_THREADS_CONTEXT` (Step 2 で組み立てたサマリ。無ければ渡さない)
 - `RECHECK_HEAD_SHA` (caller から渡されていれば。デフォルト未指定 = `false` 扱い)
 
-`compose-review` は fenced JSON ブロックで以下のフィールドを返す: `mode` (= `"pr"`) / `body` / `event` / `comments[]` / `commit_id` (任意)。Step 4 では下記対応表のフィールドだけを `post-pr-review` に転送する (`mode` は対応表に無いため転送しない)。
+`compose-review` は fenced JSON ブロックで以下のフィールドを返す:
 
-**ここで止まらない**: `compose-review` が返す fenced JSON は本 orchestrator 向けの **中間成果物** で、caller (人間) への最終 deliverable ではない。出力フォーマットが「成果物っぽい」見た目をしていても、ターンを終えず **そのまま Step 4 (`post-pr-review`) に進む**。caller への最終報告は Step 6 まで保留する。Step 4 が実行されないと PR への投稿が抜けてしまい、本 skill の主目的 (= GitHub への 1 Review 投稿) が達成されない。
+- `_intermediate: true` (中間成果物マーカー)
+- `next_step: "post-pr-review"` (次に呼ぶべき skill)
+- `mode` (= `"pr"`)
+- `body` / `event` / `comments[]`
+- `commit_id` (任意)
+
+Step 4 では下記対応表のフィールドだけを `post-pr-review` に転送する (`_intermediate` / `next_step` / `mode` は orchestrator 内部用の meta フィールドのため転送しない)。
+
+**ここで止まらない**: `compose-review` が返す JSON には `_intermediate: true` が含まれている時点で、本 step は **未完了**。fenced JSON を chat に出力した「区切り感」に惑わされず、ターンを終えず **そのまま Step 4 (`post-pr-review`) に進む**。`_intermediate: false` (もしくは無い) を確認しないまま終わってはならない。caller への最終報告は Step 6 まで保留する。Step 4 が実行されないと PR への投稿が抜けてしまい、本 skill の主目的 (= GitHub への 1 Review 投稿) が達成されない。CI 内で人間不在のまま走る運用 (claude-code-action 等) では Step 4 抜けは無音の事故になるため、再発防止を最優先で守ること。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 
@@ -75,6 +85,7 @@ Step 3 で得た JSON と Step 1 で確定した `OWNER` / `REPO` / `PR_NUMBER` 
 | `event` | `event` | 文字列 `"COMMENT"` 固定。 |
 | `comments` | `comments` | 配列。要素のキー (`path` / `line` / `side` / `start_line` / `start_side` / `body`) はそのまま。 |
 | `commit_id` | `COMMIT_ID` | 文字列。`compose-review` が省略してきた場合は本入力も省略する。 |
+| `_intermediate` / `next_step` / `mode` | (転送しない) | orchestrator 内部用の meta フィールド。`post-pr-review` には渡さない。 |
 | (本 skill が確定済み) | `OWNER` / `REPO` / `PR_NUMBER` | Step 1 の値。 |
 
 `commit_id` だけ uppercase に rename する点に注意 (`body` / `event` / `comments` は **lowercase のまま**)。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
