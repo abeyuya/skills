@@ -19,7 +19,11 @@ PR レビュー一式 (PR 状態取得 → レビュー本文生成 → 投稿 �
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited` 扱い。Step 3 で `compose-review` にそのまま転送する。
 - `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` skill に渡す resolve 範囲。`all` / `own` / `none` のいずれか。省略時は `all`。
 - `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 5 でそのまま `resolve-pr-threads` に転送される。
-- `RECHECK_HEAD_SHA` (任意): 真偽値 (`true` / `false`)。`true` を渡すと Step 3 経由で `compose-review` に転送され、Step 4 の diff 取得直後に head SHA を再取得 → force-push 検知時に「再実行を推奨」として停止する。frequent force-push PR (ドッグフーディング系 caller) で誤投稿を防ぎたい場合に使う。省略時は `false` 扱い。
+- `RECHECK_HEAD_SHA` (任意): 真偽値 (`true` / `false`)。省略時は `false` 扱い。
+  - **受信者**: `compose-review` skill (本 skill は Step 3 で素通し転送するだけで、本 skill 内では参照しない)。
+  - **影響を与える step**: `compose-review` 内の Step 4 (PR diff 取得直後)。
+  - **実挙動**: `true` の場合、`compose-review` Step 4 で diff を取得した直後に `gh pr view --json headRefOid` を再取得し、Step 1 で控えた値と異なれば「force-push 検知のため再実行を推奨」として `compose-review` 自体が停止する (停止時の chat 出力は通常の中間成果物サマリではなくエラー扱い)。本 skill 側 (`run-pr-review`) ではこの停止を受けて Step 4 以降を実行せずに caller に異常終了を報告する。
+  - **使いどころ**: frequent force-push PR (ドッグフーディング系 caller) で誤投稿を防ぎたいケース。通常運用では `false` で良い。
 
 caller プロジェクト固有のレビュー方針 (技術観点 / スタイル上書き / 全方針置換) は **プロジェクト指示ファイル** (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` の優先順で最初の 1 つだけ) に置く運用に固定する。読み込み自体は `compose-review` 側で行うため本 skill では扱わない。
 
@@ -29,10 +33,10 @@ caller プロジェクト固有のレビュー方針 (技術観点 / スタイ�
 
 caller から `OWNER` / `REPO` / `PR_NUMBER` が **非空の値で** 渡されていればそれを使う。空文字 (`""`) は GitHub Actions 等で env 変数が未設定だと展開されうるので **未指定と同等に扱い、補完対象とする**。揃っていない値だけ以下で補う:
 
-- `OWNER` / `REPO`: `gh repo view --json nameWithOwner -q .nameWithOwner` で `OWNER/REPO` 形式を取得し分解する。
-- `PR_NUMBER`: `gh pr view --json number -q .number` で現在のブランチに紐づく PR 番号を取得する。紐づく PR が無い場合はエラーとして停止し、caller に明示的に PR 番号を渡すよう促す。
+- `OWNER` / `REPO`: `gh repo view --json nameWithOwner -q .nameWithOwner` で `OWNER/REPO` 形式を取得し分解する。**戻り値が `OWNER/REPO` 形式 (スラッシュを 1 つ含む 2 トークン) を満たさない場合** (空文字 / 単一トークン / 複数スラッシュ等) は補完失敗として扱う。
+- `PR_NUMBER`: `gh pr view --json number -q .number` で現在のブランチに紐づく PR 番号を取得する。**戻り値が非空の正の整数** でなければ補完失敗。紐づく PR が無い場合も同様にエラーとして停止し、caller に明示的に PR 番号を渡すよう促す。
 
-補完後も 3 つのいずれかが確定できなかった場合は **エラーとして停止する** (`compose-review` を呼ばない)。`compose-review` 側のモード判定 (3 つ揃わなければ局所 diff モードへ退化) は本 skill の用途と意図が合わないため、本 skill では混在 / 部分欠落を弾く責務を持つ。
+補完後も 3 つのいずれかが確定できなかった場合 (`gh` コマンドの非ゼロ exit / 戻り値の形式不正 / 空文字を含む) は **エラーとして停止する** (`compose-review` を呼ばない)。`compose-review` 側のモード判定 (3 つ揃わなければ局所 diff モードへ退化) は本 skill の用途と意図が合わないため、本 skill では混在 / 部分欠落 / 形式不正を弾く責務を持つ。
 
 ### Step 2. CI / 既存スレッドの context を収集する
 
@@ -90,8 +94,8 @@ Step 3.5 で `/tmp/compose-review-output.json` から取り出したフィール
 | --- | --- | --- |
 | `body` | `body` | 文字列。AI 自動投稿マーカーは `post-pr-review` が prepend するので **そのまま渡す**。 |
 | `event` | `event` | 文字列 `"COMMENT"` 固定。 |
-| `comments` | `comments` | 配列。要素のキー (`path` / `line` / `side` / `start_line` / `start_side` / `body`) はそのまま。 |
-| `commit_id` | `COMMIT_ID` | 文字列。`compose-review` が省略してきた場合は本入力も省略する。 |
+| `comments` | `comments` | 配列。要素のキー (`path` / `line` / `side` / `start_line` / `start_side` / `body`) はそのまま。**ここでの `side` は GitHub Review REST API (`POST /repos/.../reviews`) の `comments[]` 入力スキーマで `"RIGHT"` / `"LEFT"` を取る正規フィールドであり、Step 2 で「クエリに含めるな」とした GraphQL の `PullRequestReviewComment` 型の `side` (存在しない) とは別物。文脈 (REST POST vs GraphQL Read) で扱いが反転する点に注意。** |
+| `commit_id` | `COMMIT_ID` | 文字列。`compose-review` が省略してきた場合 (transient 失敗による省略 / 「対象差分なし」分岐で commit_id が含まれていなかった場合等、理由を問わず) は本入力も省略する。空文字を渡さない (`gh api .../reviews` が 422 で失敗するため)。 |
 | `_intermediate` / `next_step` / `mode` | (転送しない) | orchestrator 内部用の meta フィールド。`post-pr-review` には渡さない。 |
 | (本 skill が確定済み) | `OWNER` / `REPO` / `PR_NUMBER` | Step 1 の値。 |
 
@@ -110,7 +114,7 @@ Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `reso
 以下を簡潔に caller へ返す:
 
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
-- インライン指摘件数 / 総括の主要懸念件数 / severity 内訳 (Step 3 の `compose-review` 戻り値から抽出)
+- インライン指摘件数 / 総括の主要懸念件数 / severity 内訳 (Step 3.5 で `/tmp/compose-review-output.json` から取り出した `comments[]` の長さと `body` 内訳から算出)
 - resolve したスレッド件数 (Step 5 の戻り値)
 
 ## 守ること
