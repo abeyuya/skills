@@ -64,9 +64,11 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
 
 `OUTPUT_DESTINATION=file` を指定することで、`compose-review` は JSON 本体を `/tmp/compose-review-output.json` に書き出し、chat には 1 行サマリのみを返す。**chat に fenced JSON が出ない** ことで、orchestrator (実装エージェント) が「JSON が出たからタスク完了」と誤認するリスクを構造的に取り除く (PR #34 で実害が発生した既知の踏み外しパターン)。
 
+**🛑 ここでターンを終えてはいけない**: `compose-review` の Skill ツール呼び出しが完了し chat に 1 行サマリ (中間成果物完了の知らせ) が返ったら、それは **「次に進め」のシグナル**。完了報告の見た目に騙されず、SKILL.md の次行 (Step 3.5) に進む。これは PR #34 で 3 回踏み抜かれた既知パターンへの再掲警告。
+
 ### Step 3.5. `_intermediate` を確認し Step 4 に進む準備をする
 
-**本 step は意図的に独立 step として番号を振っている**。Step 3 で `compose-review` の呼び出しが完了した直後、chat 上に成果物っぽい出力が無いとはいえ、ここで「タスク完了」と判定してはならない。
+**🛑 本 step は Step 3 終了直後に必ず実行する** (意図的に独立 step として番号を振っている)。Step 3 の `compose-review` 呼び出しが完了したら、chat 出力の見た目に関わらずここで「タスク完了」と判定してはならない。本 PR で 3 回踏み抜かれた既知パターンの一次防止線。
 
 1. `Read` ツールで `/tmp/compose-review-output.json` を読み込む。
 2. パースして `_intermediate` フィールドを確認する。

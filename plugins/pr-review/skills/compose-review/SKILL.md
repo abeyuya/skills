@@ -151,7 +151,19 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 
 #### `OUTPUT_DESTINATION=file` (`run-pr-review` から呼ばれる際の推奨)
 
-`Write` ツールで JSON 本体を `/tmp/compose-review-output.json` に書き出す。チャット側は **1 行サマリのみ** を出力する (例: `compose-review: PR モードで JSON を /tmp/compose-review-output.json に書き出しました。インライン指摘 3 件 / 主要懸念 2 件。orchestrator は Step 3.5 で本ファイルを Read してください。`)。
+`Write` ツールで JSON 本体を `/tmp/compose-review-output.json` に書き出す。チャット側は **「次にやること」を含む 1 行** を出力する。
+
+**サマリの形式 (必ずこの形に揃える)**:
+
+```
+compose-review (中間成果物): /tmp/compose-review-output.json 生成完了 (インライン指摘 N 件 / 主要懸念 M 件)。**次は run-pr-review Step 3.5: Read → Step 4: post-pr-review 呼び出し。ここでターンを終えてはいけない**。
+```
+
+- `(中間成果物)` の修飾語を付けることで「完了報告」ではなく「中継状態」であることを視覚的に示す。
+- 文末を「生成完了」「投稿完了」のような完了形で締めず、**`次は ...` で続けて「次の動作」を明示**する。
+- **「ここでターンを終えてはいけない」を必ず含める**。chat に出る最後の文が完了報告風だと orchestrator が処理を打ち切る慣性に負ける既知の問題への対策 (PR #34 で 3 回再発)。
+
+その他の制約:
 
 - **fenced JSON ブロックを chat に出さない**。chat 上に大きなアウトプットを残さないことで、orchestrator が「JSON 出力 = タスク完了」と誤認する構造的リスクを取り除く。
 - `Write` ツールは中間ディレクトリの自動作成を保証しないが `/tmp/` は通常存在するので `mkdir -p` は不要。既に同名ファイルがあった場合に備え、`Write` 前に `Read` で確認しておく (Write tool の制約)。
@@ -217,7 +229,7 @@ JSON を fenced ブロックで chat に出力する。fenced ブロックの **
 - 指摘が無い場合: `body` は「特に指摘なし」相当の文言、`comments` は `[]`。
 - 差分が空で Step 2〜5 を skip した場合: `body` は「対象差分なし (評価対象なし)」相当、`comments` は `[]`。ローカルモードでは `diff_mode: "none"`、PR モードでは PR 自体には差分が存在しないため通常運用では発生しにくいが同様に空 `comments[]` で返す。
 
-JSON ファイル (`/tmp/...` 等) への書き出しは行わない。markdown ファイル出力も行わない。caller が `post-pr-review` に渡す際の JSON ファイル組み立ては `post-pr-review` 側が責任を持つ。
+JSON ファイルへの書き出しは `OUTPUT_DESTINATION=file` 経由の `/tmp/compose-review-output.json` を **例外** とし、それ以外 (任意パスへの書き出し / 複数ファイル分割 / debug 用ログファイル等) は行わない。markdown ファイル出力も行わない。caller が `post-pr-review` に渡す際の `/tmp/review.json` の組み立ては `post-pr-review` 側が責任を持つ (本 skill が `/tmp/review.json` を直接書くことはない)。
 
 ## 守ること
 
