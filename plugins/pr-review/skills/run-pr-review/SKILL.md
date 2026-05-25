@@ -100,6 +100,7 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
 **🛑 本 step は Step 3 終了直後に必ず実行する** (意図的に独立 step として番号を振っている)。Step 3 の `compose-review` 呼び出しが完了したら、chat 出力の見た目に関わらずここで「タスク完了」と判定してはならない。本 PR で 3 回踏み抜かれた既知パターンの一次防止線。
 
 1. `Read` ツールで `/tmp/compose-review-output.json` を読み込む。
+   - **ファイル不在 / Read 失敗時の fallback**: ファイルが存在しない、または Read がエラーになる場合、`compose-review` 側で `Write` 前に致命的失敗が起きた可能性が高い (例: Skill ツール呼び出し自体の異常、`compose-review` 内 step での停止)。この場合は **Step 4 / Step 5 を skip して Step 6 へ直行** し、caller への報告で「`compose-review` の出力ファイルを取得できなかった (Step 3 chat の 1 行サマリを参照のこと)。Review 未投稿。再実行を推奨」と異常終了を 1 段落で報告する。**ここでも絶対にターンを終えない** (Step 6 まで実行する)。Read を再試行したり `compose-review` を再呼び出ししたりは本 step では行わない (responsibility 切り分けのため caller へ判断を委ねる)。
 2. **中断シグナルの判定** (最優先): `_aborted` フィールドが `true` なら、`compose-review` が処理中断を要求している (例: `RECHECK_HEAD_SHA=true` での force-push 検知)。この場合は:
    - **Step 4 / Step 5 を skip** する (`post-pr-review` / `resolve-pr-threads` を呼ばない)。
    - **Step 6 へ直行** し、caller への報告で「`compose-review` が `<_abort_reason>` のため中断 (`<_abort_message>`)。Review 未投稿。再実行を推奨」と異常終了を 1 段落で報告する。
@@ -107,7 +108,7 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
    - `_intermediate: true` であることを確認する (PR モードでは必ずこの値)。
    - `next_step: "post-pr-review"` であることを確認する (次に呼ぶべき skill 名)。
 4. 後続で `post-pr-review` に転送する各フィールド (`body` / `event` / `comments` / `commit_id`) を JSON から取り出す。`_intermediate` / `next_step` / `mode` / `_summary_meta` / `_aborted` / `_abort_reason` / `_abort_message` は orchestrator 内部用の meta フィールドのため転送しない (`_summary_meta` は本 skill Step 6 で参照する用、`_aborted*` は本 step で判定した時点で役目を終える)。
-5. ここで **絶対にターンを終えない**。本 step を読了したらそのまま Step 4 (中断時は Step 6) に続けて進む。本 step を独立 step として置いている目的は「Step 3 で JSON を受け取った直後の "区切り感" よりも強い継続フック」を作ること。`_intermediate: true` を確認したまま終わったら本 skill の主目的 (= GitHub への 1 Review 投稿) は達成されない。CI 内で人間不在のまま走る運用 (claude-code-action 等) では Step 4 抜けは無音の事故になるため、本 step を読了 → Step 4 (または Step 6) へ進む、を機械的に守ること。
+5. ここで **絶対にターンを終えない**。本 step を読了したらそのまま Step 4 (中断時 / ファイル不在時は Step 6) に続けて進む。本 step を独立 step として置いている目的は「Step 3 で JSON を受け取った直後の "区切り感" よりも強い継続フック」を作ること。`_intermediate: true` を確認したまま終わったら本 skill の主目的 (= GitHub への 1 Review 投稿) は達成されない。CI 内で人間不在のまま走る運用 (claude-code-action 等) では Step 4 抜けは無音の事故になるため、本 step を読了 → Step 4 (または Step 6) へ進む、を機械的に守ること。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 

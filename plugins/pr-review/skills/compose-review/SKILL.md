@@ -46,7 +46,7 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 - `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid` で head SHA を取得し、Step 6 の出力 JSON `commit_id` として控える。
 - 取得失敗時は HTTP ステータス / エラー種別で扱いを分ける:
   - **致命 (即停止)**: 401 / 403 (権限不足) / 404 (PR or リポジトリ不在) / 422 など、再試行しても変わらない種類。caller に PR_NUMBER / 権限の見直しを促す。
-  - **transient (再試行 → 省略)**: 5xx / network timeout / DNS 失敗 / ECONNRESET / 429 (rate limit) / 403 with `Retry-After` ヘッダ (secondary rate limit) など、時間を置けば回復が期待できる種類。**最大 2 回** まで再試行し (`gh` は exit code 経由でしか詳細が見えないので、`gh api -i ...` 等で status を確認するか、stderr を読む)、各再試行の間に **指数 backoff** (`sleep 2` → `sleep 4`) を入れる。2 回目も失敗したら `commit_id` を **省略** して以降の Step に進む (`post-pr-review` は `COMMIT_ID` を任意としているため、SHA 未確定でも Review 自体は投稿できる)。caller への報告で「commit_id 未確定で投稿した」旨を 1 文添える。
+  - **transient (再試行 → 省略)**: 5xx / network timeout / DNS 失敗 / ECONNRESET / 429 (rate limit) / 403 with `Retry-After` ヘッダ (secondary rate limit) など、時間を置けば回復が期待できる種類。判別は **`gh pr view` の exit code が非ゼロ かつ stderr に `HTTP 5xx` / `429` / `connection refused` / `i/o timeout` / `temporary failure in name resolution` / `Retry-After` などのパターンが含まれる** ことで行う (`gh pr view` には `-i` フラグが無いため HTTP ヘッダ直接取得は不可。HTTP status をどうしても見たい場合は `gh api -i repos/<OWNER>/<REPO>/pulls/<PR_NUMBER> --jq .head.sha` のように `gh api` 経由に切り替える)。**最大 2 回** まで再試行し、各再試行の間に **指数 backoff** (`sleep 2` → `sleep 4`) を入れる。2 回目も失敗したら `commit_id` を **省略** して以降の Step に進む (`post-pr-review` は `COMMIT_ID` を任意としているため、SHA 未確定でも Review 自体は投稿できる)。caller への報告で「commit_id 未確定で投稿した」旨を 1 文添える。
   - 判別が困難な場合 (生エラー文字列だけ取れる等) は **transient 扱い** に倒す (recall 重視。誤って即停止するより SHA 省略で進めた方が運用上の損失が小さい)。
 - TOCTOU 注意: 本 SHA 取得から Step 4 の `gh pr diff` 実行までの間に PR が force-push されると `commit_id` と diff の line 番号が食い違う。デフォルトでは再取得しないが、caller が `RECHECK_HEAD_SHA=true` を明示的に渡してきた場合は Step 4 の `gh pr diff` 直後に `gh pr view --json headRefOid` を再取得して値が変わっていれば **中断シグナルを返して停止する** (`compose-review` の入力としては optional な真偽値。frequent force-push PR のドッグフーディング系 caller が利用する想定)。
 
@@ -93,7 +93,11 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 同じ skill 配下の `style-reference.md` を `Read` ツールで読み込む。
 
-- `Read` ツールは **絶対パス** を要求するため、本 SKILL.md (`/path/to/.../skills/compose-review/SKILL.md`) と同じディレクトリの `style-reference.md` を絶対パスで指定する。skill 起動時に渡される SKILL.md の絶対パスから dirname を取って `<dirname>/style-reference.md` を組み立てれば、開発時 (`plugins/pr-review/skills/compose-review/`)・`/plugin install` 後 (`~/.claude/plugins/cache/.../skills/compose-review/`)・`apm install` 後 (`<consumer>/.claude/skills/compose-review/`) のいずれの展開先でも一意に解決できる。
+- `Read` ツールは **絶対パス** を要求するため、本 SKILL.md (`/path/to/.../skills/compose-review/SKILL.md`) と同じディレクトリの `style-reference.md` を絶対パスで指定する。
+- **絶対パスの解決手順** (環境依存のため複数のチャネルを試す):
+  1. Skill ツール起動 context (Claude Code) で SKILL.md の絶対パスが渡されていれば、その dirname を取って `<dirname>/style-reference.md` を組み立てる (最優先)。
+  2. (1) で取れない場合は `Bash` で `find /home /root ~/.claude /workspace -type f -name 'style-reference.md' -path '*pr-review/skills/compose-review*' 2>/dev/null | head -1` を実行して 1 件取る。検索ルートは環境に応じて適宜追加可 (主要展開先: 開発時 `plugins/pr-review/skills/compose-review/` / `/plugin install` 後 `~/.claude/plugins/cache/.../skills/compose-review/` / `apm install` 後 `<consumer>/.claude/skills/compose-review/`)。
+  3. (1)(2) いずれも取れなければ style-reference を読み込まずに `style-reference` 規約 (重要度ラベル / ノイズ抑制 / 粒度ガイド等) を skill デフォルトで進める。本 step 失敗を理由とした全体停止はしない (caller への報告で「style-reference 読み込み失敗」を 1 文添えて続行)。
 - 読み込んだ内容を本セッションのレビュー方針 (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い) の参考として保持する。
 - `MAX_INLINE_COMMENTS` は本 skill の入力として直接適用する (style-reference 側は引数解釈ルールを定義しているのみ)。Step 5 でレビュー本文を組み立てる際にも本キャップ値を改めて参照する。
 
@@ -113,7 +117,12 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 #### 取得方法
 
 - **ローカル diff モード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。見つかった時点でその内容を採用して終了。
-- **PR モード**: まず cwd の git remote と PR の所属リポジトリが一致するかを判定する: `git remote get-url origin` の URL から `OWNER/REPO` 形式を抽出 (例: `https://github.com/abeyuya/skills.git` / `git@github.com:abeyuya/skills.git` のいずれも `abeyuya/skills` に正規化) し、本 skill 入力の `OWNER` / `REPO` と一致するなら **cwd 一致モード**、しなければ **cwd 非一致モード** とする。
+- **PR モード**: まず cwd の git remote と PR の所属リポジトリが一致するかを判定する。判定アルゴリズム:
+  1. `git remote get-url origin` で remote URL を取得。
+  2. URL から `<owner>/<repo>` を抽出する。**`github.com` の文字列マッチに依存しない汎用ルール**: URL 末尾から `.git` を剥がしたうえで、末尾 2 セグメント (`/<owner>/<repo>`) を取り出す。例: `https://github.com/abeyuya/skills.git` → `abeyuya/skills` / `git@github.com:abeyuya/skills.git` → `abeyuya/skills` / Claude Code on the web のような proxy 形式 `http://local_proxy@127.0.0.1:44277/git/abeyuya/skills` → `abeyuya/skills` のいずれも `abeyuya/skills` に正規化される。
+  3. 抽出に失敗した (`/` が無い / セグメントが取れない / 空文字) 場合は **「cwd 非一致」として扱う** (安全側に倒す。PR と無関係なリポジトリの方針を誤適用しない方向)。
+  4. 抽出値が本 skill 入力の `OWNER` / `REPO` (大文字小文字区別なし) と一致するなら **cwd 一致モード**、しなければ **cwd 非一致モード**。
+  5. `git remote get-url origin` 自体がエラー (remote 未設定 / git リポジトリ外) も「cwd 非一致」扱い。
   - **cwd 一致モード** (通常運用: claude-code-action 等で PR repo を checkout している場合): 4 候補について、優先順で 1 候補ずつ以下の (1)〜(3) を試す:
     1. cwd 直下を `Read`。見つかればその内容を採用して終了。
     2. (1) で見つからなければ `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>"` で remote fetch。見つかればその内容を採用して終了。
@@ -204,7 +213,11 @@ compose-review (中間成果物): /tmp/compose-review-output.json 生成完了 (
 その他の制約:
 
 - **fenced JSON ブロックを chat に出さない**。chat 上に大きなアウトプットを残さないことで、orchestrator が「JSON 出力 = タスク完了」と誤認する構造的リスクを取り除く。
-- `Write` ツールは中間ディレクトリの自動作成を保証しないが `/tmp/` は通常存在するので `mkdir -p` は不要。**Claude Code の Write tool は「同一セッション中に Read されていない既存ファイルへの上書き」を拒否する仕様**のため、`/tmp/compose-review-output.json` は前回呼び出しで残存している可能性を考慮し、Write 前に `Read` を 1 回挟む (ファイル不在なら Read エラーは無視してそのまま Write、存在すれば Read 後に Write)。
+- `Write` ツールは中間ディレクトリの自動作成を保証しないが `/tmp/` は通常存在するので `mkdir -p` は不要。**Claude Code の Write tool は「同一セッション中に Read されていない既存ファイルへの上書き」を拒否する仕様**のため、`/tmp/compose-review-output.json` が前回呼び出しで残存している可能性に対処する。**手順**:
+  1. `Bash` ツールで `test -f /tmp/compose-review-output.json` を実行 (exit code 0 = 存在 / 非ゼロ = 不在)。
+  2. 存在する場合のみ `Read` ツールを 1 回挟む (Write tool の上書き許可を取るため)。
+  3. 不在の場合は `Read` を呼ばずそのまま `Write` に進む (Read tool はファイル不在で例外停止する仕様のため、不在を `test -f` で事前判定して Read 自体を skip する)。
+  4. `Write` ツールで JSON を書き出す。
 
 #### `OUTPUT_DESTINATION=chat` (デフォルト、`run-local-review` から呼ばれる際 / 人間が直接 `/compose-review` を叩く際の挙動)
 
