@@ -83,7 +83,7 @@ permissions:
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
       caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。
     claude_args: |
-      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
+      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
 ```
 
 ## 利用方法 (ローカル Claude Code)
@@ -119,3 +119,13 @@ claude --plugin-dir plugins/pr-review
 ```
 
 セッション中に `SKILL.md` や `commands/*.md` を編集したら `/reload-plugins` で再読込できる。
+
+### 別ブランチで新規 skill を追加した PR を試す場合 (`Unknown skill: <name>` エラー対処)
+
+ローカルでブランチをチェックアウトしても Claude Code は **自動的に plugin install を更新しない**。`/plugin install` 済みの main 版に compose-review が無ければ、本ブランチをチェックアウトしても sub-agent から `Skill ツール (skill: "compose-review")` 呼び出しが `Unknown skill: compose-review` で失敗する。対処:
+
+1. **推奨**: `claude --plugin-dir plugins/pr-review` で起動する。`--plugin-dir` 指定は同名の install 済み plugin より優先され、本ブランチの未コミット内容も含めてその場で読み込まれる。
+2. **代替**: `/plugin marketplace add abeyuya/skills && /plugin install pr-review@abeyuya-skills` を再実行する (marketplace の HEAD コミットを再 fetch して install を更新)。
+3. **緊急 workaround**: orchestrator (`/run-pr-review` / `/run-local-review`) を手動で停止し、`compose-review/SKILL.md` を `Read` で直接読んで手順を実行する (skill 経由ではなくなるので戻り値の構造化は崩れる)。
+
+これは plugin marketplace 仕様であり本 plugin のバグではない。PR merge 後 marketplace の HEAD が更新されれば通常の `/plugin install` で同梱される。

@@ -9,7 +9,7 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 
 ## 入力 (任意, caller から prompt 経由で渡される)
 
-入力は `KEY=VALUE` 形式 1 行ずつで渡される想定。長文値 (`EXISTING_THREADS_CONTEXT` 等) は最初の `=` までを key、それ以降の改行も含めて次の `KEY=` または prompt 末尾までを value として扱う。未指定の key は呼び元で行ごと省略される。
+入力は `KEY=VALUE` 形式 1 行ずつで渡される想定。長文値 (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT` 等) は最初の `=` までを key、それ以降の改行も含めて次の `KEY=` (`^[A-Z_]+=`) または prompt 末尾までを value として扱う。**長文 value の中に `^[A-Z_]+=` 行頭パターンが混入すると誤切断するため、caller (orchestrator) は長文 value を prompt の末尾 (短い key より後) に配置すること**。未指定の key は呼び元で行ごと省略される。
 
 ### モード切替
 
@@ -75,8 +75,8 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 - **ローカルモード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。
 - **PR モード**: cwd の git remote URL 末尾 2 セグメント (`/<owner>/<repo>`、`.git` 除去) を抽出して入力 `OWNER`/`REPO` (大文字小文字無視) と比較。
-  - **cwd 一致**: cwd 直下を 1 候補ずつ `Read` → 不在なら `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>` で remote fetch → 404 なら次の候補。
-  - **cwd 非一致 / remote 抽出失敗**: cwd を読まず remote fetch のみ。
+  - **cwd 一致**: cwd 直下を 1 候補ずつ `Read` → 不在なら `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<commit_id>` で remote fetch → 404 なら次の候補。`<commit_id>` は Step 1 で確定した head SHA (caller から `COMMIT_ID` 経由で渡されたもの、または `gh pr view` で取得したもの)。`?ref=` を省略すると default branch から取れて PR で新設・編集された REVIEW.md が反映されない不整合になる。
+  - **cwd 非一致 / remote 抽出失敗**: cwd を読まず remote fetch のみ (`?ref=<commit_id>` を必ず付ける)。
   - API レスポンスの `content` は Base64 なので `--jq .content` で取り、`python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` でデコード。
 
 ファイル内容は **そのままレビュー方針として扱う**。スタイル参考ガイドと矛盾する箇所はプロジェクト側を優先、矛盾しない箇所は両者を併用。プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
@@ -85,8 +85,8 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ### Step 4. 差分を取得する
 
-- **PR モード**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得。大きい場合は `--name-only` でファイル一覧を取り、`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) でファイル単位に追い読み (`--paginate` 必須。`per_page=30` のデフォルトで 30 ファイル超が落ちないようにする)。差分が空なら Step 5 skip し Step 6 で `body` を「対象差分なし」、`comments` を `[]` で返す。
-- **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` でファイル一覧を取りファイル単位で追い読み。
+- **PR モード**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得。**truncation 検知**: `gh pr diff --name-only` で取った件数と、`gh pr diff` の patch hunk header (`diff --git a/...`) の出現件数が一致するかを突合する。一致しない / 出力末尾に打ち切り表示 (`... (truncated)` 等) が出る場合は `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) でファイル単位に追い読み (`--paginate` 必須。`per_page=30` のデフォルトで 30 ファイル超が落ちる事故防止)。差分が空なら Step 5 skip し Step 6 で `body` を「対象差分なし」、`comments` を `[]` で返す。
+- **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` でファイル一覧を取りファイル単位で追い読み。`commit` モードでは差分本体とは別に **`commit_count = git rev-list --count <base>..HEAD` で件数を取得** し Step 6 出力に含める (`--oneline | wc -l` ではなく `rev-list --count` を使う。コミットメッセージ改行等で値ズレしない正準コマンド)。`staged` / `worktree` / `none` モードでは `commit_count = 0` 固定。
   - `commit`: `git diff <base>...HEAD` (三点記法でベース進行を除外)
   - `staged`: `git diff --cached`
   - `worktree`: `git diff`
@@ -138,13 +138,13 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 ```
 
 - `commit_id` は **PR モードのみ** 含める。差分なし (Step 4 で `gh pr diff` が空) の場合も Step 1 で取得した値を必ず含める (force-push 行ズレ防止のため optional ではなく必須)。
-- `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` は `diff_mode="commit"` 時のみ `git log <base>..HEAD --oneline | wc -l` で取得した整数、`staged` / `worktree` / `none` 時は `0` (固定)。
+- `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` の取得手順は Step 4 ローカルモードに集約 (`git rev-list --count <base>..HEAD`、`staged` / `worktree` / `none` 時は `0` 固定)。
 - 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
 - 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`。空文字列は不可。
 
 ### 失敗時
 
-致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗など) は `{"error":"<人間向けメッセージ>"}` を最終メッセージとして返す。orchestrator は `error` フィールドがあれば caller に転送して停止する。
+致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空など) は `{"error":"<人間向けメッセージ>"}` を最終メッセージとして返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は `error` フィールドがあれば caller に転送して停止する。
 
 ## 守ること
 
