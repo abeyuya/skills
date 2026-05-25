@@ -129,6 +129,7 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
     3. remote fetch が 404 (またはそれ以外の取得失敗) なら **次の候補に進む**。
   - **cwd 非一致モード** (ドッグフーディング系: 別リポジトリの作業ディレクトリから別 PR をレビューする場合): cwd を **読まず** (PR と無関係なリポジトリの方針を誤適用するのを防ぐため)、4 候補について `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>"` の remote fetch のみを試す。404 なら次の候補に進む。
   - **共通**: 4 候補すべての判定が空振りした場合のみ「プロジェクト指示ファイルなし」と判定する。`?ref=<HEAD_SHA>` は **PR head ref を必ず指定する** (`<HEAD_SHA>` は Step 1 で取得済みの `headRefOid`)。省略するとデフォルトブランチから取られるため、PR 内で `REVIEW.md` 等を新設・編集している場合に新方針が反映されない (または逆に古い方針でレビューされる) 不整合が出る。Step 1 で `commit_id` を transient 失敗で省略した場合は `<HEAD_SHA>` の代わりに PR の headRefName (`gh pr view --json headRefName` で再取得) を使う。
+    - **cross-repo PR (fork からの PR) + Step 1 transient 失敗 の同時発生時の挙動**: `headRefName` は fork 側ブランチ名で base リポジトリ (`OWNER`/`REPO`) には存在しないため、`gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<headRefName>` は 4 候補すべて 404 になる (本 fallback は実質ノーガード)。この場合は「プロジェクト指示ファイル取得を諦める」とみなし、Step 2 の style-reference のみで続行する (skill 全体は停止しない)。両ケースとも稀 (cross-repo PR が稀 + head SHA transient 失敗が稀) なため意図的にこの degrade を許容している。確実に PR head を参照したい場合は caller (`run-pr-review` Step 2 等) が `gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>` から `head.sha` を独立に取得して入力 `commit_id` 相当を渡す等の運用回避を検討する。
   - API レスポンスの `content` フィールドは Base64 なので `--jq .content` で抽出する。デコードは `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` か、`python3` が無い環境では `base64 -d` (GNU coreutils) を使う。
 
 Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト側を優先し、矛盾しない箇所は両者を併用する。プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
