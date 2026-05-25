@@ -55,9 +55,12 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ### Step 2. スタイル参考ガイドを読み込む
 
-`/pr-review-style-reference` slash command を呼ぶ (`MAX_INLINE_COMMENTS` 指定があれば `max-inline-comments=<値>` を渡す)。重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱いを本セッションのレビュー方針として保持する。
+`pr-review-style-reference` を呼ぶ (`MAX_INLINE_COMMENTS` 指定があれば `max-inline-comments=<値>` を渡す)。呼び出し方は本 skill が起動された context に応じて以下のいずれか:
 
-> Note: subagent (Task ツール経由) として起動された場合、parent の plugin slash command が継承されない可能性がある。その場合は本 step で `/pr-review-style-reference` の解決に失敗するので、本 skill デフォルト (style-reference を読まずに進む) で進行し、caller 報告に「style-reference 読み込み失敗」を 1 文添える。skill 全体は停止しない。
+- parent context (人間 / orchestrator が直接 `/compose-review` を起動): `/pr-review-style-reference` slash command として呼べる。
+- subagent (Task ツール / Agent ツール経由) として起動された場合: subagent は slash command を直接呼ぶ手段を持たないため、**Skill ツール (`skill: "pr-review-style-reference"`)** で起動する。slash command と skill の区別は subagent から見ると透過的で、Skill ツール経由でも対応する markdown ファイルが同じ内容で invoke される (`commands/` 配下のファイルも `skills/` と同じく Skill ツール名で解決される)。
+
+いずれの経路でも重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱いを本セッションのレビュー方針として保持する。
 
 ### Step 3. プロジェクト指示ファイルを読み込む (任意)
 
