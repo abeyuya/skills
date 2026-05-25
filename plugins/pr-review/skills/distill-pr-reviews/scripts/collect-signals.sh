@@ -97,13 +97,23 @@ if [[ "$PR_COUNT" -eq 0 ]]; then
     --arg since "$SINCE" --arg until "$UNTIL" \
     --arg collected_at "$COLLECTED_AT" \
     --argjson pr_count 0 --argjson max_prs_exceeded false \
-    '{meta: {owner:$owner, repo:$repo, since:$since, until:$until, collected_at:$collected_at, pr_count:$pr_count, max_prs_exceeded:$max_prs_exceeded}, prs: []}' \
+    --argjson include_ai_authored "$INCLUDE_AI_AUTHORED" \
+    '{meta: {owner:$owner, repo:$repo, since:$since, until:$until, collected_at:$collected_at, pr_count:$pr_count, max_prs_exceeded:$max_prs_exceeded, include_ai_authored:$include_ai_authored}, prs: []}' \
     > "${OUTPUT_DIR}/signals.json"
   echo "${OUTPUT_DIR}/signals.json"
   exit 0
 fi
 
 # ====== Step 2: reviewThreads (GraphQL) ======
+# 内側 comments は first: 100 のみ ($cafter を初回クエリに持たせると外側全ノードに
+# 同じ cursor が適用されてしまい複数スレッドの内側ページングを 1 クエリで進められない
+# ため)。100 件超のスレッドだけ別途 node(id) 経由で追加クエリする。
+#
+# reactions(first: 20) の根拠: GraphQL の 500,000 ノード上限を回避するため。
+# reviewThreads(100) × comments(100) × reactions(N) の積で N=20 なら 200,000 で安全、
+# N=100 だと 1,000,000 で上限超過 (実際に "exceeds the maximum limit of 500,000"
+# エラーが出ることを実測確認済み)。20 を超えるリアクションを持つ PR コメントは稀で、
+# 取りこぼしても severity 判定に大きな影響は無い。
 GQL_OUTER='query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -125,6 +135,7 @@ GQL_OUTER='query($owner: String!, $name: String!, $number: Int!, $after: String)
   }
 }'
 
+# 内側追加クエリ。reactions(first: 20) の根拠は GQL_OUTER と同じ。
 GQL_INNER='query($threadId: ID!, $cafter: String) {
   node(id: $threadId) {
     ... on PullRequestReviewThread {
@@ -225,7 +236,16 @@ ALL_SHAS=$(jq -r '.commits[]?.sha' "$COMMITS_FILE" | sort -u)
 for SHA in $ALL_SHAS; do
   [[ -z "$SHA" ]] && continue
   log "Fetching files for commit ${SHA:0:7}"
-  FILES=$(gh api "repos/${OWNER}/${REPO}/commits/${SHA}" --jq '[.files[]?.filename]' 2>/dev/null || echo "[]")
+  # 失敗時に silent fallback すると file_changed_after_comment 判定が全 false に倒れて
+  # 「取り込まれた」シグナルが落ちるため、原因 1 行を warning で残してから空配列を採用する。
+  # set -e で死なせるのは 1 件の失敗で全体停止して再収集が無駄になるので避ける。
+  COMMIT_RESP=""
+  if COMMIT_RESP=$(gh api "repos/${OWNER}/${REPO}/commits/${SHA}" 2>&1); then
+    FILES=$(echo "$COMMIT_RESP" | jq '[.files[]?.filename]')
+  else
+    log "WARNING: failed to fetch files for ${SHA:0:7} (using empty array); cause: $(echo "$COMMIT_RESP" | head -1)"
+    FILES="[]"
+  fi
   jq -nc --arg sha "$SHA" --argjson files "$FILES" '{sha: $sha, files: $files}' >> "$COMMIT_FILES_TMP"
 done
 
@@ -242,6 +262,7 @@ jq -n \
   --arg collected_at "$COLLECTED_AT" \
   --argjson pr_count "$PR_COUNT" \
   --argjson max_prs_exceeded "$MAX_PRS_EXCEEDED" \
+  --argjson include_ai_authored "$INCLUDE_AI_AUTHORED" \
   --slurpfile pr_list "${OUTPUT_DIR}/_pr_list.json" \
   --slurpfile threads_lines <(jq -s '.' "$THREADS_FILE") \
   --slurpfile commits_lines <(jq -s '.' "$COMMITS_FILE") \
@@ -256,7 +277,8 @@ jq -n \
         since: $since, until: $until,
         collected_at: $collected_at,
         pr_count: $pr_count,
-        max_prs_exceeded: $max_prs_exceeded
+        max_prs_exceeded: $max_prs_exceeded,
+        include_ai_authored: $include_ai_authored
       },
       prs: ($pr_list[0] | map(
         . as $pr |

@@ -90,6 +90,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
       collected_at: string; // ISO8601 UTC
       pr_count: number;
       max_prs_exceeded: boolean;
+      include_ai_authored: boolean;  // caller 入力 INCLUDE_AI_AUTHORED の値をそのまま転記
     };
     prs: {
       number: number; title: string; author: string;
@@ -122,7 +123,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
   - `thread_outdated`: 親スレッドの `is_outdated`
   - `file_changed_after_comment`: 当該コメントの `created_at` 以降に committed された commit のうち `files[]` に `comment.path` を含むものがあるか (boolean)
   - `author_replied_affirmative`: 同一スレッドの後続コメントのうち `author_login == PR.author` のものが固定キーワード (`fixed` / `対応` / `修正` / `反映` / `確かに` / `その通り` / `done` / `addressed`) を body に含むか。誤検出は許容 (Phase C の AI が body 全文を見て最終判断)
-  - `severity_label`: body 内の `[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]` を正規表現で抽出 (最初のマッチ、なければ `null`)。AI 自動投稿マーカー `> **[AI 自動投稿]**` 自体は capture group の選択肢に無いため自然に skip される
+  - `severity_label`: body 内の `[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]` を正規表現で抽出 (**body 内の最初のマッチを採用する仕様**、なければ `null`)。AI 自動投稿マーカー `> **[AI 自動投稿]**` 自体は capture group の選択肢に無いため自然に skip される。body 内に複数のラベルが書かれているケース (例:「これは本来 `[must]` レベルだが本 PR では `[should]` に留める」) では最初に出てきたラベルが拾われるため、Phase C の AI は判定根拠に severity を使う際に body 全文も読んで矛盾検知すること
   - `is_ai_authored`: コメント本体の `is_ai_authored` フラグをそのまま転記
   - `reply_count`: スレッド内コメント数 - 1
   - `reactions_positive`: GraphQL の reaction `THUMBS_UP` / `HEART` / `HOORAY` / `ROCKET` の合計
@@ -166,7 +167,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 4. **AI 自動投稿の扱い** (`is_ai_authored=true`)
    - AI 指摘 + `thread_resolved=true` + `file_changed_after_comment=true`: 「AI 指摘 → 人間が取り込み」= 強信号で accept 寄り。
    - AI 指摘 + 未 resolved / `thread_outdated` のみ: 「AI 指摘 → 無視 or 行ズレ」= 弱信号で reject 寄り。ただし内容が明らかに一般化可能なら `hold` に倒す。
-   - `INCLUDE_AI_AUTHORED=false` の場合は内容を問わず一律 `reject` (棄却理由に「AI 自動投稿を対象外として除外」と明示)。
+   - **`INCLUDE_AI_AUTHORED=false` の場合は内容を問わず一律 `reject`** (棄却理由に「AI 自動投稿を対象外として除外」と明示)。本値は `signals.json` の `meta.include_ai_authored` から取得する (Step 1 のスクリプトが caller 入力をそのまま meta に転記している)。
 
 5. **クラスタリング (PR 横断)**
    - 類似テーマが複数 PR で出ていたら 1 つの proposal にまとめ、`sources[]` に PR URL を集約する。
