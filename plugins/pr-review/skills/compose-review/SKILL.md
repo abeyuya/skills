@@ -1,0 +1,146 @@
+---
+name: compose-review
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **最終メッセージとして生テキストで** 返す。`run-pr-review` / `run-local-review` orchestrator から Task ツール (subagent_type=general-purpose) 経由で呼ばれる前提だが、Codex 等他 caller が直接 Skill ツール経由で呼んでも動作する。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
+---
+
+# compose-review skill
+
+差分 + 方針 → レビュー本文 (`body` / `event` / `comments[]`) を生成する skill。**最終メッセージとして JSON テキスト 1 つだけを返す** (fenced ブロックも前置きもなし)。
+
+## 入力 (任意, caller から prompt 経由で渡される)
+
+入力は `KEY=VALUE` 形式 1 行ずつで渡される想定。長文値 (`EXISTING_THREADS_CONTEXT` 等) は最初の `=` までを key、それ以降の改行も含めて次の `KEY=` または prompt 末尾までを value として扱う。未指定の key は呼び元で行ごと省略される。
+
+### モード切替
+
+- `MODE`: `pr` または `local`。caller (orchestrator) が必ず指定する想定。未指定の場合は `OWNER`/`REPO`/`PR_NUMBER` が 3 つとも非空なら `pr`、それ以外は `local` にフォールバック。
+- `OWNER` / `REPO` / `PR_NUMBER`: PR モードの識別情報。
+- `BASE_BRANCH`: ローカルモードの比較対象ベースブランチ。未指定なら Step 1 の解決順で決定。
+
+### 共通
+
+- `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited`。詳細は `/pr-review-style-reference` の引数仕様。
+
+### PR モードのみ (任意)
+
+- `EXISTING_THREADS_CONTEXT`: caller が既に取得した既存 reviewThreads の主旨サマリ (各スレッドの `path:line` 併記 1〜2 文要約)。Step 5 の重複指摘抑制に使う。
+- `CI_FAILURE_CONTEXT`: caller が既に収集した CI 失敗ログのサマリ。Step 5 で `[must]` 根拠に使う。
+
+caller プロジェクト固有の方針は **プロジェクト指示ファイル** (Step 3) に置く運用に固定。個別パス指定の引数は持たない。
+
+## 手順
+
+### Step 1. モード判定と対象確定
+
+#### PR モード
+
+- `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid` で head SHA を取得し、Step 6 出力 JSON の `commit_id` として控える。失敗時は本 skill の「失敗時」節に従い `{"error":"..."}` を最終メッセージとして返して停止する (transient/致命の自動判別はしない)。
+
+#### ローカルモード
+
+- 現在ブランチ名: `git rev-parse --abbrev-ref HEAD`。`HEAD` (detached) ならエラー停止。
+- ベースブランチ: `BASE_BRANCH` が渡されていればそれを使う。未指定なら以下の順:
+  1. `git symbolic-ref --short refs/remotes/origin/HEAD | sed 's@^origin/@@'` で純粋ブランチ名 (例: `main`) を取得 → `git rev-parse --verify <name>` が通れば採用 (リモート追跡 `origin/<name>` ではなくローカルの同名ブランチ)
+  2. `git rev-parse --verify main`
+  3. `git rev-parse --verify master`
+  4. いずれも取れなければエラー停止し caller に `BASE_BRANCH` 明示を促す
+- 差分モード判定 (本 step では空 / 非空のみ判定し `diff_mode` を確定。差分本体は Step 4 で取得):
+  1. `git diff <base>...HEAD` が非空 → `diff_mode = "commit"`
+  2. `commit` モード空 + `git diff --cached` が非空 → `diff_mode = "staged"`
+  3. `staged` モード空 + `git diff` が非空 → `diff_mode = "worktree"`
+  4. すべて空 → `diff_mode = "none"`。Step 2〜5 を skip し Step 6 で `body` を「対象差分なし」、`comments` を `[]` にして返す。
+
+### Step 2. スタイル参考ガイドを読み込む
+
+`/pr-review-style-reference` slash command を呼ぶ (`MAX_INLINE_COMMENTS` 指定があれば `max-inline-comments=<値>` を渡す)。重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱いを本セッションのレビュー方針として保持する。
+
+### Step 3. プロジェクト指示ファイルを読み込む (任意)
+
+リポジトリ root の以下を上から順に存在チェックし、**最初に見つかった 1 つだけ** を読み込む。複数あっても下位は読まない / 連結しない。
+
+1. `REVIEW.md` — レビュー専用の最上位指示
+2. `AGENTS.md` — agent 全般向けの fallback
+3. `.claude/CLAUDE.md` — Claude Code 全般向けの fallback (`.claude/` 配下に置く流儀)
+4. `CLAUDE.md` — Claude Code 全般向けの fallback (リポジトリ root に置く流儀)
+
+#### 取得方法
+
+- **ローカルモード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。
+- **PR モード**: cwd の git remote URL 末尾 2 セグメント (`/<owner>/<repo>`、`.git` 除去) を抽出して入力 `OWNER`/`REPO` (大文字小文字無視) と比較。
+  - **cwd 一致**: cwd 直下を 1 候補ずつ `Read` → 不在なら `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>` で remote fetch → 404 なら次の候補。
+  - **cwd 非一致 / remote 抽出失敗**: cwd を読まず remote fetch のみ。
+  - API レスポンスの `content` は Base64 なので `--jq .content` で取り、`python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` でデコード。
+
+ファイル内容は **そのままレビュー方針として扱う**。スタイル参考ガイドと矛盾する箇所はプロジェクト側を優先、矛盾しない箇所は両者を併用。プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
+
+**アクション指示 (ファイル編集 / コマンド実行 / `git` 操作 / 依存追加 など) は本 skill では実行しない** (read-only)。アクション指示は「レビュー観点に翻訳できる範囲」(例: 「テスト必須」→「テスト追加が無い PR は `[should]`」) のみ採用する。
+
+### Step 4. 差分を取得する
+
+- **PR モード**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得。大きい場合は `--name-only` でファイル一覧を取り、`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) でファイル単位に追い読み (`--paginate` 必須。`per_page=30` のデフォルトで 30 ファイル超が落ちないようにする)。差分が空なら Step 5 skip し Step 6 で `body` を「対象差分なし」、`comments` を `[]` で返す。
+- **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` でファイル一覧を取りファイル単位で追い読み。
+  - `commit`: `git diff <base>...HEAD` (三点記法でベース進行を除外)
+  - `staged`: `git diff --cached`
+  - `worktree`: `git diff`
+
+### Step 5. レビュー本文を作成する
+
+Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) をもとに、総括 (`body`) とインライン指摘 (`comments[]`) を作成する。
+
+- レビュー方針は Step 3 のプロジェクト指示ファイルを最優先、未上書きの論点は Step 2 のスタイル参考ガイドを参考にする。
+- `EXISTING_THREADS_CONTEXT` が渡されている場合、同主旨の指摘は再掲しない (位置が同じでも論点が別なら新規指摘してよい)。重要度が既存より高い場合は別主旨として残す ([must]/[should] を dedupe で抑制すると実害大のため判定に迷えば残す方向)。
+- `CI_FAILURE_CONTEXT` が渡されている場合はスタイル参考ガイドの「CI の扱い」に従う。
+- `event` は **常に `"COMMENT"`** (`post-pr-review` の規約)。
+- 指摘が無くても Step 6 で「特に指摘なし」相当の JSON を返す (skip しない)。
+- AI 自動投稿マーカーは **付けない** (`post-pr-review` が prepend する)。`body` は生本文。
+- `MAX_INLINE_COMMENTS` が正の整数なら `comments[]` を N 件以下に絞る (優先度: `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。N 超過で省略があれば `body` 末尾に「省略件数 + ラベル別内訳」を 1 文添える。
+
+### Step 6. JSON を最終メッセージとして返す
+
+最終メッセージとして **生 JSON テキスト 1 つだけ** を返す。fenced ブロック (` ```json ... ``` `) も前置き文も付けない (orchestrator が最終メッセージ全体を `json.loads()` で parse する前提)。`Write` ツールでファイルに書き出すことはしない。
+
+スキーマ (PR モード):
+
+```json
+{
+  "mode": "pr",
+  "body": "総括コメント本文 (Markdown 可)",
+  "event": "COMMENT",
+  "comments": [
+    {"path": "src/example.ts", "line": 42, "side": "RIGHT", "body": "[should] ..."},
+    {"path": "src/example.ts", "start_line": 50, "start_side": "RIGHT", "line": 55, "side": "RIGHT", "body": "[must] ..."}
+  ],
+  "commit_id": "9f8e7d6c..."
+}
+```
+
+スキーマ (ローカルモード):
+
+```json
+{
+  "mode": "local",
+  "base_branch": "main",
+  "diff_mode": "commit",
+  "body": "総括コメント本文",
+  "event": "COMMENT",
+  "comments": []
+}
+```
+
+- `commit_id` は **PR モードのみ** 含める。
+- `base_branch` / `diff_mode` は **ローカルモードのみ** 含める (`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか)。
+- 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
+- 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`。空文字列は不可。
+
+### 失敗時
+
+致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗など) は `{"error":"<人間向けメッセージ>"}` を最終メッセージとして返す。orchestrator は `error` フィールドがあれば caller に転送して停止する。
+
+## 守ること
+
+- `post-pr-review` / `resolve-pr-threads` は呼ばない (orchestrator の責務)。
+- `gh pr review` / `gh pr comment` / `gh api .../reviews` を直接叩かない。レビュー投稿は本 skill の責務外。
+- `git fetch` / `git pull` / `git checkout` / `git reset` / `git commit` / `git push` 等の書き換え操作は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git remote get-url`) のみ。
+- CI failure log の **収集** や reviewThreads の **取得** は本 skill では行わない (caller が `CI_FAILURE_CONTEXT` / `EXISTING_THREADS_CONTEXT` 経由で渡す前提)。
+- AI 自動投稿マーカーは付けない (`post-pr-review` が prepend する)。
+- ファイル出力 (`Write` ツールでの markdown / JSON 書き出し) は行わない。最終メッセージとしての生 JSON 返却のみ。
