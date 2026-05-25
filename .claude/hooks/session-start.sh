@@ -21,11 +21,12 @@ if ! command -v apm >/dev/null 2>&1; then
   exit 0
 fi
 
-log "Running 'apm install'..."
-if ! apm install; then
-  log "WARNING: 'apm install' failed; continuing without blocking session startup."
+log "Running 'apm install --frozen'..."
+if ! apm install --frozen; then
+  log "WARNING: 'apm install --frozen' failed (likely lockfile drift or missing apm.lock.yaml); continuing without blocking session startup."
+  log "         If apm.lock.yaml is missing, run 'apm install' locally once and commit the lockfile."
   exit 0
 fi
 
-log "apm install completed."
+log "apm install --frozen completed."
 exit 0
