@@ -21,7 +21,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 - `MAX_PRS`: 期間内 PR 数の上限警告閾値。省略時 `100`。超過しても処理は継続し、proposals.md 冒頭に「対象 PR が多いため信号品質が低下している可能性あり」を明記する。
 - `FILTER_AUTHOR`: PR 作成者で絞り込む (例: `dependabot[bot]` を除外したい場合は `-author:dependabot[bot]` 形式で渡す)。省略時はフィルタなし。`gh pr list --search` の検索式にそのまま連結する。
 - `FILTER_LABEL`: PR ラベルで絞り込む (例: `label:bug`)。省略時はフィルタなし。同上、`--search` に連結する。
-- `INCLUDE_AI_AUTHORED`: `> **[AI 自動投稿]**` プレフィックス付きのコメントを採否候補に含めるか。省略時 `true`。`false` の場合でも信号 (`is_ai_authored`) は付与するが、Phase C で AI が一律 reject に倒す。
+- `INCLUDE_AI_AUTHORED`: `> **[AI 自動投稿]**` プレフィックス付きのコメントを採否候補に含めるか。省略時 `true`。`false` の場合でも信号 (`is_ai_authored`) は付与するが、Phase C で AI が一律 reject に倒す。値は `true` / `false` を推奨するが、scripts/collect-signals.sh では大文字小文字 / 周辺空白を正規化し `1` / `yes` / `y` / `0` / `no` / `n` も受け入れる (それ以外は `exit 2`)。
 - `OUTPUT_DIR`: 出力先ディレクトリ。省略時は `/tmp/distill-pr-reviews/{repo}/{timestamp}` (例: `/tmp/distill-pr-reviews/skills/20260524T120000Z`)。caller が明示パスを指定した場合は既存ファイルがあれば上書きする。
   - `{repo}`: `OWNER/REPO` の `REPO` 部分 (取得失敗時は `local`)
   - `{timestamp}`: `date -u +%Y%m%dT%H%M%SZ` の出力
@@ -133,7 +133,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
   - `reactions_positive`: GraphQL の reaction `THUMBS_UP` / `HEART` / `HOORAY` / `ROCKET` の合計
   - `reactions_negative`: `THUMBS_DOWN` / `CONFUSED` の合計
   - `comment_length`: body の文字数
-  - `same_file_in_pr`: 同じ PR 内で同じ `path` に複数指摘があるか (boolean)
+  - `same_file_in_pr`: 同じ PR 内で **別 thread** に同じ `path` への指摘があるか (boolean)。同一 thread 内の reply は 1 指摘として 1 回だけカウントする (各 thread の冒頭コメントの `path` のみを集計対象にする)
 
   クラスタリング (PR をまたいだ類似指摘の検出) は Phase C で AI が行うため、本 step では行わない。
 
