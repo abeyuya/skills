@@ -1,0 +1,12 @@
+# apm install の生成物。
+# apm.lock.yaml は再現性のために commit する (gitignore しない)。
+# apm のキャッシュ。
+apm_modules/
+
+# cross-tool 用の deploy 先 (`.agents/skills/<name>/` 等)。
+.agents/
+
+# Claude target 向けに apm が deploy する skill 群。
+# 自前 skill は plugins/<name>/skills/ 配下に置く方針なので、
+# .claude/skills/ は丸ごと apm 管理として扱う。
+.claude/skills/

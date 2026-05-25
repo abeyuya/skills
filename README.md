@@ -41,6 +41,8 @@ plugin 個別の利用方法 (GitHub Actions / ローカル Claude Code / 開発
 
 ## 構成
 
+自前 skill は `plugins/<name>/skills/` 配下に置く方針。`.claude/skills/` は `apm install` の deploy 先として丸ごと apm 管理 (gitignore) とし、手書きの skill ファイルは置かない。
+
 ```
 apm.yml                                # apm 相互運用用マニフェスト
 .claude-plugin/
