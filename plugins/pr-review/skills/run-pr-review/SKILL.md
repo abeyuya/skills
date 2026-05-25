@@ -100,11 +100,14 @@ Skill ツールで `compose-review` を呼ぶ。引数は以下:
 **🛑 本 step は Step 3 終了直後に必ず実行する** (意図的に独立 step として番号を振っている)。Step 3 の `compose-review` 呼び出しが完了したら、chat 出力の見た目に関わらずここで「タスク完了」と判定してはならない。本 PR で 3 回踏み抜かれた既知パターンの一次防止線。
 
 1. `Read` ツールで `/tmp/compose-review-output.json` を読み込む。
-2. パースして `_intermediate` フィールドを確認する。
+2. **中断シグナルの判定** (最優先): `_aborted` フィールドが `true` なら、`compose-review` が処理中断を要求している (例: `RECHECK_HEAD_SHA=true` での force-push 検知)。この場合は:
+   - **Step 4 / Step 5 を skip** する (`post-pr-review` / `resolve-pr-threads` を呼ばない)。
+   - **Step 6 へ直行** し、caller への報告で「`compose-review` が `<_abort_reason>` のため中断 (`<_abort_message>`)。Review 未投稿。再実行を推奨」と異常終了を 1 段落で報告する。
+3. 通常成功時は `_intermediate` フィールドを確認する:
    - `_intermediate: true` であることを確認する (PR モードでは必ずこの値)。
    - `next_step: "post-pr-review"` であることを確認する (次に呼ぶべき skill 名)。
-3. 後続で `post-pr-review` に転送する各フィールド (`body` / `event` / `comments` / `commit_id`) を JSON から取り出す。`_intermediate` / `next_step` / `mode` は orchestrator 内部用の meta フィールドのため転送しない。
-4. ここで **絶対にターンを終えない**。本 step を読了したらそのまま Step 4 に続けて進む。本 step を独立 step として置いている目的は「Step 3 で JSON を受け取った直後の "区切り感" よりも強い継続フック」を作ること。`_intermediate: true` を確認したまま終わったら本 skill の主目的 (= GitHub への 1 Review 投稿) は達成されない。CI 内で人間不在のまま走る運用 (claude-code-action 等) では Step 4 抜けは無音の事故になるため、本 step を読了 → Step 4 へ進む、を機械的に守ること。
+4. 後続で `post-pr-review` に転送する各フィールド (`body` / `event` / `comments` / `commit_id`) を JSON から取り出す。`_intermediate` / `next_step` / `mode` / `_summary_meta` / `_aborted` / `_abort_reason` / `_abort_message` は orchestrator 内部用の meta フィールドのため転送しない (`_summary_meta` は本 skill Step 6 で参照する用、`_aborted*` は本 step で判定した時点で役目を終える)。
+5. ここで **絶対にターンを終えない**。本 step を読了したらそのまま Step 4 (中断時は Step 6) に続けて進む。本 step を独立 step として置いている目的は「Step 3 で JSON を受け取った直後の "区切り感" よりも強い継続フック」を作ること。`_intermediate: true` を確認したまま終わったら本 skill の主目的 (= GitHub への 1 Review 投稿) は達成されない。CI 内で人間不在のまま走る運用 (claude-code-action 等) では Step 4 抜けは無音の事故になるため、本 step を読了 → Step 4 (または Step 6) へ進む、を機械的に守ること。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 
@@ -118,7 +121,7 @@ Step 3.5 で `/tmp/compose-review-output.json` から取り出したフィール
 | `event` | `event` | 文字列 `"COMMENT"` 固定。 |
 | `comments` | `comments` | 配列。要素のキー (`path` / `line` / `side` / `start_line` / `start_side` / `body`) はそのまま。**ここでの `side` は GitHub Review REST API (`POST /repos/.../reviews`) の `comments[]` 入力スキーマで `"RIGHT"` / `"LEFT"` を取る正規フィールドであり、Step 2 で「クエリに含めるな」とした GraphQL の `PullRequestReviewComment` 型の `side` (存在しない) とは別物。文脈 (REST POST vs GraphQL Read) で扱いが反転する点に注意。** |
 | `commit_id` | `COMMIT_ID` | 文字列。**`compose-review` の戻り値 JSON に `commit_id` キーが含まれていない場合は理由を問わず本入力も省略する** (空文字を渡さない: `gh api .../reviews` が 422 で失敗するため)。省略理由は `compose-review` 側の責務で、典型的には Step 1 PR モードの head SHA 取得が transient 失敗したケースが該当する (なお Step 4 の「対象差分なし」分岐は Step 1 で SHA が取れていれば `commit_id` を含めて返すので、本表の判定には影響しない)。 |
-| `_intermediate` / `next_step` / `mode` / `_summary_meta` | (転送しない) | orchestrator 内部用の meta フィールド。`post-pr-review` には渡さない (`_summary_meta` は本 skill Step 6 の集計値取得用に保持しておくが post-pr-review へは送らない)。 |
+| `_intermediate` / `next_step` / `mode` / `_summary_meta` / `_aborted` / `_abort_reason` / `_abort_message` | (転送しない) | orchestrator 内部用の meta フィールド。`post-pr-review` には渡さない (`_summary_meta` は本 skill Step 6 の集計値取得用に保持しておく / `_aborted*` は Step 3.5 で判定済みで本 Step に到達した時点で `false` 確定なので転送不要)。 |
 | (本 skill が確定済み) | `OWNER` / `REPO` / `PR_NUMBER` | Step 1 の値。`post-pr-review` の入力名 (`post-pr-review/SKILL.md` の入力セクション参照) もこの **大文字スネークケースそのまま**。改名 / 小文字化はしない。 |
 
 `commit_id` だけ uppercase に rename する点に注意 (`body` / `event` / `comments` は **lowercase のまま**)。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。

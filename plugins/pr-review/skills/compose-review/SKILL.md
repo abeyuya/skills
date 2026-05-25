@@ -48,7 +48,26 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
   - **致命 (即停止)**: 401 / 403 (権限不足) / 404 (PR or リポジトリ不在) / 422 など、再試行しても変わらない種類。caller に PR_NUMBER / 権限の見直しを促す。
   - **transient (再試行 → 省略)**: 5xx / network timeout / DNS 失敗 / ECONNRESET / 429 (rate limit) / 403 with `Retry-After` ヘッダ (secondary rate limit) など、時間を置けば回復が期待できる種類。**最大 2 回** まで再試行し (`gh` は exit code 経由でしか詳細が見えないので、`gh api -i ...` 等で status を確認するか、stderr を読む)、各再試行の間に **指数 backoff** (`sleep 2` → `sleep 4`) を入れる。2 回目も失敗したら `commit_id` を **省略** して以降の Step に進む (`post-pr-review` は `COMMIT_ID` を任意としているため、SHA 未確定でも Review 自体は投稿できる)。caller への報告で「commit_id 未確定で投稿した」旨を 1 文添える。
   - 判別が困難な場合 (生エラー文字列だけ取れる等) は **transient 扱い** に倒す (recall 重視。誤って即停止するより SHA 省略で進めた方が運用上の損失が小さい)。
-- TOCTOU 注意: 本 SHA 取得から Step 4 の `gh pr diff` 実行までの間に PR が force-push されると `commit_id` と diff の line 番号が食い違う。デフォルトでは再取得しないが、caller が `RECHECK_HEAD_SHA=true` を明示的に渡してきた場合は Step 4 の `gh pr diff` 直後に `gh pr view --json headRefOid` を再取得して値が変わっていれば「再実行を推奨」と caller に報告して停止する (`compose-review` の入力としては optional な真偽値。frequent force-push PR のドッグフーディング系 caller が利用する想定)。
+- TOCTOU 注意: 本 SHA 取得から Step 4 の `gh pr diff` 実行までの間に PR が force-push されると `commit_id` と diff の line 番号が食い違う。デフォルトでは再取得しないが、caller が `RECHECK_HEAD_SHA=true` を明示的に渡してきた場合は Step 4 の `gh pr diff` 直後に `gh pr view --json headRefOid` を再取得して値が変わっていれば **中断シグナルを返して停止する** (`compose-review` の入力としては optional な真偽値。frequent force-push PR のドッグフーディング系 caller が利用する想定)。
+
+  **中断シグナルのスキーマ** (force-push 検知時の Step 6 出力。run-pr-review Step 3.5 はこれを検知して Step 4/5 を skip し Step 6 で異常終了を caller へ報告する):
+
+  ```json
+  {
+    "_intermediate": false,
+    "_aborted": true,
+    "_abort_reason": "head_sha_changed_during_diff",
+    "_abort_message": "force-push 検知 (Step 1 取得 SHA <OLD> → Step 4 後 SHA <NEW>) のため処理を中断しました。再実行を推奨。",
+    "mode": "pr"
+  }
+  ```
+
+  - `_aborted: true` を最上位 boolean フィールドとして必ず含める (orchestrator の判定用フック)。
+  - `_abort_reason` は machine-readable な識別子 (`head_sha_changed_during_diff` 等)。将来の中断理由追加時もここで列挙する。
+  - `_abort_message` は人間向けの 1 文サマリ。`<OLD>` / `<NEW>` は実際の SHA 値で埋める。
+  - 他のフィールド (`body` / `event` / `comments[]` / `commit_id` / `_summary_meta` / `next_step` 等) は **省略する** (中断時は意味を持たないため)。
+  - `OUTPUT_DESTINATION=file` の場合: 通常の `/tmp/compose-review-output.json` に上記スキーマを Write し、chat には `compose-review (中断): force-push 検知。/tmp/compose-review-output.json に中断シグナルを書き出しました。run-pr-review Step 3.5 で `_aborted: true` を検知したら Step 4/5 を skip して Step 6 で異常終了を caller に報告してください。` の 1 行を出す。
+  - `OUTPUT_DESTINATION=chat` の場合: 同スキーマを fenced JSON で chat に出し、前置きサマリで「中断: force-push 検知のため再実行を推奨」と明示する。
 
 #### ローカル diff モード
 
@@ -117,9 +136,10 @@ Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト�
 - cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう `--repo <OWNER>/<REPO>` を必ず明示する。
 - **大きな PR で diff が一度に取りきれない場合** (環境によっては `Output too large` 等で persisted-output 経由になる) は、ローカル diff モードと同様に **ファイル単位で追い読み** する:
   1. `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO> --name-only` でファイル一覧を取得する。
-  2. ファイル単位で `gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch` フィールドを使う) で必要な範囲だけ追い読みする。`gh pr diff` は現時点 (`gh` 2.x) では path filter 引数を受け付けない (`accepts at most 1 arg(s)` で失敗する) ため、`gh pr diff -- <path>` 形式は使わない。
-  3. レビュー観点上重要そうなファイル (テスト・設定・SQL・migration・workflow 等) を優先的に読み、明らかにレビュー対象外 (lockfile / generated file / `*.snap`) は skip してよい。skip したファイル群があれば総括 (`body`) に「`<件数>` 件を分量過多のため未レビュー (代表: …)」と 1 文添えて caller に明示する。
-- **差分が空の場合** (例: 全変更が revert された / generated file の filter 後に何も残らない等) は、ローカル diff モードの「差分なし」分岐と同様に **Step 5 を skip して Step 6 へ直行** する。出力 JSON は `body` を「対象差分なし (評価対象なし)」、`comments` を `[]` にする。`mode` は `"pr"` のまま。`commit_id` は Step 1 で取得済みならそのまま含め、Step 1 で transient 失敗のため省略した場合は本分岐でも引き続き省略する (`gh api .../reviews` に空文字を渡すと 422 になるため未定義値を入れない)。
+  2. ファイル単位で **`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files`** で全ページ取得する (各要素の `filename` / `patch` フィールドを使う)。`--paginate` を **必ず付ける**: 付けないと GitHub REST API のデフォルト `per_page=30` で 2 ページ目以降が落ちるため 30 ファイル超の PR で skip 漏れが発生する。代替として `-F per_page=100` でも回避可能だが 100 ファイル超で再発するため `--paginate` を優先する。`gh pr diff` は現時点 (`gh` 2.x) では path filter 引数を受け付けない (`accepts at most 1 arg(s)` で失敗する) ため、`gh pr diff -- <path>` 形式は使わない。
+  3. **sanity check**: `--name-only` で取った件数と `--paginate ... /files` で取った件数を突合する。一致しなければ取得漏れがあるので caller への報告 `body` に「ファイル一覧と取得済み件数が一致しません (`<N>` vs `<M>`)」と 1 文添え、可能な範囲でレビューを続行する。
+  4. レビュー観点上重要そうなファイル (テスト・設定・SQL・migration・workflow 等) を優先的に読み、明らかにレビュー対象外 (lockfile / generated file / `*.snap`) は skip してよい。skip したファイル群があれば総括 (`body`) に「`<件数>` 件を分量過多のため未レビュー (代表: …)」と 1 文添えて caller に明示する。
+- **差分が空の場合** (例: 全変更が revert された / caller 側で事前 filter された結果空になった等; 本 skill は generated file の **自動 filter は行わない** ので、`gh pr diff` 自体が空 ≠ 「ファイルは存在するが skip した」状態) は、ローカル diff モードの「差分なし」分岐と同様に **Step 5 を skip して Step 6 へ直行** する。出力 JSON は `body` を「対象差分なし (評価対象なし)」、`comments` を `[]` にする。`mode` は `"pr"` のまま。`commit_id` は Step 1 で取得済みならそのまま含め、Step 1 で transient 失敗のため省略した場合は本分岐でも引き続き省略する (`gh api .../reviews` に空文字を渡すと 422 になるため未定義値を入れない)。**`_intermediate` / `next_step` の値は通常分岐と同じく `OUTPUT_DESTINATION` の指定に従う** (`file` モード: `_intermediate: true` + `next_step: "post-pr-review"`、`chat` モード: `_intermediate: false` + `next_step` 省略)。本分岐でも Review 自体は `post-pr-review` 経由で投稿する設計のため、orchestrator は次 step に進む。
 
 #### ローカル diff モード
 
@@ -150,7 +170,7 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が一律 prepend するため)。`body` は生本文。
 - `MAX_INLINE_COMMENTS` が正の整数で渡されている場合は、style-reference の「`MAX_INLINE_COMMENTS` の扱い」セクションに従って **`comments[]` の総数を N 件以下に絞る**。優先度は `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`。N 超過で省略した指摘がある場合は `body` に「省略した件数 + ラベル別内訳」を 1 文添える。`comments[]` を組み立てる **手順の順序** は次に固定する (順序が変わると同じ件数でも残る指摘が変わる):
   1. 差分から生指摘を抽出する。
-  2. `EXISTING_THREADS_CONTEXT` が渡されていれば、既存スレッドと同主旨の指摘を **dedupe で落とす**。
+  2. `EXISTING_THREADS_CONTEXT` が渡されていれば、既存スレッドと同主旨の指摘を **dedupe で落とす**。ただし **重要度が既存より高い場合は別主旨として残す** (例: 既存スレッドが `[nit]` 「ここは A の代わりに B を使うべき」だが新規指摘が `[must]` 「ここは A だと SQL injection が発生する」なら、論点の深刻度が違うので別指摘として残す)。`[must]` / `[should]` の指摘は dedupe で抑制されると実害が大きいため、判定に迷う場合は **残す方向に倒す**。
   3. ノイズ抑制ルール (フォーマッタレベル除外 / 同一事象は代表 1 箇所のみ等) を適用する。
   4. 重要度ラベルで優先度ソート (`[must]` > `[should]` > ...) する。
   5. `MAX_INLINE_COMMENTS` 指定があれば、上位から N 件にカットする (`unlimited` ならカットしない)。
