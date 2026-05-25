@@ -227,10 +227,12 @@ COMMITS_FILE="${OUTPUT_DIR}/_commits.jsonl"
 
 for PR_NUMBER in $PR_NUMBERS; do
   log "Fetching commits for PR #${PR_NUMBER}"
-  COMMITS_ARRAY=$(gh pr view "$PR_NUMBER" \
-    --repo "${OWNER}/${REPO}" \
-    --json commits \
-    --jq '[.commits[] | {sha: .oid, committed_at: .committedDate, message_headline: .messageHeadline}]')
+  # gh pr view --json commits は内部的に GraphQL `commits(first: 100)` 1 ページのみで、
+  # 100 commit 超の PR では後半 commit を取り落とす (file_changed_after_comment が偽陰性に倒れる)。
+  # REST `pulls/{N}/commits` を --paginate で全ページ取得する。
+  COMMITS_ARRAY=$(gh api --paginate "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/commits" \
+    --jq '.[] | {sha: .sha, committed_at: .commit.committer.date, message_headline: (.commit.message | split("\n")[0])}' \
+    | jq -s '.')
   jq -nc --argjson pr "$PR_NUMBER" --argjson commits "$COMMITS_ARRAY" \
     '{pr_number: $pr, commits: $commits}' \
     >> "$COMMITS_FILE"
@@ -252,7 +254,17 @@ for SHA in $ALL_SHAS; do
   # set -e で死なせるのは 1 件の失敗で全体停止して再収集が無駄になるので避ける。
   COMMIT_RESP=""
   if COMMIT_RESP=$(gh api "repos/${OWNER}/${REPO}/commits/${SHA}" 2>&1); then
-    FILES=$(echo "$COMMIT_RESP" | jq '[.files[]?.filename]')
+    # GitHub REST `GET /commits/{sha}` の files 配列は 300 件で truncate される (既知挙動)。
+    # truncated=true のとき files を採用すると後段の判定が「変更されたが配列に居ない」状態で
+    # silent な偽陰性に倒れるため、warning ログを残してから空配列 (= 判定不能) に倒す。
+    # length >= 300 も保険として併せて検知 (truncated フラグが立たない実装差異対策)。
+    TRUNCATED=$(echo "$COMMIT_RESP" | jq '(.truncated // false) or ((.files | length // 0) >= 300)')
+    if [[ "$TRUNCATED" == "true" ]]; then
+      log "WARNING: commit ${SHA:0:7} files list is truncated (>=300 files); file_changed_after_comment for this commit will be false-negative"
+      FILES="[]"
+    else
+      FILES=$(echo "$COMMIT_RESP" | jq '[.files[]?.filename]')
+    fi
   else
     log "WARNING: failed to fetch files for ${SHA:0:7} (using empty array); cause: $(echo "$COMMIT_RESP" | head -1)"
     FILES="[]"
@@ -373,7 +385,10 @@ jq '
           | select(.committed_at > $cm.created_at)
           | .files[]?
          ] | any(. == $cm.path)) as $file_changed |
-        (($cm.body | match("\\[(must|should|nit|question|pre_existing)\\]"; "")
+        # body の引用行 (`> ` 始まり) は他コメントの引用 (post-pr-review マーカー / Reviewer の発言再掲) を含むため、
+        # severity ラベルの抽出対象から除外する。残された非引用部分の最初のマッチを採用する。
+        (($cm.body | split("\n") | map(select(test("^> ") | not)) | join("\n")
+          | match("\\[(must|should|nit|question|pre_existing)\\]"; "")
           | .captures[0].string) // null) as $sev |
         ([$cm.reactions[].content] | map(select(. as $r | positive_reactions | any(. == $r))) | length) as $pos_re |
         ([$cm.reactions[].content] | map(select(. as $r | negative_reactions | any(. == $r))) | length) as $neg_re |
