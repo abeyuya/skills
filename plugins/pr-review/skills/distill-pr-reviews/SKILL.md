@@ -147,7 +147,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 `signals.json` を読み、各コメントを `accept` / `hold` / `reject` に分類し、採用候補には REVIEW.md に書く提案文を作る。判定は AI 自身が行う (本セクションは AI への指示)。
 
-#### 6-1. 採否判断軸
+#### 2-1. 採否判断軸
 
 以下を総合して判定する:
 
@@ -188,7 +188,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 7. **迷ったら `hold`**
    - `resolve-pr-threads` の「迷ったら resolve しない」と同じ保守的ルール。`reject` に倒すと将来の蓄積機会を失う。
 
-#### 6-2. 各 proposal の属性
+#### 2-2. 各 proposal の属性
 
 各 proposal は以下の属性を持つ:
 

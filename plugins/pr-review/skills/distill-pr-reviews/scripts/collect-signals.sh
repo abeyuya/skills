@@ -33,6 +33,17 @@ OUTPUT_DIR="${OUTPUT_DIR:-}"
 
 log() { echo "[collect-signals] $*" >&2; }
 
+# `--argjson` が後段で受け取れる "true" / "false" の 2 値に正規化する。
+# typo (`True` / `TRUE` / `1` / `yes` / 末尾空白入り 等) で jq の "invalid JSON text" を出す代わりに、
+# bash 側で明示的にエラーメッセージを出して exit 2 する。
+INCLUDE_AI_AUTHORED_RAW="$INCLUDE_AI_AUTHORED"
+INCLUDE_AI_AUTHORED=$(echo "$INCLUDE_AI_AUTHORED_RAW" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+case "$INCLUDE_AI_AUTHORED" in
+  true|1|yes|y)  INCLUDE_AI_AUTHORED=true ;;
+  false|0|no|n)  INCLUDE_AI_AUTHORED=false ;;
+  *) log "ERROR: INCLUDE_AI_AUTHORED must be true or false (got: ${INCLUDE_AI_AUTHORED_RAW})"; exit 2 ;;
+esac
+
 # ====== Step 0: 入力の正規化 ======
 if [[ -z "$OWNER" || -z "$REPO" ]]; then
   NWO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
@@ -341,8 +352,10 @@ jq '
 
   .prs |= map(
     . as $pr |
-    # PR 内の path -> 同一 PR で同 path への指摘が複数あるかの map
-    ([$pr.review_threads[].comments[].path]
+    # PR 内の path -> 同一 PR で **別 thread** に同 path の指摘があるかの map。
+    # thread 内の reply (同 path) は 1 thread = 1 指摘として扱いたいので、各 thread の冒頭コメントの path だけを拾う。
+    # `.comments[]` を使うと reply 数 ≥ 1 で誤って true に倒れる (信号定義「同 path に複数指摘」と乖離) ため避ける。
+    ([$pr.review_threads[] | .comments[0].path]
       | group_by(.) | map({key: .[0], value: (length > 1)}) | from_entries) as $path_multi |
 
     .review_threads |= map(
