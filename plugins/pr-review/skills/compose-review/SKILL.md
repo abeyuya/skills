@@ -94,12 +94,13 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 #### 取得方法
 
 - **ローカル diff モード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。見つかった時点でその内容を採用して終了。
-- **PR モード**: 上記 4 候補について、優先順で 1 候補ずつ以下の (1)〜(3) を試す:
-  1. cwd 直下を `Read`。見つかればその内容を採用して終了。
-  2. (1) で見つからなければ `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>"` で remote fetch。見つかればその内容を採用して終了。
-  3. remote fetch が 404 (またはそれ以外の取得失敗) なら **次の候補に進む** (この時点では「プロジェクト指示ファイルなし」と判定しない)。
-  - 4 候補すべての (1)〜(3) が空振りした場合のみ「プロジェクト指示ファイルなし」と判定する。
-  - リモート取得の `?ref=<HEAD_SHA>` は **PR head ref を必ず指定する** (`<HEAD_SHA>` は Step 1 で取得済みの `headRefOid`)。省略するとデフォルトブランチから取られるため、PR 内で `REVIEW.md` 等を新設・編集している場合に新方針が反映されない (または逆に古い方針でレビューされる) 不整合が出る。Step 1 で `commit_id` を transient 失敗で省略した場合は `<HEAD_SHA>` の代わりに PR の headRefName (`gh pr view --json headRefName` で再取得) を使う。
+- **PR モード**: まず cwd の git remote と PR の所属リポジトリが一致するかを判定する: `git remote get-url origin` の URL から `OWNER/REPO` 形式を抽出 (例: `https://github.com/abeyuya/skills.git` / `git@github.com:abeyuya/skills.git` のいずれも `abeyuya/skills` に正規化) し、本 skill 入力の `OWNER` / `REPO` と一致するなら **cwd 一致モード**、しなければ **cwd 非一致モード** とする。
+  - **cwd 一致モード** (通常運用: claude-code-action 等で PR repo を checkout している場合): 4 候補について、優先順で 1 候補ずつ以下の (1)〜(3) を試す:
+    1. cwd 直下を `Read`。見つかればその内容を採用して終了。
+    2. (1) で見つからなければ `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>"` で remote fetch。見つかればその内容を採用して終了。
+    3. remote fetch が 404 (またはそれ以外の取得失敗) なら **次の候補に進む**。
+  - **cwd 非一致モード** (ドッグフーディング系: 別リポジトリの作業ディレクトリから別 PR をレビューする場合): cwd を **読まず** (PR と無関係なリポジトリの方針を誤適用するのを防ぐため)、4 候補について `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>"` の remote fetch のみを試す。404 なら次の候補に進む。
+  - **共通**: 4 候補すべての判定が空振りした場合のみ「プロジェクト指示ファイルなし」と判定する。`?ref=<HEAD_SHA>` は **PR head ref を必ず指定する** (`<HEAD_SHA>` は Step 1 で取得済みの `headRefOid`)。省略するとデフォルトブランチから取られるため、PR 内で `REVIEW.md` 等を新設・編集している場合に新方針が反映されない (または逆に古い方針でレビューされる) 不整合が出る。Step 1 で `commit_id` を transient 失敗で省略した場合は `<HEAD_SHA>` の代わりに PR の headRefName (`gh pr view --json headRefName` で再取得) を使う。
   - API レスポンスの `content` フィールドは Base64 なので `--jq .content` で抽出する。デコードは `python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` か、`python3` が無い環境では `base64 -d` (GNU coreutils) を使う。
 
 Step 2 のスタイル参考ガイドと矛盾する箇所はプロジェクト側を優先し、矛盾しない箇所は両者を併用する。プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
@@ -154,6 +155,13 @@ Step 2〜4 で得た方針・観点・差分 (および PR モードで渡され
   4. 重要度ラベルで優先度ソート (`[must]` > `[should]` > ...) する。
   5. `MAX_INLINE_COMMENTS` 指定があれば、上位から N 件にカットする (`unlimited` ならカットしない)。
   6. N 超過で省略があれば `body` の総括に省略件数とラベル別内訳を 1 文添える。
+- 上記過程で得た集計値は **`_summary_meta` 構造化フィールド** として Step 6 の出力 JSON に必ず含める。orchestrator (`run-pr-review` Step 6 等) が `body` の Markdown をパースせずに集計値を取れるようにする。フィールド構成:
+  - `inline_count`: `comments[]` の最終件数 (カット後)。
+  - `inline_count_by_severity`: `{ "must": N, "should": N, "nit": N, "question": N, "pre_existing": N }`。各キーは必ず含め、該当指摘が無ければ `0`。
+  - `main_concerns_count`: `body` 内の「主要懸念 top3」相当に列挙した件数 (style-reference の粒度ガイドに従い 0〜3 を想定)。
+  - `praises_count`: `body` 内の「良かった点」相当に列挙した件数 (0〜2 を想定)。
+  - `omitted_count`: `MAX_INLINE_COMMENTS` 超過でカットした件数 (カット無しなら `0`)。
+  - これらの値は `body` Markdown の見出しに依存しない (style-reference 規約が将来揺れても集計が壊れない) 形で本 skill が責任を持って算出する。
 
 ### Step 6. JSON を出力する
 
@@ -178,15 +186,24 @@ compose-review (中間成果物): /tmp/compose-review-output.json 生成完了 (
 - **fenced JSON ブロックを chat に出さない**。chat 上に大きなアウトプットを残さないことで、orchestrator が「JSON 出力 = タスク完了」と誤認する構造的リスクを取り除く。
 - `Write` ツールは中間ディレクトリの自動作成を保証しないが `/tmp/` は通常存在するので `mkdir -p` は不要。**Claude Code の Write tool は「同一セッション中に Read されていない既存ファイルへの上書き」を拒否する仕様**のため、`/tmp/compose-review-output.json` は前回呼び出しで残存している可能性を考慮し、Write 前に `Read` を 1 回挟む (ファイル不在なら Read エラーは無視してそのまま Write、存在すれば Read 後に Write)。
 
-#### `OUTPUT_DESTINATION=chat` (デフォルト、`run-local-review` から呼ばれる際の挙動)
+#### `OUTPUT_DESTINATION=chat` (デフォルト、`run-local-review` から呼ばれる際 / 人間が直接 `/compose-review` を叩く際の挙動)
 
 JSON を fenced ブロックで chat に出力する。fenced ブロックの **前** に 1〜2 行の人間向けサマリ (例: `インライン指摘 3 件 / 主要懸念 2 件`) を添える。caller (人間) が直接読めるようにする用途。
+
+**chat モードでは orchestrator 向け meta フィールドをフィルタする** (人間が読んで紛らわしいため):
+
+- `_intermediate` は **常に `false`** にする (chat = 最終成果物扱い)。
+- `next_step` は **JSON から除外** する (PR モードでも含めない)。
+- `_summary_meta` は **そのまま含める** (人間にも参照価値があり、`inline_count` 等の集計値が見えても紛らわしくないため)。
+- その他のフィールド (`mode` / `body` / `event` / `comments[]` / `commit_id` / `base_branch` / `diff_mode`) は通常通り。
+
+これにより PR モードで `/compose-review OWNER=... REPO=... PR_NUMBER=...` を人間が直接叩いた場合も `_intermediate: false` / `next_step` 無しの JSON が返り、「次に何かしないといけないのか?」という誤解を起こさない。orchestrator 経由で post-pr-review まで連鎖したい場合は `OUTPUT_DESTINATION=file` を使う前提。
 
 #### 共通
 
 **本 step を実行したからといって、本 skill (orchestrator から呼ばれている場合) の責務は終わりではない**。`_intermediate: true` を含む JSON を返した場合、orchestrator は **後続 skill (`post-pr-review` 等) まで実行責任がある**。本 skill から見れば本 step で出力が完了するが、本 skill を呼んだ orchestrator は出力を受け取った後で必ず次 step (run-pr-review なら Step 3.5 → 4 → 5 → 6) まで進む前提。
 
-スキーマ (PR モード例):
+スキーマ (PR モード + `OUTPUT_DESTINATION=file` 例; chat モードでは `_intermediate: false` / `next_step` 削除):
 
 ```json
 {
@@ -211,11 +228,18 @@ JSON を fenced ブロックで chat に出力する。fenced ブロックの **
       "body": "[must] この複数行ブロックは..."
     }
   ],
-  "commit_id": "9f8e7d6c1a2b3c4d5e6f7890abcdef1234567890"
+  "commit_id": "9f8e7d6c1a2b3c4d5e6f7890abcdef1234567890",
+  "_summary_meta": {
+    "inline_count": 2,
+    "inline_count_by_severity": { "must": 1, "should": 1, "nit": 0, "question": 0, "pre_existing": 0 },
+    "main_concerns_count": 2,
+    "praises_count": 1,
+    "omitted_count": 0
+  }
 }
 ```
 
-ローカル diff モード例:
+ローカル diff モード例 (常に `OUTPUT_DESTINATION=chat`):
 
 ```json
 {
@@ -225,7 +249,14 @@ JSON を fenced ブロックで chat に出力する。fenced ブロックの **
   "diff_mode": "commit",
   "body": "総括コメント本文",
   "event": "COMMENT",
-  "comments": []
+  "comments": [],
+  "_summary_meta": {
+    "inline_count": 0,
+    "inline_count_by_severity": { "must": 0, "should": 0, "nit": 0, "question": 0, "pre_existing": 0 },
+    "main_concerns_count": 0,
+    "praises_count": 0,
+    "omitted_count": 0
+  }
 }
 ```
 
@@ -236,8 +267,9 @@ JSON を fenced ブロックで chat に出力する。fenced ブロックの **
 - 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。
 - `commit_id` は **PR モードのみ** 含める。ローカルモードでは省略する。PR モードで Step 1 の head SHA 取得が transient 失敗で諦めた場合も省略する (詳細は Step 1 PR モード参照)。
 - `base_branch` / `diff_mode` は **ローカル diff モードでは必須** (省略不可)、PR モードでは含めない。`base_branch` は Step 1 で解決したベースブランチ名 (`main` / `master` / caller 指定値)、`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか (`"none"` は差分なしで Step 2〜5 を skip した場合)。orchestrator (`run-local-review`) はこの 2 フィールドが必ず存在する前提で caller への報告に使う。
-- 指摘が無い場合: `body` は「特に指摘なし」相当の文言、`comments` は `[]`。
-- 差分が空で Step 2〜5 を skip した場合: `body` は「対象差分なし (評価対象なし)」相当、`comments` は `[]`。ローカルモードでは `diff_mode: "none"`、PR モードでは PR 自体には差分が存在しないため通常運用では発生しにくいが同様に空 `comments[]` で返す。
+- 指摘が無い場合: `body` は「特に指摘なし」相当の文言、`comments` は `[]`、`_summary_meta` は全カウント `0`。
+- 差分が空で Step 2〜5 を skip した場合: `body` は「対象差分なし (評価対象なし)」相当、`comments` は `[]`、`_summary_meta` は全カウント `0`。ローカルモードでは `diff_mode: "none"`、PR モードでは PR 自体には差分が存在しないため通常運用では発生しにくいが同様に空 `comments[]` で返す。
+- `_summary_meta`: 構造化された集計値 (必須、両モード共通)。`inline_count` / `inline_count_by_severity` / `main_concerns_count` / `praises_count` / `omitted_count` を含む。詳細は Step 5 末尾の定義を参照。orchestrator (`run-pr-review` Step 6 等) はこのフィールドから集計値を取る前提で、`body` Markdown をパースしてはならない。
 
 JSON ファイルへの書き出しは `OUTPUT_DESTINATION=file` 経由の `/tmp/compose-review-output.json` を **例外** とし、それ以外 (任意パスへの書き出し / 複数ファイル分割 / debug 用ログファイル等) は行わない。markdown ファイル出力も行わない。caller が `post-pr-review` に渡す際の `/tmp/review.json` の組み立ては `post-pr-review` 側が責任を持つ (本 skill が `/tmp/review.json` を直接書くことはない)。
 

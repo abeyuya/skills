@@ -68,8 +68,9 @@ Skill ツールで `compose-review` をローカル diff モードで呼ぶ。�
 - `base_branch`: 解決済みのベースブランチ名 (`main` / `master` / caller 指定値)
 - `diff_mode`: `"commit"` / `"staged"` / `"worktree"` / `"none"`
 - `body` / `event` / `comments[]`
+- `_summary_meta`: 集計値 (`inline_count` / `inline_count_by_severity` / `main_concerns_count` / `praises_count` / `omitted_count`)。Step 3 の caller 報告で参照する。
 
-`commit_id` / `next_step` はローカルモードでは含まれない。本 skill は Step 4 以降を持たないため、`_intermediate: false` を確認してそのまま caller に提示する。
+`commit_id` / `next_step` はローカルモードでは含まれない (chat モード仕様により `next_step` は PR モード chat 出力でも省略される)。本 skill は Step 4 以降を持たないため、`_intermediate: false` を確認してそのまま caller に提示する。
 
 ### Step 3. caller への報告
 
@@ -77,7 +78,7 @@ Step 2 で `compose-review` が **既に fenced JSON ブロックを chat に出
 
 - レビュー対象のブランチ (Step 1 で取得した現在ブランチ名) と ベース (`compose-review` 戻り値の `base_branch`)
 - 差分モード (`compose-review` 戻り値の `diff_mode`)
-- インライン指摘件数 (`compose-review` 戻り値の `comments[]` 長)
+- 集計値 (`compose-review` 戻り値の `_summary_meta` を参照): `inline_count` / `inline_count_by_severity` / `main_concerns_count` / `praises_count` / `omitted_count`。`body` の Markdown を機械パースしない (集計責務は `compose-review` 側)。
 - `diff_mode == "none"` だった場合はその旨を明示する
 
 最終的に chat には「`compose-review` 由来の fenced JSON ブロック (`OUTPUT_DESTINATION=chat` のデフォルト挙動による)」+「本 skill の追加サマリ 1 段落」の **2 つが並ぶ** 形になる。

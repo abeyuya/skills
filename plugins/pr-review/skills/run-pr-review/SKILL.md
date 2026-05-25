@@ -118,7 +118,7 @@ Step 3.5 で `/tmp/compose-review-output.json` から取り出したフィール
 | `event` | `event` | 文字列 `"COMMENT"` 固定。 |
 | `comments` | `comments` | 配列。要素のキー (`path` / `line` / `side` / `start_line` / `start_side` / `body`) はそのまま。**ここでの `side` は GitHub Review REST API (`POST /repos/.../reviews`) の `comments[]` 入力スキーマで `"RIGHT"` / `"LEFT"` を取る正規フィールドであり、Step 2 で「クエリに含めるな」とした GraphQL の `PullRequestReviewComment` 型の `side` (存在しない) とは別物。文脈 (REST POST vs GraphQL Read) で扱いが反転する点に注意。** |
 | `commit_id` | `COMMIT_ID` | 文字列。**`compose-review` の戻り値 JSON に `commit_id` キーが含まれていない場合は理由を問わず本入力も省略する** (空文字を渡さない: `gh api .../reviews` が 422 で失敗するため)。省略理由は `compose-review` 側の責務で、典型的には Step 1 PR モードの head SHA 取得が transient 失敗したケースが該当する (なお Step 4 の「対象差分なし」分岐は Step 1 で SHA が取れていれば `commit_id` を含めて返すので、本表の判定には影響しない)。 |
-| `_intermediate` / `next_step` / `mode` | (転送しない) | orchestrator 内部用の meta フィールド。`post-pr-review` には渡さない。 |
+| `_intermediate` / `next_step` / `mode` / `_summary_meta` | (転送しない) | orchestrator 内部用の meta フィールド。`post-pr-review` には渡さない (`_summary_meta` は本 skill Step 6 の集計値取得用に保持しておくが post-pr-review へは送らない)。 |
 | (本 skill が確定済み) | `OWNER` / `REPO` / `PR_NUMBER` | Step 1 の値。`post-pr-review` の入力名 (`post-pr-review/SKILL.md` の入力セクション参照) もこの **大文字スネークケースそのまま**。改名 / 小文字化はしない。 |
 
 `commit_id` だけ uppercase に rename する点に注意 (`body` / `event` / `comments` は **lowercase のまま**)。`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
@@ -136,7 +136,7 @@ Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `reso
 以下を簡潔に caller へ返す:
 
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
-- インライン指摘件数 / 総括の主要懸念件数 / severity 内訳 (Step 3.5 で `/tmp/compose-review-output.json` から取り出した `comments[]` の長さと `body` 内訳から算出)
+- 集計値: **Step 3.5 で読み込んだ JSON の `_summary_meta` フィールドから取り出す** (`inline_count` / `inline_count_by_severity` / `main_concerns_count` / `praises_count` / `omitted_count`)。`body` の Markdown 構造を agent が機械パースして集計してはならない (style-reference の見出し規約が将来揺れた時に集計が壊れるため。集計責務は `compose-review` 側に集約されている)。
 - resolve したスレッド件数 (Step 5 の戻り値)
 
 ## 守ること
