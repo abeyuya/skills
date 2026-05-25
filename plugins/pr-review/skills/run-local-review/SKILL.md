@@ -24,24 +24,25 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ### Step 1. `compose-review` (sub-agent) でレビュー本文を生成する
 
-Task ツール (`subagent_type=general-purpose`) を 1 回 dispatch する。Prompt テンプレート (`<…>` プレースホルダは実値で埋める。値が未取得 / 空の引数行は行ごと省略する。空文字埋めはしない):
+Task ツール (`subagent_type=general-purpose`、新 SDK 環境では `Agent` ツールに rename されているが両者は同義) を 1 回 dispatch する。subagent は parent の slash command を継承しないため、prompt 内で **Skill ツール経由で `compose-review` skill を呼ぶ** よう明示する。Prompt テンプレート (`<…>` プレースホルダは実値で埋める。値が未取得 / 空の引数行は行ごと省略する。空文字埋めはしない):
 
 ```
 pr-review プラグインの compose-review skill を呼び出すための subagent。
-以下の引数で /compose-review を呼び、その出力 (JSON) を最終メッセージとして
-verbatim に返せ。最終メッセージは前置きも fenced ブロックもなしの生 JSON 1 つだけ。
+Skill ツール (`skill: "compose-review"`) で compose-review skill を起動し、
+以下を引数として渡せ。skill の出力 (JSON) を最終メッセージとして verbatim に返せ。
+最終メッセージは前置きも fenced ブロックもなしの生 JSON 1 つだけ。
 
 MODE=local
 BASE_BRANCH=<値>
 MAX_INLINE_COMMENTS=<値>
 ```
 
-Task ツール result (sub-agent の最終メッセージ) を `json.loads()` 等で parse する:
+Task ツール result (sub-agent の最終メッセージ) を `json.loads()` 等で parse し、**以下の順序** で判定する (順序固定。error 検査を必ず最優先にする):
 
-- parse 失敗 (JSON として読めない / fenced ブロック付き / 複数 JSON / 想定外形式) は整合性エラーとして停止し、Step 3 の caller 報告で「compose-review 戻り値が JSON として読めなかった」旨を転送する (Step 2 は skip)。
-- `error` フィールドがあれば Step 3 の caller 報告でそのメッセージを転送し停止する (Step 2 は skip)。
-- `mode` が `"local"` でなければ整合性エラーとして停止する。
-- それ以外 (success 時) は `base_branch` / `diff_mode` / `body` / `comments` を Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する** (Task ツール result 受け取り時点では本 skill の処理は完了していない)。
+1. parse 失敗 (JSON として読めない / fenced ブロック付き / 複数 JSON / 想定外形式) なら、本 skill が `body="compose-review 失敗 (parse error)。Task ツール戻り値を JSON として解釈できませんでした。"` / `comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` を持つ擬似結果を組み立てて Step 2 (markdown 出力) を実行し、Step 3 で同旨を caller に報告する (markdown ファイル自体は必ず生成する。本 skill の「守ること」の不変条件と整合させる)。
+2. `error` フィールドがあれば、`body="compose-review エラー: <error message>"` / `comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` を持つ擬似結果を組み立てて Step 2 を実行する (parse 失敗時と同じく markdown は必ず出す)。**error 時の payload は `mode` を含まない仕様なので、必ず本 step を 3 より先に評価する**。
+3. `mode` が `"local"` でなければ整合性エラーとして停止する (異常値なので markdown は出さない)。
+4. それ以外 (success 時) は `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` を Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する** (Task ツール result 受け取り時点では本 skill の処理は完了していない)。
 
 ### Step 2. 結果を出力する (チャット + markdown ファイル)
 
@@ -62,6 +63,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 
 - 生成日時: <ISO8601, UTC 秒精度。例: 2026-05-04T12:34:56Z>
 - 差分モード: <commit / staged / worktree / none>
+- 対象コミット: <commit_count> 件 (<base_branch>..HEAD) ※ staged / worktree / none モードでは「0 件 (コミット未作成)」と記載し範囲表示は省略
 - インライン指摘: <count> 件
 
 ## 総括

@@ -39,28 +39,30 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 ### Step 3. `compose-review` (sub-agent) でレビュー本文を生成する
 
-Task ツール (`subagent_type=general-purpose`) を 1 回 dispatch する。Prompt テンプレート (`<…>` プレースホルダは実値で埋める。値が未取得 / 空の引数行は行ごと省略する。空文字埋めはしない):
+Task ツール (`subagent_type=general-purpose`、新 SDK 環境では `Agent` ツールに rename されているが両者は同義) を 1 回 dispatch する。subagent は parent の slash command を継承しないため、prompt 内で **Skill ツール経由で `compose-review` skill を呼ぶ** よう明示する。Prompt テンプレート (`<…>` プレースホルダは実値で埋める。値が未取得 / 空の引数行は行ごと省略する。空文字埋めはしない):
 
 ```
 pr-review プラグインの compose-review skill を呼び出すための subagent。
-以下の引数で /compose-review を呼び、その出力 (JSON) を最終メッセージとして
-verbatim に返せ。最終メッセージは前置きも fenced ブロックもなしの生 JSON 1 つだけ。
+Skill ツール (`skill: "compose-review"`) で compose-review skill を起動し、
+以下を引数として渡せ。skill の出力 (JSON) を最終メッセージとして verbatim に返せ。
+最終メッセージは前置きも fenced ブロックもなしの生 JSON 1 つだけ。
 
 MODE=pr
 OWNER=<OWNER>
 REPO=<REPO>
 PR_NUMBER=<PR_NUMBER>
+COMMIT_ID=<Step 2 で取得した headRefOid>
 MAX_INLINE_COMMENTS=<値>
 EXISTING_THREADS_CONTEXT=<Step 2 で組み立てたテキスト>
 CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 ```
 
-Task ツール result (sub-agent の最終メッセージ) を `json.loads()` 等で parse する:
+Task ツール result (sub-agent の最終メッセージ) を `json.loads()` 等で parse し、**以下の順序** で判定する (順序固定。error 検査を必ず最優先にする):
 
-- parse 失敗 (JSON として読めない / fenced ブロック付き / 複数 JSON / 想定外形式) は整合性エラーとして停止し、Step 6 の caller 報告で「compose-review 戻り値が JSON として読めなかった」旨を転送する (Step 4/5 は skip)。
-- `error` フィールドがあれば Step 6 の caller 報告でそのメッセージを転送し停止する (Step 4/5 は skip)。
-- `mode` が `"pr"` でなければ整合性エラーとして停止する。
-- それ以外 (success 時) は `body` / `event` / `comments` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する** (Task ツール result 受け取り時点では本 skill の処理は完了していない)。
+1. parse 失敗 (JSON として読めない / fenced ブロック付き / 複数 JSON / 想定外形式) なら整合性エラーとして停止し、Step 6 の caller 報告で「compose-review 戻り値が JSON として読めなかった」旨を転送する (Step 4/5 は skip)。
+2. `error` フィールドがあれば Step 6 の caller 報告でそのメッセージを転送し停止する (Step 4/5 は skip)。**error 時の payload は `mode` を含まない仕様なので、必ず本 step を 3 より先に評価する**。
+3. `mode` が `"pr"` でなければ整合性エラーとして停止する。
+4. それ以外 (success 時) は `body` / `event` / `comments` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する** (Task ツール result 受け取り時点では本 skill の処理は完了していない)。`commit_id` は差分なし時も必ず含まれる前提だが、万一欠落していたら Step 2 で取得済の `headRefOid` を fallback として使う。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 

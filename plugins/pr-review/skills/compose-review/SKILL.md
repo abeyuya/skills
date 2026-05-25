@@ -23,8 +23,9 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 
 ### PR モードのみ (任意)
 
+- `COMMIT_ID`: caller (orchestrator) が既に取得した head SHA。渡されればそのまま Step 6 の `commit_id` として使い、Step 1 の `gh pr view` 再取得を skip する (二重取得回避 + force-push race 防止)。
 - `EXISTING_THREADS_CONTEXT`: caller が既に取得した既存 reviewThreads の主旨サマリ (各スレッドの `path:line` 併記 1〜2 文要約)。Step 5 の重複指摘抑制に使う。
-- `CI_FAILURE_CONTEXT`: caller が既に収集した CI 失敗ログのサマリ。Step 5 で `[must]` 根拠に使う。
+- `CI_FAILURE_CONTEXT`: caller が既に収集した CI 失敗ログのサマリ。Step 5 で `[must]` 指摘の根拠として使う (失敗ジョブがあれば必ず `[must]` 扱いに昇格)。
 
 caller プロジェクト固有の方針は **プロジェクト指示ファイル** (Step 3) に置く運用に固定。個別パス指定の引数は持たない。
 
@@ -34,7 +35,9 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 #### PR モード
 
-- `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid` で head SHA を取得し、Step 6 出力 JSON の `commit_id` として控える。失敗時は本 skill の「失敗時」節に従い `{"error":"..."}` を最終メッセージとして返して停止する (transient/致命の自動判別はしない)。
+- `OWNER` / `REPO` / `PR_NUMBER` のいずれかが空ならエラーとし、`{"error":"PR モードで OWNER/REPO/PR_NUMBER が欠けています"}` を最終メッセージとして返して停止する (caller のガード漏れを本 skill 側でも弾く)。
+- `COMMIT_ID` が caller から渡されていればそれを Step 6 出力 JSON の `commit_id` として控え、本 step での `gh pr view` 再取得は **skip する** (二重取得 / force-push race 回避)。
+- `COMMIT_ID` 未指定なら `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid` で head SHA を取得し `commit_id` として控える。失敗時は本 skill の「失敗時」節に従い `{"error":"..."}` を最終メッセージとして返して停止する (transient/致命の自動判別はしない)。
 
 #### ローカルモード
 
@@ -53,6 +56,8 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 ### Step 2. スタイル参考ガイドを読み込む
 
 `/pr-review-style-reference` slash command を呼ぶ (`MAX_INLINE_COMMENTS` 指定があれば `max-inline-comments=<値>` を渡す)。重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱いを本セッションのレビュー方針として保持する。
+
+> Note: subagent (Task ツール経由) として起動された場合、parent の plugin slash command が継承されない可能性がある。その場合は本 step で `/pr-review-style-reference` の解決に失敗するので、本 skill デフォルト (style-reference を読まずに進む) で進行し、caller 報告に「style-reference 読み込み失敗」を 1 文添える。skill 全体は停止しない。
 
 ### Step 3. プロジェクト指示ファイルを読み込む (任意)
 
@@ -89,9 +94,10 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 - レビュー方針は Step 3 のプロジェクト指示ファイルを最優先、未上書きの論点は Step 2 のスタイル参考ガイドを参考にする。
 - `EXISTING_THREADS_CONTEXT` が渡されている場合、同主旨の指摘は再掲しない (位置が同じでも論点が別なら新規指摘してよい)。重要度が既存より高い場合は別主旨として残す ([must]/[should] を dedupe で抑制すると実害大のため判定に迷えば残す方向)。
-- `CI_FAILURE_CONTEXT` が渡されている場合はスタイル参考ガイドの「CI の扱い」に従う。
+- `CI_FAILURE_CONTEXT` が渡されている場合は **`[must]` 指摘の根拠として扱う**: 失敗ジョブが存在する以上「修正必須」であり `[nit]` や `[question]` で扱わない (詳細はスタイル参考ガイドの「CI の扱い」を参考)。
 - `event` は **常に `"COMMENT"`** (`post-pr-review` の規約)。
 - 指摘が無くても Step 6 で「特に指摘なし」相当の JSON を返す (skip しない)。
+- `body` は最低限 `## 総合判断` / `## 主要懸念 top3` (該当無しなら 0〜3 件) / `## 良かった点` (1〜2 件) の 3 サブ見出しで構成する (caller の markdown 出力テンプレート / grep スクリプトとの互換のため)。指摘なし / 差分なしの場合も 3 見出しを残し、本文は「該当なし」相当で埋める。
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が prepend する)。`body` は生本文。
 - `MAX_INLINE_COMMENTS` が正の整数なら `comments[]` を N 件以下に絞る (優先度: `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。N 超過で省略があれば `body` 末尾に「省略件数 + ラベル別内訳」を 1 文添える。
 
@@ -121,14 +127,15 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   "mode": "local",
   "base_branch": "main",
   "diff_mode": "commit",
+  "commit_count": 3,
   "body": "総括コメント本文",
   "event": "COMMENT",
   "comments": []
 }
 ```
 
-- `commit_id` は **PR モードのみ** 含める。
-- `base_branch` / `diff_mode` は **ローカルモードのみ** 含める (`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか)。
+- `commit_id` は **PR モードのみ** 含める。差分なし (Step 4 で `gh pr diff` が空) の場合も Step 1 で取得した値を必ず含める (force-push 行ズレ防止のため optional ではなく必須)。
+- `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` は `diff_mode="commit"` 時のみ `git log <base>..HEAD --oneline | wc -l` で取得した整数、`staged` / `worktree` / `none` 時は `0` (固定)。
 - 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
 - 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`。空文字列は不可。
 
@@ -138,6 +145,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 ## 守ること
 
+- Task ツール / Agent ツールで **更に sub-agent を spawn しない** (本 skill 自身が sub-agent として呼ばれている前提のため、多段 sub-agent は公式制約で不可)。`/run-pr-review` / `/run-local-review` を再帰的に呼ぶこともしない (orchestrator が parent 側の責務)。
 - `post-pr-review` / `resolve-pr-threads` は呼ばない (orchestrator の責務)。
 - `gh pr review` / `gh pr comment` / `gh api .../reviews` を直接叩かない。レビュー投稿は本 skill の責務外。
 - `git fetch` / `git pull` / `git checkout` / `git reset` / `git commit` / `git push` 等の書き換え操作は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git remote get-url`) のみ。
