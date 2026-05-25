@@ -124,7 +124,7 @@ GQL_OUTER='query($owner: String!, $name: String!, $number: Int!, $after: String)
           comments(first: 100) {
             pageInfo { hasNextPage endCursor }
             nodes {
-              id author { login } body createdAt
+              id author { login __typename } body createdAt
               path line originalLine diffHunk url
               reactions(first: 20) { nodes { content } }
             }
@@ -142,7 +142,7 @@ GQL_INNER='query($threadId: ID!, $cafter: String) {
       comments(first: 100, after: $cafter) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id author { login } body createdAt
+          id author { login __typename } body createdAt
           path line originalLine diffHunk url
           reactions(first: 20) { nodes { content } }
         }
@@ -302,6 +302,7 @@ jq -n \
             comments: (.comments.nodes | map({
               id: .id,
               author_login: (.author.login // "ghost"),
+              author_type: (.author.__typename // "Unknown"),
               body: .body,
               created_at: .createdAt,
               path: .path,
@@ -325,6 +326,18 @@ jq '
   def positive_reactions: ["THUMBS_UP", "HEART", "HOORAY", "ROCKET"];
   def negative_reactions: ["THUMBS_DOWN", "CONFUSED"];
   def affirmative_keywords: ["fixed", "対応", "修正", "反映", "確かに", "その通り", "done", "addressed"];
+  # 否定キーワード: 肯定キーワードを含んでいても、これらが同 body 内にあれば
+  # affirmative=false に倒す。例:「対応しません」「現状維持」「wontfix」など。
+  # affirmative_keywords との部分文字列ぶつかり (例: "対応" vs "対応しません") を避けるため、
+  # 否定形は十分長い慣用句 (動詞 + 否定形 or 慣用句) でリスト化する。
+  def negative_keywords: [
+    "対応しません", "対応しない", "対応せず",
+    "修正しません", "修正しない", "修正せず",
+    "反映しません", "反映しない", "反映せず",
+    "現状維持", "そのまま", "不採用", "不要です",
+    "wontfix", "won'\''t fix", "wont fix", "will not fix",
+    "not addressed", "not fixed"
+  ];
 
   .prs |= map(
     . as $pr |
@@ -340,6 +353,7 @@ jq '
           | select(.created_at > $cm.created_at
                    and .author_login == $pr.author
                    and ((. as $x | affirmative_keywords | any(. as $kw | $x.body | contains($kw))))
+                   and ((. as $x | negative_keywords | any(. as $kw | $x.body | contains($kw))) | not)
                   )
          ] | length > 0) as $author_replied |
         ([$pr.commits[]
@@ -357,6 +371,7 @@ jq '
           author_replied_affirmative: $author_replied,
           severity_label: $sev,
           is_ai_authored: $cm.is_ai_authored,
+          author_type: $cm.author_type,
           reply_count: (($thread.comments | length) - 1),
           reactions_positive: $pos_re,
           reactions_negative: $neg_re,

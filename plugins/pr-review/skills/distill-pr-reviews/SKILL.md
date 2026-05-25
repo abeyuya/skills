@@ -104,7 +104,10 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
         thread_id: string;
         is_resolved: boolean; is_outdated: boolean;
         comments: {
-          id: string; author_login: string; body: string; created_at: string;
+          id: string;
+          author_login: string;
+          author_type: "User" | "Bot" | "Unknown";  // GraphQL author.__typename を転記。GitHub App / installation bot は "Bot" (gemini-code-assist / copilot-pull-request-reviewer / coderabbitai / dependabot[bot] 等)、通常アカウントは "User"、author=null (削除済みアカウント) は "Unknown"。ごく稀に User account で運用される AI レビュー bot があり得るため、Phase C の AI は author_type に加えて author_login の文字列パターン (例: `*-code-assist`, `*-reviewer`, `copilot-*`, `coderabbit*`) でも補完判定する
+          body: string; created_at: string;
           path: string; line: number | null; original_line: number | null;
           diff_hunk: string; url: string;
           reactions: { content: string }[];
@@ -122,9 +125,10 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
   - `thread_resolved`: 親スレッドの `is_resolved`
   - `thread_outdated`: 親スレッドの `is_outdated`
   - `file_changed_after_comment`: 当該コメントの `created_at` 以降に committed された commit のうち `files[]` に `comment.path` を含むものがあるか (boolean)
-  - `author_replied_affirmative`: 同一スレッドの後続コメントのうち `author_login == PR.author` のものが固定キーワード (`fixed` / `対応` / `修正` / `反映` / `確かに` / `その通り` / `done` / `addressed`) を body に含むか。誤検出は許容 (Phase C の AI が body 全文を見て最終判断)
+  - `author_replied_affirmative`: 同一スレッドの後続コメントのうち `author_login == PR.author` のものが **肯定キーワード (`fixed` / `対応` / `修正` / `反映` / `確かに` / `その通り` / `done` / `addressed`) を body に含み、かつ否定キーワード (`対応しません` / `対応しない` / `対応せず` / `修正しません` / `修正しない` / `修正せず` / `反映しません` / `反映しない` / `反映せず` / `現状維持` / `そのまま` / `不採用` / `不要です` / `wontfix` / `won't fix` / `wont fix` / `will not fix` / `not addressed` / `not fixed`) を body に含まない** か。否定キーワードは「動詞 + 否定形」または慣用句で十分な長さを持たせ、肯定キーワード (`対応` 等) との部分文字列ぶつかりを回避する。残る誤検出は許容 (Phase C の AI が body 全文を見て最終判断)
   - `severity_label`: body 内の `[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]` を正規表現で抽出 (**body 内の最初のマッチを採用する仕様**、なければ `null`)。AI 自動投稿マーカー `> **[AI 自動投稿]**` 自体は capture group の選択肢に無いため自然に skip される。body 内に複数のラベルが書かれているケース (例:「これは本来 `[must]` レベルだが本 PR では `[should]` に留める」) では最初に出てきたラベルが拾われるため、Phase C の AI は判定根拠に severity を使う際に body 全文も読んで矛盾検知すること
   - `is_ai_authored`: コメント本体の `is_ai_authored` フラグをそのまま転記
+  - `author_type`: コメント本体の `author_type` (`User` / `Bot` / `Unknown`) をそのまま転記。`is_ai_authored=false` でも `author_type=Bot` なら「post-pr-review 以外の bot 経由 (例: GitHub App として登録された PR レビュー bot)」のシグナル。User account 運用の AI レビュー bot (gemini-code-assist 等) は `User` 側に分類されるため、Phase C の AI が author_login の文字列パターン (例: `*-code-assist`, `*-reviewer`, `copilot-*` 等) で補完判定する
   - `reply_count`: スレッド内コメント数 - 1
   - `reactions_positive`: GraphQL の reaction `THUMBS_UP` / `HEART` / `HOORAY` / `ROCKET` の合計
   - `reactions_negative`: `THUMBS_DOWN` / `CONFUSED` の合計
@@ -164,10 +168,13 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
    - `[pre_existing]`: 棄却 (本 PR の指針というより別 issue 化推奨)。
    - severity ラベルなし: body の内容から severity を推定 (推定ラベルは `severity_suggestion` に明示)。
 
-4. **AI 自動投稿の扱い** (`is_ai_authored=true`)
-   - AI 指摘 + `thread_resolved=true` + `file_changed_after_comment=true`: 「AI 指摘 → 人間が取り込み」= 強信号で accept 寄り。
-   - AI 指摘 + 未 resolved / `thread_outdated` のみ: 「AI 指摘 → 無視 or 行ズレ」= 弱信号で reject 寄り。ただし内容が明らかに一般化可能なら `hold` に倒す。
-   - **`INCLUDE_AI_AUTHORED=false` の場合は内容を問わず一律 `reject`** (棄却理由に「AI 自動投稿を対象外として除外」と明示)。本値は `signals.json` の `meta.include_ai_authored` から取得する (Step 1 のスクリプトが caller 入力をそのまま meta に転記している)。
+4. **AI / bot 由来コメントの扱い**
+   本 skill の `is_ai_authored=true` は **post-pr-review skill 経由で投稿された (`> **[AI 自動投稿]**` マーカー付き) コメント** のみを指す。それ以外の bot や外部 AI レビュー bot (gemini-code-assist / copilot-pull-request-reviewer / dependabot[bot] 等) は本フラグでは識別されないため、以下の補完信号を組み合わせて判定する:
+
+   - `is_ai_authored=true`: post-pr-review 由来の AI 投稿。`thread_resolved=true` + `file_changed_after_comment=true` なら強信号で accept 寄り。未 resolved / `thread_outdated` のみなら弱信号で reject 寄り (ただし内容が明らかに一般化可能なら `hold`)。
+   - `author_type="Bot"` (`is_ai_authored=false`): GitHub App / installation 形式の bot 由来。主要な外部 AI レビュー bot (`gemini-code-assist`, `copilot-pull-request-reviewer`, `coderabbitai`) や `dependabot[bot]` はここに分類される。レビュー指摘である保証はないため body の内容で判定する。AI レビュー bot の指摘が `thread_resolved=true` + `file_changed_after_comment=true` ならやはり強信号で accept 寄り、未 resolved なら reject 寄り、という post-pr-review 由来 (`is_ai_authored=true`) と同じ評価軸を適用する。
+   - `author_type="User"` だが `author_login` が AI レビュー bot のパターン (例: `*-code-assist`, `*-reviewer`, `copilot-*`, `coderabbit*`): ごく稀に User account として運用されている AI レビュー bot の可能性。指摘内容の妥当性を AI が body で判断する。
+   - **`INCLUDE_AI_AUTHORED=false` の場合は `is_ai_authored=true` のコメントのみを一律 `reject`** (棄却理由に「AI 自動投稿を対象外として除外」と明示)。本値は `signals.json` の `meta.include_ai_authored` から取得する。**外部 AI レビュー bot 由来 (author_type=Bot / login パターン一致) のコメントはこのフラグでは除外されない** (制御対象は本 skill のスコープ内である post-pr-review 由来のみ、という設計)。caller が外部 bot も一括除外したい場合は `FILTER_AUTHOR=-author:...` を `gh pr list` 側で渡す運用にする。
 
 5. **クラスタリング (PR 横断)**
    - 類似テーマが複数 PR で出ていたら 1 つの proposal にまとめ、`sources[]` に PR URL を集約する。
