@@ -97,7 +97,7 @@ Task ツール result (sub-agent の最終メッセージ) を `json.loads()` �
 #### 取得方法
 
 - **ローカルモード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。
-- **PR モード**: cwd の git remote URL から OWNER/REPO (大文字小文字無視) を頑健に抽出して入力 `OWNER`/`REPO` と比較。SSH 形式 (`git@github.com:owner/repo.git`) と HTTPS 形式 (`https://github.com/owner/repo.git`) の両方を扱うため、`:` と `/` のどちらの区切りでも末尾 2 セグメントを取れる抽出を使う (例: `git remote get-url origin | sed -E 's#.*[:/]([^/]+/[^/]+)(\.git)?$#\1#'`)。
+- **PR モード**: cwd の git remote URL から OWNER/REPO (大文字小文字無視) を頑健に抽出して入力 `OWNER`/`REPO` と比較。SSH 形式 (`git@github.com:owner/repo.git`) と HTTPS 形式 (`https://github.com/owner/repo.git`) の両方を扱うため、`:` と `/` のどちらの区切りでも末尾 2 セグメントを取れる抽出を使う (例: `git remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'`。先に末尾 `.git` を除去してから最後の 2 セグメントを取る。1 段で `(\.git)?` を末尾任意にすると貪欲マッチで `repo.git` ごと拾い `.git` が残るため 2 段に分ける)。
   - **cwd 一致**: cwd 直下を 1 候補ずつ `Read` → 不在なら `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<commit_id>` で remote fetch → 404 なら次の候補。`<commit_id>` は Step 1 で確定した head SHA (caller から `COMMIT_ID` 経由で渡されたもの、または `gh pr view` で取得したもの)。`?ref=` を省略すると default branch から取れて PR で新設・編集された REVIEW.md が反映されない不整合になる。
   - **cwd 非一致 / remote 抽出失敗**: cwd を読まず remote fetch のみ (`?ref=<commit_id>` を必ず付ける)。
   - API レスポンスの `content` は Base64 なので `--jq .content` で取り、デコードする。実行環境に `python3` が無い場合があるため、Node.js (Claude Code 実行環境に常在) を使う `node -e "process.stdout.write(Buffer.from(require('fs').readFileSync(0,'utf-8'),'base64').toString('utf-8'))"` を優先し、`python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` をフォールバックとする (どちらでも可)。
