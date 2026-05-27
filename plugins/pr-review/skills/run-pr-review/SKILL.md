@@ -93,7 +93,7 @@ Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `reso
 以下を簡潔に caller へ返す:
 
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
-- インライン指摘件数 / 総括の主要懸念件数 / severity 内訳
+- インライン指摘件数 / ラベル別件数内訳 (優先度順、`[must]` / `[should]` 等、件数>0 のもの)
 - resolve したスレッド件数 (Step 5 の戻り値)
 
 ## 守ること
