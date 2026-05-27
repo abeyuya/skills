@@ -29,6 +29,29 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 
 caller プロジェクト固有の方針は **プロジェクト指示ファイル** (Step 3) に置く運用に固定。個別パス指定の引数は持たない。
 
+## caller 向け呼び出し契約 (orchestrator dispatch)
+
+`run-pr-review` / `run-local-review` 等の orchestrator が本 skill を sub-agent として呼ぶときの **共通 dispatch 手順 / 戻り値 parse 判定の正準仕様**。両 orchestrator はこの節を参照し、モード固有の引数と非 success 時のアクションだけを各 skill 側で定義する (本契約を各 orchestrator に再掲しない — 出力契約の変更時に複数ファイルへ追従漏れする drift を防ぐため)。
+
+### dispatch 手順
+
+- Task ツール (`subagent_type=general-purpose`、新 SDK 環境では `Agent` ツールに rename されているが両者は同義) を **1 回** dispatch する。`general-purpose` 以外 (`Plan` / `Explore` / `code-reviewer` 等の specialized subagent) は Skill ツールアクセスが制限される場合があるため使わない。
+- subagent は parent の slash command を継承しないため、prompt 内で **Skill ツール (`skill: "compose-review"`) 経由で本 skill を呼ぶ** よう明示する。
+- 引数は prompt 内に `KEY=VALUE` 1 行ずつで渡す。`<…>` プレースホルダは実値で埋め、値が未取得 / 空の引数行は **行ごと省略** する (空文字埋めはしない)。
+- **長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後ろ (prompt 末尾) に置く** — 本 skill の KEY=VALUE parser は次の `^[A-Z_]+=` 行までを value とするため、長文中の偶発 `KEY=` 様行による早期切断を末尾配置で防ぐ。
+- subagent には「skill の出力 (JSON) を最終メッセージとして verbatim に返す。前置きも fenced ブロックもなしの生 JSON 1 つだけ」と明示する。
+
+### 戻り値 parse 判定 (順序固定)
+
+Task ツール result (sub-agent の最終メッセージ) を `json.loads()` 等で parse し、**以下の順序で評価する** (順序固定。error 検査を必ず最優先):
+
+1. **parse 失敗** (JSON として読めない / fenced ブロック付き / 複数 JSON / 想定外形式)
+2. **`error` フィールドあり** — error 時の payload は `mode` を含まない仕様なので、必ず本判定を 3 より先に評価する
+3. **`mode` 不整合** (orchestrator が期待するモードと異なる)
+4. **success** — `body` / `event` / `comments` 等を後続 step に渡す。Task ツール result 受け取り時点では orchestrator の処理は完了していない (後続 step を必ず実行する)
+
+各ケースで取る **アクションは orchestrator 固有** (停止して報告する / 擬似結果を組み立てて出力を継続する 等)。各 orchestrator の dispatch step に記載する。
+
 ## 手順
 
 ### Step 1. モード判定と対象確定
@@ -74,10 +97,10 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 #### 取得方法
 
 - **ローカルモード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。
-- **PR モード**: cwd の git remote URL 末尾 2 セグメント (`/<owner>/<repo>`、`.git` 除去) を抽出して入力 `OWNER`/`REPO` (大文字小文字無視) と比較。
+- **PR モード**: cwd の git remote URL から OWNER/REPO (大文字小文字無視) を頑健に抽出して入力 `OWNER`/`REPO` と比較。SSH 形式 (`git@github.com:owner/repo.git`) と HTTPS 形式 (`https://github.com/owner/repo.git`) の両方を扱うため、`:` と `/` のどちらの区切りでも末尾 2 セグメントを取れる抽出を使う (例: `git remote get-url origin | sed -E 's#.*[:/]([^/]+/[^/]+)(\.git)?$#\1#'`)。
   - **cwd 一致**: cwd 直下を 1 候補ずつ `Read` → 不在なら `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<commit_id>` で remote fetch → 404 なら次の候補。`<commit_id>` は Step 1 で確定した head SHA (caller から `COMMIT_ID` 経由で渡されたもの、または `gh pr view` で取得したもの)。`?ref=` を省略すると default branch から取れて PR で新設・編集された REVIEW.md が反映されない不整合になる。
   - **cwd 非一致 / remote 抽出失敗**: cwd を読まず remote fetch のみ (`?ref=<commit_id>` を必ず付ける)。
-  - API レスポンスの `content` は Base64 なので `--jq .content` で取り、`python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` でデコード。
+  - API レスポンスの `content` は Base64 なので `--jq .content` で取り、デコードする。実行環境に `python3` が無い場合があるため、Node.js (Claude Code 実行環境に常在) を使う `node -e "process.stdout.write(Buffer.from(require('fs').readFileSync(0,'utf-8'),'base64').toString('utf-8'))"` を優先し、`python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` をフォールバックとする (どちらでも可)。
 
 ファイル内容は **そのままレビュー方針として扱う**。スタイル参考ガイドと矛盾する箇所はプロジェクト側を優先、矛盾しない箇所は両者を併用。プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
 

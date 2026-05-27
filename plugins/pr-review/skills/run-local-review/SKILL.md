@@ -24,7 +24,9 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ### Step 1. `compose-review` (sub-agent) でレビュー本文を生成する
 
-Task ツール (`subagent_type=general-purpose`、新 SDK 環境では `Agent` ツールに rename されているが両者は同義) を 1 回 dispatch する。`general-purpose` 以外 (`Plan` / `Explore` / `code-reviewer` 等の specialized subagent) は Skill ツールアクセスが制限される場合があるため使わない。subagent は parent の slash command を継承しないため、prompt 内で **Skill ツール経由で `compose-review` skill を呼ぶ** よう明示する。Prompt テンプレート (`<…>` プレースホルダは実値で埋める。値が未取得 / 空の引数行は行ごと省略する。空文字埋めはしない):
+dispatch 手順 (Task ツール / `general-purpose` / Skill ツール経由起動 / 生 JSON 返却) と戻り値 parse 判定の順序は **`compose-review` skill の「caller 向け呼び出し契約」節** に従う (本 skill には再掲しない — 出力契約変更時の二重管理を避けるため)。本 skill 固有の点は以下。
+
+#### 渡す引数 (prompt テンプレート)
 
 ```
 pr-review プラグインの compose-review skill を呼び出すための subagent。
@@ -37,12 +39,14 @@ BASE_BRANCH=<値>
 MAX_INLINE_COMMENTS=<値>
 ```
 
-Task ツール result (sub-agent の最終メッセージ) を `json.loads()` 等で parse し、**以下の順序** で判定する (順序固定。error 検査を必ず最優先にする):
+#### parse 判定の各ケースで取るアクション (正典の 4 ケースに対応)
 
-1. parse 失敗 (JSON として読めない / fenced ブロック付き / 複数 JSON / 想定外形式) なら、本 skill が `body="compose-review 失敗 (parse error)。Task ツール戻り値を JSON として解釈できませんでした。"` / `comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` を持つ擬似結果を組み立てて Step 2 (markdown 出力) を実行し、Step 3 で同旨を caller に報告する (markdown ファイル自体は必ず生成する。本 skill の「守ること」の不変条件と整合させる)。
-2. `error` フィールドがあれば、`body="compose-review エラー: <error message>"` / `comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` を持つ擬似結果を組み立てて Step 2 を実行する (parse 失敗時と同じく markdown は必ず出す)。**error 時の payload は `mode` を含まない仕様なので、必ず本 step を 3 より先に評価する**。
-3. `mode` が `"local"` でなければ、`body="compose-review モード不整合 (期待: local、実際: <mode>)。"` / `comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` を持つ擬似結果を組み立てて Step 2 を実行する (case 1/2 と同じく「差分が空でも markdown を必ず出す」不変条件と整合させる)。
-4. それ以外 (success 時) は `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` を Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する** (Task ツール result 受け取り時点では本 skill の処理は完了していない)。
+非 success の 3 ケースはいずれも **擬似結果を組み立てて Step 2 (markdown 出力) を必ず実行** する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。擬似結果の共通部は `comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0`、`body` のみケースで差し替える:
+
+1. **parse 失敗** → `body="compose-review 失敗 (parse error)。Task ツール戻り値を JSON として解釈できませんでした。"` で Step 2 を実行し、Step 3 で同旨を caller に報告する。
+2. **`error` あり** → `body="compose-review エラー: <error message>"` で Step 2 を実行する。
+3. **`mode` が `"local"` でない** → `body="compose-review モード不整合 (期待: local、実際: <mode>)。"` で Step 2 を実行する。
+4. **success** → `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` を Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
 
 ### Step 2. 結果を出力する (チャット + markdown ファイル)
 
@@ -68,7 +72,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 
 ## 総括
 
-<compose-review の `body` を埋め込む。`body` 先頭の h2 サブ見出し (`## 総合判断` / `## 主要懸念 top3` / `## 良かった点`) は h3 (`### 総合判断` 等) に 1 段下げて埋め込む — markdown 親見出し `## 総括` の下に同レベルの h2 が並んで階層が崩れるのを防ぐため。post-pr-review 投稿時は h2 のままが自然なので、本変換は run-local-review でのみ行い、compose-review 自体は h2 を出力する契約のままにする。>
+<compose-review の `body` を埋め込む。埋め込み時、`body` 内の **行頭 `^## ` を一律 `### ` に機械置換** して h2 を h3 に 1 段下げる (特定見出し名 `## 総合判断` / `## 主要懸念 top3` / `## 良かった点` への依存を避け、compose-review が将来見出し文言を変えても取りこぼさないため)。h3 以降 (`### ` 等) はそのまま。markdown 親見出し `## 総括` の下に同レベルの h2 が並んで階層が崩れるのを防ぐ変換であり、post-pr-review 投稿時は h2 のままが自然なので本変換は run-local-review でのみ行い、compose-review 自体は h2 を出力する契約のままにする。>
 
 ## インライン指摘
 
