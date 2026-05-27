@@ -55,7 +55,7 @@ type ReviewComment =
     };
 ```
 
-`commit_id` は caller 側で `gh pr view ... --json commits` の末尾 `oid` (= head SHA) を取得して渡すと、force-push / rebase で行ズレが起きた際の誤コメントを防げる (`run-pr-review` Step 4 で取得済みの `headRefOid` を流用する想定)。
+`commit_id` は caller 側で `gh pr view ... --json headRefOid` の `headRefOid` (= head SHA) を取得して渡すと、force-push / rebase で行ズレが起きた際の誤コメントを防げる (`run-pr-review` Step 2 で取得済みの `headRefOid` を流用する想定)。
 
 ### 契約の前提 (Payload 設計上の制約)
 
@@ -68,7 +68,7 @@ type ReviewComment =
 
 #### (a) 上流 skill から Skill ツール経由で呼ぶ場合
 
-`run-pr-review` Step 6 のように、上流 skill が `OWNER` / `REPO` / `PR_NUMBER` と Payload (`body` / `event` / `comments[]` / 任意で `commit_id`) を組み立てて Skill ツールの引数として渡す。本 skill 側で `/tmp/review.json` への `Write` と `gh api .../reviews --input` を実行する。caller 側で先回りして JSON を書き出す必要はない。
+`run-pr-review` Step 4 のように、上流 skill が `OWNER` / `REPO` / `PR_NUMBER` と Payload (`body` / `event` / `comments[]` / 任意で `commit_id`) を組み立てて Skill ツールの引数として渡す。本 skill 側で `/tmp/review.json` への `Write` と `gh api .../reviews --input` を実行する。caller 側で先回りして JSON を書き出す必要はない。
 
 #### (b) 人手 / 外部システムから prompt 経由で呼ぶ場合
 
