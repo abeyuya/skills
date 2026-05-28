@@ -5,10 +5,10 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 ## 提供 skill / command
 
 - `skills/run-pr-review`: PR レビュー一式 (PR 取得 → `compose-review` でレビュー本文生成 → 投稿 → 過去スレッド resolve) を 1 コマンドで実行する thin orchestrator skill。caller はこれを呼ぶだけで済む。
-- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を最終メッセージとして返す。`run-pr-review` / `run-local-review` から Task ツール (`subagent_type=general-purpose`) 経由で呼ばれる前提。
+- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を返す。`run-pr-review` からは Task ツール (`subagent_type=general-purpose`) 経由で sub-agent として、`run-local-review` からは現在コンテキストで直接 (Skill ツール経由) 呼ばれる。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
-- `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称。
+- `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称だが、sub-agent を立てず現在コンテキストで `compose-review` を直接呼ぶ (sub-agent 起動のオーバーヘッドを避けるため) 点が異なる。
 - `skills/distill-pr-reviews`: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を `proposals.md` として出力する skill。信号収集はスクリプト、最終的な採否分類 (`accept` / `hold` / `reject`) とクラスタリングは AI が行う。read-only で REVIEW.md 編集 / PR 作成は行わない。
 - `commands/pr-review-style-reference`: `/pr-review-style-reference` で呼び出す **スタイル参考ガイド** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。レビューコメントの書き方・体裁が対象で、技術観点 (何を見るか) は対象外。`compose-review` から内部的に呼ばれる。
 
@@ -16,7 +16,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 ## caller プロジェクトのレビュー方針の置き方
 
-`compose-review` (`run-pr-review` / `run-local-review` から sub-agent として呼ばれる) は **リポジトリ root の以下のファイルを自動で読み込む** (この順で最初に見つかった 1 つだけ):
+`compose-review` (`run-pr-review` からは sub-agent として、`run-local-review` からは現在コンテキストで直接呼ばれる) は **リポジトリ root の以下のファイルを自動で読み込む** (この順で最初に見つかった 1 つだけ):
 
 1. `REVIEW.md` — レビュー専用の最上位指示 (推奨)
 2. `AGENTS.md` — agent 全般向けの fallback
@@ -123,7 +123,7 @@ claude --plugin-dir plugins/pr-review
 
 ### 別ブランチで新規 skill を追加した PR を試す場合 (`Unknown skill: <name>` エラー対処)
 
-ローカルでブランチをチェックアウトしても Claude Code は **自動的に plugin install を更新しない**。`/plugin install` 済みの main 版に compose-review が無ければ、本ブランチをチェックアウトしても sub-agent から `Skill ツール (skill: "compose-review")` 呼び出しが `Unknown skill: compose-review` で失敗する。対処:
+ローカルでブランチをチェックアウトしても Claude Code は **自動的に plugin install を更新しない**。`/plugin install` 済みの main 版に compose-review が無ければ、本ブランチをチェックアウトしても `Skill ツール (skill: "compose-review")` 呼び出し (`run-pr-review` の sub-agent 経由 / `run-local-review` の直接呼び出しのいずれも) が `Unknown skill: compose-review` で失敗する。対処:
 
 1. **推奨**: `claude --plugin-dir plugins/pr-review` で起動する。`--plugin-dir` 指定は同名の install 済み plugin より優先され、本ブランチの未コミット内容も含めてその場で読み込まれる。
 2. **代替**: `/plugin marketplace add abeyuya/skills && /plugin install pr-review@abeyuya-skills` を再実行する (marketplace の HEAD コミットを再 fetch して install を更新)。
