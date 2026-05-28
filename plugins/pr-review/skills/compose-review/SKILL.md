@@ -129,7 +129,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 ### Step 6. JSON を最終メッセージとして返す
 
-最終メッセージとして **生 JSON テキスト 1 つだけ** を返す。fenced ブロック (` ```json ... ``` `) も前置き文も付けない (orchestrator が最終メッセージ全体を `json.loads()` で parse する前提)。`Write` ツールでファイルに書き出すことはしない。
+最終メッセージとして **生 JSON テキスト 1 つだけ** を返す。fenced ブロック (` ```json ... ``` `) も前置き文も付けない (sub-agent 経由 (`run-pr-review`) では orchestrator が最終メッセージ全体を `json.loads()` で parse する前提。現在コンテキストで直接呼ばれた場合 (`run-local-review` / 他 caller) は parse 境界が無く呼び出し元 skill がそのまま後続 step で使うが、いずれの経路でも生 JSON のみとする規約は共通)。`Write` ツールでファイルに書き出すことはしない。
 
 スキーマ (PR モード):
 
