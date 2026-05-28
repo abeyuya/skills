@@ -42,18 +42,20 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 
 ## 設計上の主要トレードオフ
 
-1. **PR 一覧は REST、reviewThreads は GraphQL の混在採用**: `gh pr list --search` がページング込みで便利、reviewThreads は GraphQL でしか取れない。
-2. **信号スコア合算を script でなく AI に委ねる**: 信号は文脈依存 (例: `is_outdated=true` 単独は「修正された」か「単に行ズレした」かの判別不能) で、機械合算するとノイズが大きい。`signals.json` には raw のまま付与し、Phase C の AI が総合判断する。
-3. **クラスタリングは Phase C (AI)**: 意味類似度判定が bash/jq では困難なため。Phase B では `path` ベースの「同一ファイル指摘」フラグだけ立てる。
-4. **採否は三値 (`accept` / `hold` / `reject`)**: 二値だと判断不能ケースが reject に流れて将来の蓄積機会を失う。迷ったら `hold` (`resolve-pr-threads` の保守的ルールと同思想)。
-5. **REVIEW.md 既存内容との重複判定は本 skill ではしない**: 後続フロー (REVIEW.md 編集) との責務分離を保つ。AI は proposals.md に「重複可能性あり」フラグだけ立てる。
-6. **決定論的な Phase A + B (PR 一覧取得 / GraphQL / commit files / 信号付与) は bash + jq スクリプトに切り出す**: `scripts/collect-signals.sh` が `signals.json` を出力するまでを担い、AI (Phase C+D) は signals.json を読んで `proposals.md` を書き出す責務に集中する。スクリプト化のメリットは挙動の再現性と AI 側プロンプトの圧縮で、デメリットは Step 5 の信号定義を変えたい場合に SKILL.md + スクリプト両方を編集する必要がある点 (signals.json のスキーマを変えると Phase C の AI 解釈もズレるため、両者は本 SKILL.md の `signals.json` スキーマ定義で同期させる)。
+1. **PR 一覧は REST、PR 詳細 (reviewThreads + commits + files) は GraphQL の混在採用**: `gh pr list --search` がページング込みで便利。PR 詳細は 1 PR = 1 GraphQL query にまとめて取得することで、API rate limit (graphql 5000/h / core 5000/h) を実質ほぼ消費しない構造にする (1 PR = graphql 1 query)。
+2. **commit 別 files は持たず、PR 全体 files で代用**: 旧設計では REST `commits/{sha}` を commit 数 × 1 query 叩いていたが、core 枠を数百 query 消費し rate limit に到達する原因だった。新設計では PR 全体の変更ファイル一覧 (GraphQL `pullRequest.files`) のみを取得し、`file_changed_after_comment` 判定は「PR 全体 files に該当 path 含む × コメント以降に commit 存在」に変更する。コメント前 commit のみで完結した変更が false positive になる精度劣化を許容するかわりに、commit 別 REST query を全廃する。残る精度低下は Phase C の AI が body + diff_hunk で最終判断することで吸収する。
+3. **reactions は廃止**: 旧設計では GraphQL の `reactions(first: 20)` を取得して `reactions_positive` / `reactions_negative` を信号化していたが、(a) 実際に reaction が付くコメントが稀で信号価値が低い、(b) GraphQL の 500k ノード上限を圧迫していた、ため廃止。ノード予算が空いた分は 1 PR 1 query への統合に振る。
+4. **信号スコア合算を script でなく AI に委ねる**: 信号は文脈依存 (例: `is_outdated=true` 単独は「修正された」か「単に行ズレした」かの判別不能) で、機械合算するとノイズが大きい。`signals.json` には raw のまま付与し、Phase C の AI が総合判断する。
+5. **クラスタリングは Phase C (AI)**: 意味類似度判定が bash/jq では困難なため。Phase B では `path` ベースの「同一ファイル指摘」フラグだけ立てる。
+6. **採否は三値 (`accept` / `hold` / `reject`)**: 二値だと判断不能ケースが reject に流れて将来の蓄積機会を失う。迷ったら `hold` (`resolve-pr-threads` の保守的ルールと同思想)。
+7. **REVIEW.md 既存内容との重複判定は本 skill ではしない**: 後続フロー (REVIEW.md 編集) との責務分離を保つ。AI は proposals.md に「重複可能性あり」フラグだけ立てる。
+8. **決定論的な Phase A + B (PR 一覧取得 / GraphQL / 信号付与) は bash + jq スクリプトに切り出す**: `scripts/collect-signals.sh` が `signals.json` を出力するまでを担い、AI (Phase C+D) は signals.json を読んで `proposals.md` を書き出す責務に集中する。スクリプト化のメリットは挙動の再現性と AI 側プロンプトの圧縮で、デメリットは信号定義を変えたい場合に SKILL.md + スクリプト両方を編集する必要がある点 (signals.json のスキーマを変えると Phase C の AI 解釈もズレるため、両者は本 SKILL.md の `signals.json` スキーマ定義で同期させる)。
 
 ## 手順
 
 ### Step 1. 信号収集スクリプトを呼ぶ (Phase A + B)
 
-決定論的な処理 (入力正規化 → `gh pr list` → reviewThreads 取得 → commit / files 取得 → 信号付与) は本 skill 配下の `scripts/collect-signals.sh` (bash + jq) に集約してある。本 step では **このスクリプトを Bash ツールから呼ぶだけ**。AI が同等処理を逐次実行しない (差異が出ないように)。
+決定論的な処理 (入力正規化 → `gh pr list` → PR 単位の GraphQL 統合クエリ → 信号付与) は本 skill 配下の `scripts/collect-signals.sh` (bash + jq) に集約してある。本 step では **このスクリプトを Bash ツールから呼ぶだけ**。AI が同等処理を逐次実行しない (差異が出ないように)。
 
 #### 呼び出し方
 
@@ -71,15 +73,16 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
   bash "<SKILL.md と同じディレクトリ>/scripts/collect-signals.sh"
 ```
 
-スクリプトは進捗を stderr に、`signals.json` の絶対パスを stdout 最終行に出す。非 0 で exit したらエラー停止して caller に報告 (主要原因: `gh` 未認証 / git リポジトリ外実行 / GraphQL ノード上限超過)。期間内 0 件でも exit 0 で `signals.json` (空状態) を出す。
+スクリプトは進捗を stderr に、`signals.json` の絶対パスを stdout 最終行に出す。非 0 で exit したらエラー停止して caller に報告 (主要原因: `gh` 未認証 / git リポジトリ外実行 / GraphQL ノード上限超過 / GitHub API rate limit 到達)。期間内 0 件でも exit 0 で `signals.json` (空状態) を出す。
 
 #### スクリプトの責務 (詳細は `scripts/collect-signals.sh` の本体コメント参照)
 
 - **Step 1-1. 入力正規化**: `OWNER` / `REPO` を `gh repo view` で auto-detect、`UNTIL` は今日 (UTC)、`SINCE` は `UNTIL - DAYS` (GNU/BSD `date` 両対応)、`OUTPUT_DIR` を確定し `mkdir -p`。
 - **Step 1-2. PR 一覧取得**: `gh pr list --search "merged:${SINCE}..${UNTIL} <filters>" --json ...` で取得し `_pr_list.json` に書き出す。`--state merged` は付けない (`merged:` 検索フィルタと重複するため)。`--limit` は `MAX_PRS + 100` で超過判定できる余裕を持たせる。0 件なら空 `signals.json` を出して即終了。
-- **Step 1-3. reviewThreads 取得 (GraphQL)**: PR ごとに外側 `reviewThreads(first: 100, after: $after)` をページングし、初回クエリの内側は `comments(first: 100)` のみ (`$cafter` を初回に持たせると外側全ノードに同 cursor が適用されて壊れるため)。100 件超のスレッドだけ `node(id: $threadId)` + inline fragment の追加クエリで埋める。`reactions(first: 20)` で GraphQL の 500,000 ノード制限を回避 (100 × 100 × 20 = 200,000)。PR 数 > 50 のときは PR 間で 1 秒 sleep。
-- **Step 1-4. commits + 各 commit の files 取得**: `gh pr view --json commits` で commit 一覧、`gh api repos/.../commits/<sha>` で `files[].filename` を取得。MAX_PRS=100 規模なら全 commit について先取りで取って Step 1-6 の jq を簡素化。
-- **Step 1-5. `prs.json` 組み立て**: 上記をまとめて以下の TypeScript ライクなスキーマで `${OUTPUT_DIR}/prs.json` に書き出す。
+- **Step 1-3. PR 詳細 (GraphQL 統合クエリ)**: PR ごとに **1 GraphQL query** で `reviewThreads(first: 50) × comments(first: 50)` + `commits(first: 100)` + `files(first: 100)` を一括取得する。reviewThreads が 50 件超の PR は `$tafter` カーソルで追加クエリ。1 thread の comments が 50 件超の場合のみ `node(id: $threadId)` + inline fragment の追加クエリで埋める (初回クエリの内側 `comments(first: 50)` に `$cafter` を持たせると外側全ノードに同 cursor が適用されて壊れるため、内側ページングは別クエリ)。1 query あたりのノード試算は 50×50 + 100 + 100 ≈ 2,700 で GraphQL の 500,000 ノード制限に対し十分小さい。PR 数 > 50 のときは PR 間で 1 秒 sleep。
+  - **rate limit 設計**: 1 PR = graphql 1 query が基本ケース。69 PR でも 70 query 前後で済み、graphql 枠 5000/h の 1〜2% しか使わない。REST `pulls/{N}/commits` および `commits/{sha}` は使わない (旧設計ではこれが core 枠を数百 query 消費して rate limit 到達の主因だった)。
+  - **truncate 警告**: `files` / `commits` の `pageInfo.hasNextPage=true` (100 件超) の PR では `files_truncated` / `commits_truncated` を true にし、stderr に WARNING を出す。後段の `file_changed_after_comment` が偽陰性に倒れうる旨を Phase C の AI 判定に渡す。
+- **Step 1-4. `prs.json` 組み立て**: Step 1-3 で書き出した PR ごとの中間レコード (`_pr_data.jsonl`) を `_pr_list.json` (PR メタ) と join し、以下の TypeScript ライクなスキーマで `${OUTPUT_DIR}/prs.json` に書き出す。
 
   ```ts
   type Collected = {
@@ -96,9 +99,13 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
       number: number; title: string; author: string;
       merged_at: string; head_sha: string; merge_commit_sha: string | null;
       base_ref: string; head_ref: string; labels: string[]; url: string;
+      files: string[];                // PR 全体で変更されたファイル一覧 (GraphQL `pullRequest.files`)
+      files_truncated: boolean;       // true なら 100 件超で取りこぼしあり (file_changed_after_comment が偽陰性に倒れる可能性)
+      commits_truncated: boolean;     // true なら 100 件超 commit があり後半 commit が取れていない
       commits: {
         sha: string; committed_at: string; message_headline: string;
-        files: string[];   // sha 毎の全変更ファイル (全 commit について事前取得済み)
+        // 旧スキーマにあった `files: string[]` (commit 別 files) は廃止。
+        // 信号判定では PR 全体の `files` + コメント以降の `commits[].committed_at` で代用する。
       }[];
       review_threads: {
         thread_id: string;
@@ -110,36 +117,36 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
           body: string; created_at: string;
           path: string; line: number | null; original_line: number | null;
           diff_hunk: string; url: string;
-          reactions: { content: string }[];
           is_ai_authored: boolean;  // body 先頭 `^> \*\*\[AI 自動投稿\]\*\*` の test 結果
+          // 旧スキーマにあった `reactions: { content: string }[]` は廃止 (GraphQL のノード予算と信号価値のトレードオフで)。
         }[];
       }[];
     }[];
   };
   ```
 
-- **Step 1-6. 信号付与 → `signals.json`**: `prs.json` の各コメントオブジェクトに `signals` フィールドを追加した同形 JSON を `${OUTPUT_DIR}/signals.json` に書き出す。**機械的なスコア合算はしない**。各信号は文脈依存で、Phase C の AI が組み合わせを見て総合判断するため。
+- **Step 1-5. 信号付与 → `signals.json`**: `prs.json` の各コメントオブジェクトに `signals` フィールドを追加した同形 JSON を `${OUTPUT_DIR}/signals.json` に書き出す。**機械的なスコア合算はしない**。各信号は文脈依存で、Phase C の AI が組み合わせを見て総合判断するため。
 
   各信号の意味 (`signals` フィールド配下):
 
   - `thread_resolved`: 親スレッドの `is_resolved`
   - `thread_outdated`: 親スレッドの `is_outdated`
-  - `file_changed_after_comment`: 当該コメントの `created_at` 以降に committed された commit のうち `files[]` に `comment.path` を含むものがあるか (boolean)
+  - `file_changed_after_comment`: PR 全体の `files` に当該コメントの `path` が含まれており、**かつ**当該コメントの `created_at` より後に committed された commit が PR に少なくとも 1 つあるか (boolean)。旧設計 (commit 別 files の一致判定) と比較すると、コメント前 commit のみで完結した変更を false positive として拾う精度劣化があるが、その精度差を取るために必要だった REST `commits/{sha}` (commit 数 × 1 query) を全廃して rate limit を救うトレードオフ。残る精度低下は Phase C の AI が body + diff_hunk で最終判断することで吸収する
   - `author_replied_affirmative`: 同一スレッドの後続コメントのうち `author_login == PR.author` のものが **肯定キーワード (`fixed` / `対応` / `修正` / `反映` / `確かに` / `その通り` / `done` / `addressed`) を body に含み、かつ否定キーワード (`対応しません` / `対応しない` / `対応せず` / `修正しません` / `修正しない` / `修正せず` / `反映しません` / `反映しない` / `反映せず` / `現状維持` / `不採用` / `不要です` / `wontfix` / `wont fix` / `not addressed` / `not fixed`) を body に含まない** か。否定キーワードは「動詞 + 否定形」または慣用句で十分な長さを持たせ、肯定キーワード (`対応` 等) との部分文字列ぶつかりと、肯定文脈で偶発的に出現する語 (例: `そのまま` 単独) との衝突を回避する。残る誤検出は許容 (Phase C の AI が body 全文を見て最終判断)
   - `severity_label`: body 内の `[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]` を正規表現で抽出 (**body の引用行 (`> ` で始まる行) を除いた残りに対する最初のマッチを採用する仕様**、なければ `null`)。引用行を除外することで他コメントの再掲や post-pr-review マーカー直後の引用 quote で誤って severity を拾うのを防ぐ。AI 自動投稿マーカー `> **[AI 自動投稿]**` 自体は capture group の選択肢に無いため自然に skip される。body 内に複数のラベルが書かれているケース (例:「これは本来 `[must]` レベルだが本 PR では `[should]` に留める」) では最初に出てきたラベルが拾われるため、Phase C の AI は判定根拠に severity を使う際に body 全文も読んで矛盾検知すること
   - `is_ai_authored`: コメント本体の `is_ai_authored` フラグをそのまま転記
   - `author_type`: コメント本体の `author_type` (`User` / `Bot` / `Unknown`) をそのまま転記。`is_ai_authored=false` でも `author_type=Bot` なら「post-pr-review 以外の bot 経由 (例: GitHub App として登録された PR レビュー bot)」のシグナル。User account 運用の AI レビュー bot (gemini-code-assist 等) は `User` 側に分類されるため、Phase C の AI が author_login の文字列パターン (例: `*-code-assist`, `*-reviewer`, `copilot-*` 等) で補完判定する
   - `reply_count`: スレッド内コメント数 - 1
-  - `reactions_positive`: GraphQL の reaction `THUMBS_UP` / `HEART` / `HOORAY` / `ROCKET` の合計
-  - `reactions_negative`: `THUMBS_DOWN` / `CONFUSED` の合計
   - `comment_length`: body の文字数
   - `same_file_in_pr`: 同じ PR 内で **別 thread** に同じ `path` への指摘があるか (boolean)。同一 thread 内の reply は 1 指摘として 1 回だけカウントする (各 thread の冒頭コメントの `path` のみを集計対象にする)
+
+  > `reactions_positive` / `reactions_negative` は旧設計にあったが廃止。GraphQL の `reactions` フィールド取得を Step 1-3 のクエリから外しているため信号としても出さない。Phase C の AI 判定でも reaction の有無は参照しない。
 
   クラスタリング (PR をまたいだ類似指摘の検出) は Phase C で AI が行うため、本 step では行わない。
 
 #### スクリプト出力の取り扱い
 
-- 中間ファイル (`_pr_list.json` / `_threads.jsonl` / `_commits.jsonl` / `_commit_files.json` / `prs.json`) は `${OUTPUT_DIR}` に残す。Phase C で AI が判定をやり直したい場合の入力として再利用できる。
+- 中間ファイル (`_pr_list.json` / `_pr_data.jsonl` / `prs.json`) は `${OUTPUT_DIR}` に残す。Phase C で AI が判定をやり直したい場合の入力として再利用できる。
 - 後段 (Step 2) で AI が読むのは `signals.json` のみ。中間ファイルは AI からは触らない。
 - 0 PR の場合の `signals.json` は `meta.pr_count = 0` / `prs: []` の空状態。Step 2 / Step 3 で「該当なし」分岐に倒す。
 
@@ -297,7 +304,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 - READ-ONLY: GitHub 投稿 / PR 作成 / commit / push / `git fetch` / `git checkout` などローカル ref を書き換える操作は一切しない。`gh pr comment` / `gh pr review` / `gh api .../reviews` / `gh pr create` も使わない。
 - `post-pr-review` / `resolve-pr-threads` / `run-pr-review` / `run-local-review` skill は呼ばない (独立 skill)。
 - 既存資産 `/pr-review-style-reference` の severity ラベル定義は **slash command 経由でのみ利用** し、本 skill 内で再掲・再実装しない (二重管理を避けるため)。
-- **Phase A + B (PR 一覧 / GraphQL / commit files / 信号付与) は `scripts/collect-signals.sh` に集約してある**。AI 側でこれらを `gh` / `jq` 直叩きで再実装してはならない (差異が出てスクリプトとプロンプトの責務分割が崩れるため)。信号定義を変えたい場合はスクリプトと本 SKILL.md の `signals` フィールド定義をセットで更新する。
+- **Phase A + B (PR 一覧 / GraphQL 統合クエリ / 信号付与) は `scripts/collect-signals.sh` に集約してある**。AI 側でこれらを `gh` / `jq` 直叩きで再実装してはならない (差異が出てスクリプトとプロンプトの責務分割が崩れるため)。信号定義を変えたい場合はスクリプトと本 SKILL.md の `signals` フィールド定義をセットで更新する。
 - **機械的なスコア合算は禁止**。信号は `signals.json` に raw のまま付与し、Phase C の AI が総合判断する。理由は信号の文脈依存性 (例: `outdated` 単独は行ズレ可能性)。
 - 対象は **merged PR のみ**。open / closed unmerged は対象外 (取り込み判定が安定しないため)。
 - 期間内 0 PR でも proposals.md は空状態で出力する (skip しない)。
