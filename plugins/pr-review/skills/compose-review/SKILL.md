@@ -1,6 +1,6 @@
 ---
 name: compose-review
-description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **最終メッセージとして生テキストで** 返す。`run-pr-review` / `run-local-review` orchestrator から Task ツール (subagent_type=general-purpose) 経由で呼ばれる前提だが、Codex 等他 caller が直接 Skill ツール経由で呼んでも動作する。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **最終メッセージとして生テキストで** 返す。`run-pr-review` orchestrator からは Task ツール (subagent_type=general-purpose) 経由で sub-agent として、`run-local-review` orchestrator や Codex 等他 caller からは現在コンテキストで直接 Skill ツール経由で呼ばれる。いずれの経路でも同じ JSON を生成する。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
 ---
 
 # compose-review skill
@@ -31,7 +31,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ## caller 向け呼び出し契約 (orchestrator dispatch)
 
-`run-pr-review` / `run-local-review` 等の orchestrator が本 skill を sub-agent として呼ぶときの **共通 dispatch 手順 / 戻り値 parse 判定の正準仕様**。両 orchestrator はこの節を参照し、モード固有の引数と非 success 時のアクションだけを各 skill 側で定義する (本契約を各 orchestrator に再掲しない — 出力契約の変更時に複数ファイルへ追従漏れする drift を防ぐため)。
+`run-pr-review` 等の orchestrator が本 skill を **sub-agent として** 呼ぶときの **dispatch 手順 / 戻り値 parse 判定の正準仕様**。sub-agent 経由の orchestrator はこの節を参照し、モード固有の引数と非 success 時のアクションだけを各 skill 側で定義する (本契約を各 orchestrator に再掲しない — 出力契約の変更時に複数ファイルへ追従漏れする drift を防ぐため)。なお `run-local-review` は本 skill を sub-agent ではなく現在コンテキストで直接呼ぶため、本節 (sub-agent dispatch / 戻り値 parse) は参照せず、戻り値をそのまま自身の後続 step で使う。
 
 ### dispatch 手順
 
@@ -171,7 +171,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 ## 守ること
 
-- Task ツール / Agent ツールで **更に sub-agent を spawn しない** (本 skill 自身が sub-agent として呼ばれている前提のため、多段 sub-agent は公式制約で不可)。`/run-pr-review` / `/run-local-review` を再帰的に呼ぶこともしない (orchestrator が parent 側の責務)。
+- Task ツール / Agent ツールで **sub-agent を spawn しない** (`run-pr-review` からは sub-agent として、`run-local-review` からは現在コンテキストで直接呼ばれる。sub-agent 経由の場合は多段 sub-agent が公式制約で不可、直接呼び出しの場合も本 skill 自身でレビューを完結させ余計な sub-agent を立てない)。`/run-pr-review` / `/run-local-review` を再帰的に呼ぶこともしない (orchestrator が parent 側の責務)。
 - `post-pr-review` / `resolve-pr-threads` は呼ばない (orchestrator の責務)。
 - `gh pr review` / `gh pr comment` / `gh api .../reviews` を直接叩かない。レビュー投稿は本 skill の責務外。
 - `git fetch` / `git pull` / `git checkout` / `git reset` / `git commit` / `git push` 等の書き換え操作は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git remote get-url`) のみ。

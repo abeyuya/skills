@@ -1,6 +1,6 @@
 ---
 name: run-local-review
-description: 現在のローカルブランチを対象に、PR を作る前段階で AI レビューを行う thin orchestrator。`compose-review` (sub-agent) でレビュー本文を生成し、結果をチャットと markdown ファイルの両方に出力する。GitHub への投稿は行わない (post-pr-review / resolve-pr-threads は呼ばない)。
+description: 現在のローカルブランチを対象に、PR を作る前段階で AI レビューを行う thin orchestrator。`compose-review` skill を (sub-agent を立てず) 現在コンテキストで直接呼んでレビュー本文を生成し、結果をチャットと markdown ファイルの両方に出力する。GitHub への投稿は行わない (post-pr-review / resolve-pr-threads は呼ばない)。
 ---
 
 # run-local-review skill
@@ -22,31 +22,25 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ## 手順
 
-### Step 1. `compose-review` (sub-agent) でレビュー本文を生成する
+### Step 1. `compose-review` でレビュー本文を生成する (sub-agent を立てず現在コンテキストで直接呼ぶ)
 
-dispatch 手順 (Task ツール / `general-purpose` / Skill ツール経由起動 / 生 JSON 返却) と戻り値 parse 判定の順序は **`compose-review` skill の「caller 向け呼び出し契約」節** に従う (本 skill には再掲しない — 出力契約変更時の二重管理を避けるため)。本 skill 固有の点は以下。
+Skill ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す。**Task / Agent ツールで sub-agent を spawn しない** — sub-agent 起動のオーバーヘッドを避け、サクッとレビューを回すため。レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。
 
-#### 渡す引数 (prompt テンプレート)
+#### 渡す引数
+
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する):
 
 ```
-pr-review プラグインの compose-review skill を呼び出すための subagent。
-Skill ツール (`skill: "compose-review"`) で compose-review skill を起動し、
-以下を引数として渡せ。skill の出力 (JSON) を最終メッセージとして verbatim に返せ。
-最終メッセージは前置きも fenced ブロックもなしの生 JSON 1 つだけ。
-
 MODE=local
 BASE_BRANCH=<値>
 MAX_INLINE_COMMENTS=<値>
 ```
 
-#### parse 判定の各ケースで取るアクション (正典の 4 ケースに対応)
+#### 戻り値の扱い
 
-非 success の 3 ケースはいずれも **擬似結果を組み立てて Step 2 (markdown 出力) を必ず実行** する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。擬似結果の共通部は `comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0`、`body` のみケースで差し替える:
+`compose-review` はローカルモードの JSON (`mode` / `base_branch` / `diff_mode` / `commit_count` / `body` / `event` / `comments[]`) を出力する。**同一コンテキストで実行されるため sub-agent 戻り値のような parse / シリアライズ境界はなく**、得られた `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` をそのまま Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
 
-1. **parse 失敗** → `body="compose-review 失敗 (parse error)。Task ツール戻り値を JSON として解釈できませんでした。"` で Step 2 を実行し、Step 3 で同旨を caller に報告する。
-2. **`error` あり** → `body="compose-review エラー: <error message>"` で Step 2 を実行する。
-3. **`mode` が `"local"` でない** → `body="compose-review モード不整合 (期待: local、実際: <mode>)。"` で Step 2 を実行する。
-4. **success** → `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` を Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
+ただし `compose-review` が致命エラーで `{"error": ...}` だけを返した場合 (例: `HEAD` detached、ベースブランチ解決失敗) は、擬似結果 (`comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` / `body="compose-review エラー: <error message>"`) を組み立てて Step 2 (markdown 出力) を **必ず実行** し、Step 3 で同旨を報告する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。
 
 ### Step 2. 結果を出力する (チャット + markdown ファイル)
 
@@ -114,7 +108,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 
 ## 守ること
 
-- 既存資産 (`compose-review`) は **必ず Task ツール (sub-agent) 経由で利用** する。本 skill 内でレビュー本文 (`/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 差分取得 / 本文生成) を再実装しない。
+- レビュー本文生成は **`compose-review` skill に委譲** する (本 skill 内で `/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 差分取得 / 本文生成を再実装しない)。`compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (sub-agent 起動のオーバーヘッドを避けるため)。
 - GitHub への投稿は行わない。`post-pr-review` / `resolve-pr-threads` skill は呼ばない。`gh pr comment` / `gh pr review` / `gh api .../reviews` も使わない。
 - `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git remote get-url`) のみ。
 - 差分が空の場合も markdown 出力 + 報告は行う (skip しない)。判定は `compose-review` 側の `diff_mode` に従う。
