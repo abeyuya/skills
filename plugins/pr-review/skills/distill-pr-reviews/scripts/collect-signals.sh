@@ -292,9 +292,9 @@ jq -n \
   --argjson max_prs_exceeded "$MAX_PRS_EXCEEDED" \
   --argjson include_ai_authored "$INCLUDE_AI_AUTHORED" \
   --slurpfile pr_list "${OUTPUT_DIR}/_pr_list.json" \
-  --slurpfile pr_data_lines <(jq -s '.' "$PR_DATA_FILE") \
+  --slurpfile pr_data_lines "$PR_DATA_FILE" \
   '
-    ($pr_data_lines[0] | map({(.pr_number | tostring): .}) | add // {}) as $data_map |
+    ($pr_data_lines | map({(.pr_number | tostring): .}) | add // {}) as $data_map |
     {
       meta: {
         owner: $owner, repo: $repo,
