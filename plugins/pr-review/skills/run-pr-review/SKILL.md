@@ -60,6 +60,8 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 
 #### 戻り値の扱い
 
+> ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は自身の出力契約として「最終メッセージとして生 JSON 1 つだけを返す」と指示されているが、これは **`compose-review` サブ手順の出力規約であって orchestrator (本 skill) の応答終了を意味しない**。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、`compose-review` の JSON を出力した直後に応答を打ち切ると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この設計で最も起こりやすい失敗)。`compose-review` の JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行すること**。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。
+
 `compose-review` は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `commit_id`) を出力する。**同一コンテキストで実行されるため parse / シリアライズ境界はなく**、得られた値をそのまま後続 step に渡す:
 
 - **`{"error": ...}` だけが返った場合** → Step 4 / 5 は実行せず停止し、Step 6 の caller 報告でそのメッセージを転送する。
@@ -100,5 +102,6 @@ Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `reso
 
 - 各 step で使う既存資産 (`compose-review` / `post-pr-review` / `resolve-pr-threads`) は **必ず本 skill 経由で利用** する。本 skill 内で同等の処理を再実装してはならない (スタイル参考ガイド・投稿手順・resolve 判定・本文生成の二重管理を防ぐため)。
 - `compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (`compose-review` の `code-review` 等外部レビュースキル併用の fan-out を成立させるため)。
+- `compose-review` が JSON を出力しても **そこで応答を終了しない**。それは中間成果物であり、Step 4 (投稿) → Step 5 (resolve) → Step 6 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、JSON 出力をターン終了と誤認して投稿前に停止する事故が起きやすい。詳細は Step 3「戻り値の扱い」冒頭の警告)。
 - レビュー方針 (重要度ラベル等) / プロジェクト指示ファイル読み込み / `/pr-review-style-reference` の参照は `compose-review` の責務。本 skill では再実装しない。
 - 判定に迷ったら resolve しない / 投稿は 1 回だけ、という既存 skill の安全側ルールはそのまま守る。
