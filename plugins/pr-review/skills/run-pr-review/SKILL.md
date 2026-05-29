@@ -9,6 +9,8 @@ PR レビュー一式 (PR 情報取得 → compose-review でレビュー本文�
 
 `compose-review` は **sub-agent ではなく現在コンテキストで直接呼ぶ** (Step 3 参照)。これは `compose-review` の Step 5-2 で `code-review` 等の外部レビュースキルを併用する際、その fan-out (Agent ツール) が現在コンテキストでないと動かないため。トレードオフとして、大きい PR 差分 + 外部レビューの実行が orchestrator のコンテキストを膨らませる点は許容する。
 
+**注意**: 外部レビュースキル併用の前提は「本 skill 自体が Agent ツールを使えるコンテキストで動いていること」。本 skill がさらに別の sub-agent から起動された場合は当コンテキストに Agent ツールが無く、`compose-review` の `code-review` 併用は効かず自前レビュー単独へ **静かに縮退する** (出力上は区別がつかない)。`code-review` 併用を効かせたい場合は本 skill を sub-agent 経由でなく直接 (現在コンテキストで) 起動すること。
+
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
 すべて省略可。省略時の挙動は各項目に記載。
@@ -63,7 +65,7 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 `compose-review` は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `commit_id`) を出力する。**同一コンテキストで実行されるため sub-agent 戻り値のような parse / シリアライズ境界はなく** (`compose-review`「caller 向け呼び出し契約」節の sub-agent dispatch / 戻り値 parse 判定は本 skill では参照しない)、得られた値をそのまま後続 step に渡す:
 
 - **`{"error": ...}` だけが返った場合** → Step 4 / 5 は実行せず停止し、Step 6 の caller 報告でそのメッセージを転送する。
-- **`mode` が `"pr"` でない場合** → 整合性エラーとして停止する。
+- **`mode` が `"pr"` でない / 必須フィールド (`body` / `event` / `comments`) が読み取れない場合** → 整合性エラーとして Step 4 / 5 は実行せず停止し、Step 6 で「compose-review 戻り値が想定形式でなかった」旨を caller に報告する (壊れた入力のまま post-pr-review へ進めない)。
 - **正常時** → `body` / `event` / `comments` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
