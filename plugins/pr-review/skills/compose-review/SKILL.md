@@ -1,6 +1,6 @@
 ---
 name: compose-review
-description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **最終メッセージとして生テキストで** 返す。`run-pr-review` orchestrator からは Task ツール (subagent_type=general-purpose) 経由で sub-agent として、`run-local-review` orchestrator や Codex 等他 caller からは現在コンテキストで直接 Skill ツール経由で呼ばれる。いずれの経路でも同じ JSON を生成する。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **最終メッセージとして生テキストで** 返す。レビュー指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
 ---
 
 # compose-review skill
@@ -29,28 +29,12 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 
 caller プロジェクト固有の方針は **プロジェクト指示ファイル** (Step 3) に置く運用に固定。個別パス指定の引数は持たない。
 
-## caller 向け呼び出し契約 (orchestrator dispatch)
+## caller 向け呼び出し契約
 
-`run-pr-review` 等の orchestrator が本 skill を **sub-agent として** 呼ぶときの **dispatch 手順 / 戻り値 parse 判定の正準仕様**。sub-agent 経由の orchestrator はこの節を参照し、モード固有の引数と非 success 時のアクションだけを各 skill 側で定義する (本契約を各 orchestrator に再掲しない — 出力契約の変更時に複数ファイルへ追従漏れする drift を防ぐため)。なお `run-local-review` は本 skill を sub-agent ではなく現在コンテキストで直接呼ぶため、本節 (sub-agent dispatch / 戻り値 parse) は参照せず、戻り値をそのまま自身の後続 step で使う。
+本 skill は **現在コンテキストで直接 (Skill ツール経由で) 呼ばれる** 前提。caller (`run-pr-review` / `run-local-review` / 他) は本 skill が最終メッセージとして返す JSON をそのまま後続 step で使う。
 
-### dispatch 手順
-
-- Task ツール (`subagent_type=general-purpose`、新 SDK 環境では `Agent` ツールに rename されているが両者は同義) を **1 回** dispatch する。`general-purpose` 以外 (`Plan` / `Explore` / `code-reviewer` 等の specialized subagent) は Skill ツールアクセスが制限される場合があるため使わない。
-- subagent は parent の slash command を継承しないため、prompt 内で **Skill ツール (`skill: "compose-review"`) 経由で本 skill を呼ぶ** よう明示する。
-- 引数は prompt 内に `KEY=VALUE` 1 行ずつで渡す。`<…>` プレースホルダは実値で埋め、値が未取得 / 空の引数行は **行ごと省略** する (空文字埋めはしない)。
-- **長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後ろ (prompt 末尾) に置く** — 本 skill の KEY=VALUE parser は次の `^[A-Z_]+=` 行までを value とするため、長文中の偶発 `KEY=` 様行による早期切断を末尾配置で防ぐ。
-- subagent には「skill の出力 (JSON) を最終メッセージとして verbatim に返す。前置きも fenced ブロックもなしの生 JSON 1 つだけ」と明示する。
-
-### 戻り値 parse 判定 (順序固定)
-
-Task ツール result (sub-agent の最終メッセージ) を `json.loads()` 等で parse し、**以下の順序で評価する** (順序固定。error 検査を必ず最優先):
-
-1. **parse 失敗** (JSON として読めない / fenced ブロック付き / 複数 JSON / 想定外形式)
-2. **`error` フィールドあり** — error 時の payload は `mode` を含まない仕様なので、必ず本判定を 3 より先に評価する
-3. **`mode` 不整合** (orchestrator が期待するモードと異なる)
-4. **success** — `body` / `event` / `comments` 等を後続 step に渡す。Task ツール result 受け取り時点では orchestrator の処理は完了していない (後続 step を必ず実行する)
-
-各ケースで取る **アクションは orchestrator 固有** (停止して報告する / 擬似結果を組み立てて出力を継続する 等)。各 orchestrator の dispatch step に記載する。
+- 引数は `KEY=VALUE` 1 行ずつで渡す (詳細は「入力」節)。値が未取得 / 空の引数行は **行ごと省略** する (空文字埋めはしない)。長文 value の末尾配置ルールも同節を参照。
+- 本 skill は **致命エラー時に `{"error": "..."}` だけを返す** (他フィールドを含めない)。caller は戻り値を **`error` 判定 → `mode` 判定 → 正常** の順 (順序固定) で評価する: error payload は `mode` を含まない仕様なので必ず `error` を先に見る。`error` があれば停止して報告する。正常時は `mode` / `body` / `event` / `comments` 等を後続 step に渡す。各ケースで取るアクションは caller 固有 (停止して報告する / 擬似結果を組み立てて続行する 等)。
 
 ## 手順
 
@@ -74,16 +58,11 @@ Task ツール result (sub-agent の最終メッセージ) を `json.loads()` �
   1. `git diff <base>...HEAD` が非空 → `diff_mode = "commit"`
   2. `commit` モード空 + `git diff --cached` が非空 → `diff_mode = "staged"`
   3. `staged` モード空 + `git diff` が非空 → `diff_mode = "worktree"`
-  4. すべて空 → `diff_mode = "none"`。Step 2〜5 を skip し Step 6 で `body` を「対象差分なし」、`comments` を `[]` にして返す。
+  4. すべて空 → `diff_mode = "none"`。Step 2〜4 と Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]` にして返す。
 
 ### Step 2. スタイル参考ガイドを読み込む
 
-`pr-review-style-reference` を呼ぶ (`MAX_INLINE_COMMENTS` 指定があれば `max-inline-comments=<値>` を渡す)。呼び出し方は本 skill が起動された context に応じて以下のいずれか:
-
-- parent context (人間 / orchestrator が直接 `/compose-review` を起動): `/pr-review-style-reference` slash command として呼べる。
-- subagent (Task ツール / Agent ツール経由) として起動された場合: subagent は slash command を直接呼ぶ手段を持たないため、**Skill ツール (`skill: "pr-review-style-reference"`)** で起動する。slash command と skill の区別は subagent から見ると透過的で、Skill ツール経由でも対応する markdown ファイルが同じ内容で invoke される (`commands/` 配下のファイルも `skills/` と同じく Skill ツール名で解決される)。
-
-いずれの経路でも重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱いを本セッションのレビュー方針として保持する。
+**Skill ツール (`skill: "pr-review-style-reference"`)** で `pr-review-style-reference` を呼ぶ (`MAX_INLINE_COMMENTS` 指定があれば `max-inline-comments=<値>` を渡す)。`commands/` 配下のファイルも `skills/` と同じく Skill ツール名で解決される。重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱いを本セッションのレビュー方針として保持する。
 
 ### Step 3. プロジェクト指示ファイルを読み込む (任意)
 
@@ -108,7 +87,7 @@ Task ツール result (sub-agent の最終メッセージ) を `json.loads()` �
 
 ### Step 4. 差分を取得する
 
-- **PR モード**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得。**truncation 検知**: `gh pr diff --name-only` で取った件数と、`gh pr diff` の patch hunk header (`diff --git a/...`) の出現件数が一致するかを突合する。一致しない / 出力末尾に打ち切り表示 (`... (truncated)` 等) が出る場合は `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) でファイル単位に追い読み (`--paginate` 必須。`per_page=30` のデフォルトで 30 ファイル超が落ちる事故防止)。差分が空なら Step 5 skip し Step 6 で `body` を「対象差分なし」、`comments` を `[]` で返す。
+- **PR モード**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得。**truncation 検知**: `gh pr diff --name-only` で取った件数と、`gh pr diff` の patch hunk header (`diff --git a/...`) の出現件数が一致するかを突合する。一致しない / 出力末尾に打ち切り表示 (`... (truncated)` 等) が出る場合は `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) でファイル単位に追い読み (`--paginate` 必須。`per_page=30` のデフォルトで 30 ファイル超が落ちる事故防止)。差分が空なら Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]` で返す。
 - **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` でファイル一覧を取りファイル単位で追い読み。`commit` モードでは差分本体とは別に **`commit_count = git rev-list --count <base>..HEAD` で件数を取得** し Step 6 出力に含める (`--oneline | wc -l` ではなく `rev-list --count` を使う。コミットメッセージ改行等で値ズレしない正準コマンド)。`staged` / `worktree` / `none` モードでは `commit_count = 0` 固定。
   - `commit`: `git diff <base>...HEAD` (三点記法でベース進行を除外)
   - `staged`: `git diff --cached`
@@ -116,20 +95,56 @@ Task ツール result (sub-agent の最終メッセージ) を `json.loads()` �
 
 ### Step 5. レビュー本文を作成する
 
-Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) をもとに、総括 (`body`) とインライン指摘 (`comments[]`) を作成する。
+Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) をもとに、総括 (`body`) とインライン指摘 (`comments[]`) を作成する。本 step は **5-1 自前レビュー (常時)** → **5-2 外部レビュースキル併用 (通常は常に実施)** → **5-3 マージと後処理** → **5-4 body 構成** の順で進める。
+
+#### 5-1. 自前レビュー (常時実施)
+
+差分を自分で読み、インライン指摘の候補リストを作る。これが基盤であり、外部レビュースキルが使えない環境でも本 step 単独でレビュー品質を担保する。
 
 - レビュー方針は Step 3 のプロジェクト指示ファイルを最優先、未上書きの論点は Step 2 のスタイル参考ガイドを参考にする。
+
+#### 5-2. 外部レビュースキルの併用 (通常は常に実施)
+
+ホストの外部レビュースキルを **優先順で 1 つだけ** 解決し、使えるなら 5-1 に加えてもう 1 系統の指摘を得る (5-1 → 外部スキル呼び出し → 5-3 マージの逐次実行。本 skill 自身は sub-agent を spawn しない)。利用可否は実行中の model が available-skills / コマンド一覧から判断する (本 skill はホスト非依存に書く)。
+
+本 skill は `run-pr-review` / `run-local-review` から **現在コンテキストで直接呼ばれる前提** に統一されているため、5-2 は **通常は常に実施する** (見出しの条件は「現在コンテキスト = Agent ツールが使える」異常時ガードであり、dead condition ではない)。自身の実行コンテキストを判断しかねた場合に 5-2 全体を勝手にスキップして 5-1 単独へ退化しない (それは本 skill の主目的=外部レビュー併用を黙って無効化する)。外部レビューを省くのは、下の解決順で **外部スキルが 1 つも利用できない / Agent ツールが使えない** と確認できたときだけ。
+
+- **解決順**:
+  1. `code-review` (Claude Code 組み込み) が当セッションで利用可能、**かつ** Agent/Task ツールが当コンテキストで利用可能なら → これを使う。`code-review` は内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが利用できない環境では使えない。
+  2. ↑が無い/不可なら、ホスト coding agent の標準レビュースキル (例: **Codex の `/review`**) が当セッションで利用可能ならそれを使う。
+  3. いずれも無ければ外部レビューは行わず、5-1 の自前レビュー単独で 5-3 へ進む。
+- **実行 (read-only)**: 解決したスキルを **read-only モードで** 呼ぶ。**投稿 / 自動修正フラグは付けない** (`code-review` なら `--comment` / `--fix` を付けない。他ホストでも投稿・working tree 改変モードは使わない。投稿は `post-pr-review` の責務、working tree 改変は本 skill の禁止事項)。特に PR モードで `--comment` を付けると、`code-review` 由来の生 inline コメント (AI 自動投稿マーカーなし) が `post-pr-review` の 1 Review と **二重投稿** されるため厳禁。
+- **scope 引数** (レビュー対象の diff 範囲を伝える): 外部レビュースキルの scope 引数は **単一値 (PR番号 / branch名 / file path) を取る前提で、`<base>...HEAD` のような範囲そのものは渡せないことが多い**。`code-review` の branch/range scope の正確な解釈は **未検証** (環境依存)。以下を目安にしつつ、**自前レビュー (5-1) が見ている diff 範囲と外部スキルが見る範囲が一致しているか実行時に確認する** (一致しないなら不一致を前提に扱い、取りこぼしは 5-1 の自前レビューが拾う):
+  - PR モード: PR 番号を scope として渡す。
+  - ローカル `commit` モード: branch 名を渡して `<base>...HEAD` 相当を見させる。ただし `BASE_BRANCH` が default branch 以外に上書きされている場合、外部スキルが別の merge-base 基準で diff を取り 5-1 と範囲がズレうる点に注意。範囲を正しく表現できなければ、自前レビュー (5-1) を主、外部スキルを補助として扱う。
+  - ローカル `staged` / `worktree` モード: 外部スキルの既定 scope (uncommitted 差分) に委ねる。`code-review` は既定で `git diff HEAD` 相当も見るため staged 差分も拾えるが、**staged のみ (worktree クリーン) のケースで外部スキルが空 diff を返したら、その回は外部レビューを「指摘なし」として扱い 5-1 のみで続行する** (silent skip ではなく自前レビューで担保)。
+- **正規化** (外部スキルの findings → 本 skill の指摘形式):
+  - 各 finding の対象ファイル / 行を `path` / `line`、`side="RIGHT"` (単一行) に正規化する。`path` は **リポジトリルートからの相対パスに揃える** (外部スキルが絶対パスや `./` 始まりで返す場合があり、`post-pr-review` の投稿や 5-3 の重複排除が `path` の表記一貫性に依存するため)。
+  - 外部スキルの出力に本 skill 互換の重要度ラベルが無い場合 (例: `code-review` の出力は `[{file,line,summary,failure_scenario}]` の配列で、配列順=重大度のみでラベル無し) は、Step 2 のスタイル参考ガイド + Step 3 の `REVIEW.md` 方針で `[must]` / `[should]` / `[nit]` / `[question]` を付与する (correctness 上位は `[must]` / `[should]`、cleanup / altitude 下位は `[nit]` を基準にし、`REVIEW.md` が必須化する観点は昇格)。
+  - 指摘本文は `[label] <要約>。<根拠 / 再現>` をスタイル参考ガイドの日本語トーンで整形する。
+  - `code-review` 以外 (Codex `/review` 等) の出力形式は環境依存で未確定なため、得られた構造から `path` / `line` / 要約 / 重大度を抽出して同様に正規化する。形式が読み取れない部分は安全側 (取りこぼし回避) で残す。
+
+#### 5-3. マージと後処理
+
+5-1 と 5-2 の指摘を統合し、最終 `comments[]` を確定する。
+
+- **範囲外の指摘の除外**: 外部スキル (5-2) から得られた指摘のうち、Step 4 で取得した実際の差分に含まれないファイル / 行への指摘は、マージ時に除外する (scope 解釈の差で未変更行や対象外ファイルへの指摘が返りうるため。無関係な箇所への誤投稿を防ぐ)。
+- **重複排除**: 同一 `path:line` かつ同主旨の指摘は 1 件に集約する (自前と外部スキルが同じ問題を指したケース)。位置が同じでも論点が別なら両方残す。
+- **重要度競合**: 同主旨で重要度が割れた場合は高い方を採用する (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。判定に迷えば残す方向 (取りこぼし回避優先)。
 - `EXISTING_THREADS_CONTEXT` が渡されている場合、同主旨の指摘は再掲しない (位置が同じでも論点が別なら新規指摘してよい)。重要度が既存より高い場合は別主旨として残す ([must]/[should] を dedupe で抑制すると実害大のため判定に迷えば残す方向)。
 - `CI_FAILURE_CONTEXT` が渡されている場合は **`[must]` 指摘の根拠として扱う**: 失敗ジョブが存在する以上「修正必須」であり `[nit]` や `[question]` で扱わない (詳細はスタイル参考ガイドの「CI の扱い」を参考)。
+- `MAX_INLINE_COMMENTS` が正の整数なら `comments[]` を N 件以下に絞る (優先度: `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。N 超過で省略があれば `body` 末尾に「省略件数 + ラベル別内訳」を 1 文添える。
+
+#### 5-4. body 構成
+
 - `event` は **常に `"COMMENT"`** (`post-pr-review` の規約)。
 - 指摘が無くても Step 6 で「特に指摘なし」相当の JSON を返す (skip しない)。
-- `body` は最低限 `## 総合判断` / `## 指摘内訳` / `## 良かった点` (1〜2 件) の 3 サブ見出しで構成する (caller の markdown 出力テンプレート / grep スクリプトとの互換のため)。`## 指摘内訳` には `comments[]` に実際に出したインライン指摘の **ラベル別件数を優先度順 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で件数>0 のものだけ** 列挙する (例: `[must] 1 件 / [should] 2 件 / [nit] 1 件`)。インライン指摘が 0 件なら `指摘なし` と書く。指摘なし / 差分なしの場合も 3 見出しを残し、`## 指摘内訳` は `指摘なし`、他 2 見出しは「該当なし」相当で埋める。
+- `body` は最低限 `## 総合判断` / `## 指摘内訳` / `## 良かった点` (1〜2 件) の 3 サブ見出しで構成する (caller の markdown 出力テンプレート / grep スクリプトとの互換のため)。`## 指摘内訳` には `comments[]` に実際に出したインライン指摘の **ラベル別件数を優先度順 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で件数>0 のものだけ** 列挙する (例: `[must] 1 件 / [should] 2 件 / [nit] 1 件`)。件数はマージ後の最終 `comments[]` を反映する。インライン指摘が 0 件なら `指摘なし` と書く。指摘なし / 差分なしの場合も 3 見出しを残し、`## 指摘内訳` は `指摘なし`、他 2 見出しは「該当なし」相当で埋める。
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が prepend する)。`body` は生本文。
-- `MAX_INLINE_COMMENTS` が正の整数なら `comments[]` を N 件以下に絞る (優先度: `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。N 超過で省略があれば `body` 末尾に「省略件数 + ラベル別内訳」を 1 文添える。
 
 ### Step 6. JSON を最終メッセージとして返す
 
-最終メッセージとして **生 JSON テキスト 1 つだけ** を返す。fenced ブロック (` ```json ... ``` `) も前置き文も付けない (sub-agent 経由 (`run-pr-review`) では orchestrator が最終メッセージ全体を `json.loads()` で parse する前提。現在コンテキストで直接呼ばれた場合 (`run-local-review` / 他 caller) は parse 境界が無く呼び出し元 skill がそのまま後続 step で使うが、いずれの経路でも生 JSON のみとする規約は共通)。`Write` ツールでファイルに書き出すことはしない。
+最終メッセージとして **生 JSON テキスト 1 つだけ** を返す。fenced ブロック (` ```json ... ``` `) も前置き文も付けない (現在コンテキストで直接呼ばれた caller が戻り値をそのまま後続 step で使うため)。`Write` ツールでファイルに書き出すことはしない。
 
 スキーマ (PR モード):
 
@@ -171,7 +186,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 ## 守ること
 
-- Task ツール / Agent ツールで **sub-agent を spawn しない** (`run-pr-review` からは sub-agent として、`run-local-review` からは現在コンテキストで直接呼ばれる。sub-agent 経由の場合は多段 sub-agent が公式制約で不可、直接呼び出しの場合も本 skill 自身でレビューを完結させ余計な sub-agent を立てない)。`/run-pr-review` / `/run-local-review` を再帰的に呼ぶこともしない (orchestrator が parent 側の責務)。
+- Task ツール / Agent ツールで **本 skill 自身が直接 sub-agent を spawn しない**。ただし Step 5-2 の外部レビュースキル併用 (`code-review` / Codex `/review` 等) を許容し、**その外部スキルが内部で Agent ツール等を使うことは妨げない** (本 skill が直接 spawn するのではなく、Skill 経由で呼んだ外部スキルが行う)。`/run-pr-review` / `/run-local-review` を再帰的に呼ぶこともしない (orchestrator が parent 側の責務)。
 - `post-pr-review` / `resolve-pr-threads` は呼ばない (orchestrator の責務)。
 - `gh pr review` / `gh pr comment` / `gh api .../reviews` を直接叩かない。レビュー投稿は本 skill の責務外。
 - `git fetch` / `git pull` / `git checkout` / `git reset` / `git commit` / `git push` 等の書き換え操作は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git remote get-url`) のみ。
