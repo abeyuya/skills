@@ -62,10 +62,10 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 
 > ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は自身の出力契約として「最終メッセージとして生 JSON 1 つだけを返す」と指示されているが、これは **`compose-review` サブ手順の出力規約であって orchestrator (本 skill) の応答終了を意味しない**。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、`compose-review` の JSON を出力した直後に応答を打ち切ると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この設計で最も起こりやすい失敗)。`compose-review` の JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行すること**。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。
 
-`compose-review` は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `commit_id`) を出力する。**同一コンテキストで実行されるため parse / シリアライズ境界はなく**、得られた値をそのまま後続 step に渡す:
+`compose-review` は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `commit_id`) を最終メッセージ (JSON テキスト) として出力する。**同一コンテキスト実行なので別 agent への受け渡しのような厳密な `json.loads()` 境界こそ無いが、出力は JSON 文字列なので各フィールドを読み取って** 後続 step に渡す:
 
 - **`{"error": ...}` だけが返った場合** → Step 4 / 5 は実行せず停止し、Step 6 の caller 報告でそのメッセージを転送する。
-- **`mode` が `"pr"` でない / 必須フィールド (`body` / `event` / `comments`) が読み取れない場合** → 整合性エラーとして Step 4 / 5 は実行せず停止し、Step 6 で「compose-review 戻り値が想定形式でなかった」旨を caller に報告する (壊れた入力のまま post-pr-review へ進めない)。
+- **`mode` が `"pr"` でない、または出力が JSON として読めない (fenced ブロック付き / 複数 JSON / 想定外形式 / 必須フィールド `body`・`event`・`comments` の欠落) 場合** → 整合性エラーとして Step 4 / 5 は実行せず停止し、Step 6 で「compose-review 戻り値が想定形式でなかった」旨を caller に報告する (壊れた入力のまま post-pr-review へ進めない)。
 - **正常時** → `body` / `event` / `comments` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
