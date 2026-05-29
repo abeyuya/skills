@@ -1,11 +1,13 @@
 ---
 name: run-pr-review
-description: PR レビュー全体を 1 コマンドで実行する thin orchestrator。PR 情報取得 / `compose-review` (sub-agent) でのレビュー本文生成 / `post-pr-review` でのレビュー投稿 / `resolve-pr-threads` での過去スレッド整理を順に呼ぶ。レビュー方針 (`/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 本文生成) は `compose-review` に委ねる。
+description: PR レビュー全体を 1 コマンドで実行する thin orchestrator。PR 情報取得 / `compose-review` (現在コンテキストで直接呼ぶ) でのレビュー本文生成 / `post-pr-review` でのレビュー投稿 / `resolve-pr-threads` での過去スレッド整理を順に呼ぶ。レビュー方針 (`/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 本文生成 / `code-review` 等外部レビュースキルの併用) は `compose-review` に委ねる。
 ---
 
 # run-pr-review skill
 
 PR レビュー一式 (PR 情報取得 → compose-review でレビュー本文生成 → post-pr-review で投稿 → resolve-pr-threads で過去スレッド整理) を **1 つの skill 呼び出しで完結** させる thin orchestrator。
+
+`compose-review` は **sub-agent ではなく現在コンテキストで直接呼ぶ** (Step 3 参照)。これは `compose-review` の Step 5-2 で `code-review` 等の外部レビュースキルを併用する際、その fan-out (Agent ツール) が現在コンテキストでないと動かないため。トレードオフとして、大きい PR 差分 + 外部レビューの実行が orchestrator のコンテキストを膨らませる点は許容する。
 
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
@@ -37,18 +39,15 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 - 既存レビュー / コメント (compose-review に渡す重複指摘抑制用 context) は GraphQL で `reviewThreads` を取得する。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `path` / `line` / `comments.nodes[].body` まで取り、各スレッドを `<path>:<line> - <主旨 1〜2 文要約>` の形式で 1 行ずつ整形し改行で連結したテキストを **`EXISTING_THREADS_CONTEXT`** として保持する (`path:line` を必ず併記。自由文の段落要約では位置が落ちて dedupe 精度が下がる)。要約はコメント本文 (コード断片 / 設定例 `ENV=production` 等を含み得る) から作るため、各要約内の改行は除去して 1 スレッド 1 行に保ち、`^[A-Z_]+=` 行頭パターンが生じる場合は `CI_FAILURE_CONTEXT` と同様に先頭にスペース 1 文字を入れて escape する (compose-review 側 KEY=VALUE parser の早期切断防止。context 2 値で escape 方針を揃える)。
 - `statusCheckRollup` に `FAILURE` のジョブがあれば **失敗したジョブのログだけをピンポイントで読む** (全ジョブ一括の `gh run view <RUN_ID> --log` はログが巨大化しトークン上限超過 / タイムアウトを招くため使わない): `statusCheckRollup.contexts[].detailsUrl` の末尾 (`https://github.com/<O>/<R>/actions/runs/<RUN_ID>/job/<JOB_ID>`) から `JOB_ID` を取り、失敗ジョブごとに `gh run view --job=<JOB_ID> --log --repo <OWNER>/<REPO>` で対象ジョブのログのみを取得する (`detailsUrl` に `JOB_ID` が無い旧形式では `RUN_ID` を取り `gh run view <RUN_ID> --log-failed --repo <OWNER>/<REPO>` で失敗 step に絞る)。要点を **`CI_FAILURE_CONTEXT`** として整形する: 1 失敗ごとに `<ジョブ名>: <失敗箇所抜粋 1〜数行>` を 1 ブロックとし、空行で区切って連結する。ANSI escape は除去し、全体は 2000 文字以内に丸める (超過分は `(...truncated)` で打ち切る)。本値の中に `^[A-Z_]+=` 行頭パターン (例: `ENV=production`) があれば、compose-review 側の KEY=VALUE parser を破壊しないよう先頭にスペース 1 文字をインデントして escape する。失敗ジョブが無ければ本値は組み立てず、Step 3 で行ごと省略する。
 
-### Step 3. `compose-review` (sub-agent) でレビュー本文を生成する
+### Step 3. `compose-review` でレビュー本文を生成する (sub-agent を立てず現在コンテキストで直接呼ぶ)
 
-dispatch 手順 (Task ツール / `general-purpose` / Skill ツール経由起動 / 長文 value の末尾配置 / 生 JSON 返却) と戻り値 parse 判定の順序は **`compose-review` skill の「caller 向け呼び出し契約」節** に従う (本 skill には再掲しない — 出力契約変更時の二重管理を避けるため)。本 skill 固有の点は以下。
+`Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す。**Task / Agent ツールで sub-agent を spawn しない** — `compose-review` が Step 5-2 で `code-review` 等の外部レビュースキルを併用する際、その fan-out (Agent ツール) は sub-agent コンテキストでは動かず、現在コンテキストでのみ動くため。レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。
 
-#### 渡す引数 (prompt テンプレート)
+#### 渡す引数
+
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
 
 ```
-pr-review プラグインの compose-review skill を呼び出すための subagent。
-Skill ツール (`skill: "compose-review"`) で compose-review skill を起動し、
-以下を引数として渡せ。skill の出力 (JSON) を最終メッセージとして verbatim に返せ。
-最終メッセージは前置きも fenced ブロックもなしの生 JSON 1 つだけ。
-
 MODE=pr
 OWNER=<OWNER>
 REPO=<REPO>
@@ -59,12 +58,13 @@ EXISTING_THREADS_CONTEXT=<Step 2 で組み立てたテキスト>
 CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 ```
 
-#### parse 判定の各ケースで取るアクション (正典の 4 ケースに対応)
+#### 戻り値の扱い
 
-1. **parse 失敗** → 整合性エラーとして停止し、Step 6 の caller 報告で「compose-review 戻り値が JSON として読めなかった」旨を転送する (Step 4/5 は skip)。
-2. **`error` あり** → Step 6 の caller 報告でそのメッセージを転送し停止する (Step 4/5 は skip)。
-3. **`mode` が `"pr"` でない** → 整合性エラーとして停止する。
-4. **success** → `body` / `event` / `comments` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
+`compose-review` は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `commit_id`) を出力する。**同一コンテキストで実行されるため sub-agent 戻り値のような parse / シリアライズ境界はなく** (`compose-review`「caller 向け呼び出し契約」節の sub-agent dispatch / 戻り値 parse 判定は本 skill では参照しない)、得られた値をそのまま後続 step に渡す:
+
+- **`{"error": ...}` だけが返った場合** → Step 4 / 5 は実行せず停止し、Step 6 の caller 報告でそのメッセージを転送する。
+- **`mode` が `"pr"` でない場合** → 整合性エラーとして停止する。
+- **正常時** → `body` / `event` / `comments` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 
@@ -99,5 +99,6 @@ Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `reso
 ## 守ること
 
 - 各 step で使う既存資産 (`compose-review` / `post-pr-review` / `resolve-pr-threads`) は **必ず本 skill 経由で利用** する。本 skill 内で同等の処理を再実装してはならない (スタイル参考ガイド・投稿手順・resolve 判定・本文生成の二重管理を防ぐため)。
+- `compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (`compose-review` の `code-review` 等外部レビュースキル併用の fan-out を成立させるため)。
 - レビュー方針 (重要度ラベル等) / プロジェクト指示ファイル読み込み / `/pr-review-style-reference` の参照は `compose-review` の責務。本 skill では再実装しない。
 - 判定に迷ったら resolve しない / 投稿は 1 回だけ、という既存 skill の安全側ルールはそのまま守る。
