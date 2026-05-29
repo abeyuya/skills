@@ -5,7 +5,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 ## 提供 skill / command
 
 - `skills/run-pr-review`: PR レビュー一式 (PR 取得 → `compose-review` でレビュー本文生成 → 投稿 → 過去スレッド resolve) を 1 コマンドで実行する thin orchestrator skill。caller はこれを呼ぶだけで済む。
-- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を返す。指摘は自前レビューを必ず行い、加えて現在コンテキスト実行時はホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ並列実行して指摘をマージする (外部スキルが無ければ自前単独)。`run-pr-review` / `run-local-review` のいずれからも現在コンテキストで直接 (Skill ツール経由) 呼ばれる。
+- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を返す。指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` のいずれからも現在コンテキストで直接 (Skill ツール経由) 呼ばれる。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称で、両者とも sub-agent を立てず現在コンテキストで `compose-review` を直接呼ぶ。
@@ -14,9 +14,9 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 レビュー方針は caller (ユーザー) に委ねる前提。本スタイル参考ガイドは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。技術観点 (何をレビューするか) は caller 側で別途指定する想定。
 
-## 外部レビュースキルの併用 (並列レビュー + マージ)
+## 外部レビュースキルの併用 (自前レビュー + 外部スキル → マージ)
 
-`compose-review` は **自前レビューを必ず行った上で**、現在コンテキスト実行時はホストの外部レビュースキルを **優先順で 1 つ** 並列実行し、両者の指摘をマージする (重複は同一 `path:line` + 同主旨で 1 件に集約、重要度競合は高い方を採用)。
+`compose-review` は **自前レビューを必ず行った上で**、ホストの外部レビュースキルを **優先順で 1 つ** 併用し、両者の指摘をマージする (重複は同一 `path:line` + 同主旨で 1 件に集約、重要度競合は高い方を採用)。両 orchestrator が `compose-review` を現在コンテキストで直接呼ぶ前提に統一されているため、**外部スキル併用は通常常に実施**され、外部スキルが 1 つも使えないときだけ自前単独になる。
 
 優先順位:
 

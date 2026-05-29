@@ -1,6 +1,6 @@
 ---
 name: compose-review
-description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **最終メッセージとして生テキストで** 返す。レビュー指摘は自前レビューを必ず行い、加えて現在コンテキスト実行時はホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ並列実行して指摘をマージする (外部スキルが無ければ自前単独)。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **最終メッセージとして生テキストで** 返す。レビュー指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
 ---
 
 # compose-review skill
@@ -34,7 +34,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 本 skill は **現在コンテキストで直接 (Skill ツール経由で) 呼ばれる** 前提。caller (`run-pr-review` / `run-local-review` / 他) は本 skill が最終メッセージとして返す JSON をそのまま後続 step で使う。
 
 - 引数は `KEY=VALUE` 1 行ずつで渡す (詳細は「入力」節)。値が未取得 / 空の引数行は **行ごと省略** する (空文字埋めはしない)。長文 value の末尾配置ルールも同節を参照。
-- 本 skill は **致命エラー時に `{"error": "..."}` だけを返す** (他フィールドを含めない)。caller は `error` があれば停止して報告する。正常時は `mode` / `body` / `event` / `comments` 等を後続 step に渡す。各ケースで取るアクションは caller 固有 (停止して報告する / 擬似結果を組み立てて続行する 等)。
+- 本 skill は **致命エラー時に `{"error": "..."}` だけを返す** (他フィールドを含めない)。caller は戻り値を **`error` 判定 → `mode` 判定 → 正常** の順 (順序固定) で評価する: error payload は `mode` を含まない仕様なので必ず `error` を先に見る。`error` があれば停止して報告する。正常時は `mode` / `body` / `event` / `comments` 等を後続 step に渡す。各ケースで取るアクションは caller 固有 (停止して報告する / 擬似結果を組み立てて続行する 等)。
 
 ## 手順
 
@@ -95,7 +95,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ### Step 5. レビュー本文を作成する
 
-Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) をもとに、総括 (`body`) とインライン指摘 (`comments[]`) を作成する。本 step は **5-1 自前レビュー (常時)** → **5-2 外部レビュースキル併用 (現在コンテキスト実行時のみ)** → **5-3 マージと後処理** → **5-4 body 構成** の順で進める。
+Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) をもとに、総括 (`body`) とインライン指摘 (`comments[]`) を作成する。本 step は **5-1 自前レビュー (常時)** → **5-2 外部レビュースキル併用 (通常は常に実施)** → **5-3 マージと後処理** → **5-4 body 構成** の順で進める。
 
 #### 5-1. 自前レビュー (常時実施)
 
@@ -103,9 +103,11 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 - レビュー方針は Step 3 のプロジェクト指示ファイルを最優先、未上書きの論点は Step 2 のスタイル参考ガイドを参考にする。
 
-#### 5-2. 外部レビュースキルの併用 (現在コンテキスト実行時のみ)
+#### 5-2. 外部レビュースキルの併用 (通常は常に実施)
 
-ホストの外部レビュースキルを **優先順で 1 つだけ** 解決し、使えるなら 5-1 と並行してもう 1 系統の指摘を得る。利用可否は実行中の model が available-skills / コマンド一覧から判断する (本 skill はホスト非依存に書く)。
+ホストの外部レビュースキルを **優先順で 1 つだけ** 解決し、使えるなら 5-1 に加えてもう 1 系統の指摘を得る (5-1 → 外部スキル呼び出し → 5-3 マージの逐次実行。本 skill 自身は sub-agent を spawn しない)。利用可否は実行中の model が available-skills / コマンド一覧から判断する (本 skill はホスト非依存に書く)。
+
+本 skill は `run-pr-review` / `run-local-review` から **現在コンテキストで直接呼ばれる前提** に統一されているため、5-2 は **通常は常に実施する** (見出しの条件は「現在コンテキスト = Agent ツールが使える」異常時ガードであり、dead condition ではない)。自身の実行コンテキストを判断しかねた場合に 5-2 全体を勝手にスキップして 5-1 単独へ退化しない (それは本 skill の主目的=外部レビュー併用を黙って無効化する)。外部レビューを省くのは、下の解決順で **外部スキルが 1 つも利用できない / Agent ツールが使えない** と確認できたときだけ。
 
 - **解決順**:
   1. `code-review` (Claude Code 組み込み) が当セッションで利用可能、**かつ** Agent/Task ツールが当コンテキストで利用可能なら → これを使う。`code-review` は内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが利用できない環境では使えない。
