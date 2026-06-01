@@ -1,11 +1,11 @@
 ---
 name: compose-review
-description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **最終メッセージとして生テキストで** 返す。レビュー指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (省略時は既定 temp パス) にファイル書き出しし、最終メッセージでは「そのファイルを Read して続行せよ」という継続指示を返す** (停止防止のため自己完結 JSON は最終メッセージに出さない)。レビュー指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
 ---
 
 # compose-review skill
 
-差分 + 方針 → レビュー本文 (`body` / `event` / `comments[]`) を生成する skill。**最終メッセージとして JSON テキスト 1 つだけを返す** (fenced ブロックも前置きもなし)。
+差分 + 方針 → レビュー本文 (`body` / `event` / `comments[]`) を生成する skill。完成 JSON は **`HANDOFF_PATH` (省略時は既定 temp パス) にファイルとして書き出し**、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示を返す** (詳細は Step 6)。**最終メッセージに自己完結 JSON を出さない** — 自己完結 JSON は「タスク完了」シグナルに見え、caller (orchestrator) が投稿 step を実行する前にターンを終了してしまう停止バグを誘発するため、ファイル経由ハンドオフ + 継続指示に一本化している。
 
 ## 入力 (任意, caller から prompt 経由で渡される)
 
@@ -20,6 +20,7 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 ### 共通
 
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。省略時は `unlimited`。詳細は `/pr-review-style-reference` の引数仕様。
+- `HANDOFF_PATH`: 完成 JSON (または error JSON) の書き出し先**絶対パス**。caller (orchestrator) が生成して渡す想定 (**ファイルは作らずパス文字列のみ** — 空ファイルを先に作ると `Write` ツールが事前 `Read` を要求して書き出しに失敗するため)。**省略時は本 skill が `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json` (例: `date -u +%Y%m%dT%H%M%SZ` + 一意サフィックスで `/tmp/compose-review-20260601T123456Z-a1b2c3.json`) を自動生成**し、最終メッセージの継続指示にそのパスを明記する。秒精度だけだと同一秒の再呼び出しで衝突し、2 回目の `Write` が既存ファイルへの上書きとなって事前 `Read` を要求されるため、ランダムサフィックスで一意化する。これにより `HANDOFF_PATH` を渡さない caller (手動 / Codex 等) でもファイル経由で結果を受け取れる。
 
 ### PR モードのみ (任意)
 
@@ -31,10 +32,11 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ## caller 向け呼び出し契約
 
-本 skill は **現在コンテキストで直接 (Skill ツール経由で) 呼ばれる** 前提。caller (`run-pr-review` / `run-local-review` / 他) は本 skill が最終メッセージとして返す JSON をそのまま後続 step で使う。
+本 skill は **現在コンテキストで直接 (Skill ツール経由で) 呼ばれる** 前提。本 skill は完成 JSON を **`HANDOFF_PATH` にファイル書き出し** し、最終メッセージでは継続指示文を返す。caller (`run-pr-review` / `run-local-review` / 他) は **`HANDOFF_PATH` を `Read` ツールで読み込み**、その JSON を parse して後続 step で使う (最終メッセージ自体は JSON ではないので parse 対象にしない)。
 
 - 引数は `KEY=VALUE` 1 行ずつで渡す (詳細は「入力」節)。値が未取得 / 空の引数行は **行ごと省略** する (空文字埋めはしない)。長文 value の末尾配置ルールも同節を参照。
-- 本 skill は **致命エラー時に `{"error": "..."}` だけを返す** (他フィールドを含めない)。caller は戻り値を **`error` 判定 → `mode` 判定 → 正常** の順 (順序固定) で評価する: error payload は `mode` を含まない仕様なので必ず `error` を先に見る。`error` があれば停止して報告する。正常時は `mode` / `body` / `event` / `comments` 等を後続 step に渡す。各ケースで取るアクションは caller 固有 (停止して報告する / 擬似結果を組み立てて続行する 等)。
+- `HANDOFF_PATH` は caller が生成して渡すのを推奨 (詳細は「入力」節)。caller が `HANDOFF_PATH` を渡せば、戻り後 `Read` すべきパスを caller 自身が既に把握している状態になる (最終メッセージの継続指示にも同じパスが明記される)。
+- 本 skill は **致命エラー時に `{"error": "..."}` だけを `HANDOFF_PATH` に書き出す** (他フィールドを含めない)。caller は読み込んだ JSON を **`error` 判定 → `mode` 判定 → 正常** の順 (順序固定) で評価する: error payload は `mode` を含まない仕様なので必ず `error` を先に見る。`error` があれば停止して報告する。正常時は `mode` / `body` / `event` / `comments` 等を後続 step に渡す。各ケースで取るアクションは caller 固有 (停止して報告する / 擬似結果を組み立てて続行する 等)。
 
 ## 手順
 
@@ -42,9 +44,9 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 #### PR モード
 
-- `OWNER` / `REPO` / `PR_NUMBER` のいずれかが空ならエラーとし、`{"error":"PR モードで OWNER/REPO/PR_NUMBER が欠けています"}` を最終メッセージとして返して停止する (caller のガード漏れを本 skill 側でも弾く)。
+- `OWNER` / `REPO` / `PR_NUMBER` のいずれかが空ならエラーとし、`{"error":"PR モードで OWNER/REPO/PR_NUMBER が欠けています"}` を Step 6 の手順で `HANDOFF_PATH` に書き出し、継続指示を返して停止する (caller のガード漏れを本 skill 側でも弾く)。
 - `COMMIT_ID` が caller から渡されていればそれを Step 6 出力 JSON の `commit_id` として控え、本 step での `gh pr view` 再取得は **skip する** (二重取得 / force-push race 回避)。
-- `COMMIT_ID` 未指定なら `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid` で head SHA を取得し `commit_id` として控える。失敗時は本 skill の「失敗時」節に従い `{"error":"..."}` を最終メッセージとして返して停止する (transient/致命の自動判別はしない)。
+- `COMMIT_ID` 未指定なら `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid` で head SHA を取得し `commit_id` として控える。失敗時は本 skill の「失敗時」節に従い `{"error":"..."}` を `HANDOFF_PATH` に書き出して停止する (transient/致命の自動判別はしない)。
 
 #### ローカルモード
 
@@ -142,11 +144,19 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - `body` は最低限 `## 総合判断` / `## 指摘内訳` / `## 良かった点` (1〜2 件) の 3 サブ見出しで構成する (caller の markdown 出力テンプレート / grep スクリプトとの互換のため)。`## 指摘内訳` には `comments[]` に実際に出したインライン指摘の **ラベル別件数を優先度順 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で件数>0 のものだけ** 列挙する (例: `[must] 1 件 / [should] 2 件 / [nit] 1 件`)。件数はマージ後の最終 `comments[]` を反映する。インライン指摘が 0 件なら `指摘なし` と書く。指摘なし / 差分なしの場合も 3 見出しを残し、`## 指摘内訳` は `指摘なし`、他 2 見出しは「該当なし」相当で埋める。
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が prepend する)。`body` は生本文。
 
-### Step 6. JSON を最終メッセージとして返す
+### Step 6. JSON を HANDOFF_PATH に書き出し、継続指示を返す
 
-最終メッセージとして **生 JSON テキスト 1 つだけ** を返す。fenced ブロック (` ```json ... ``` `) も前置き文も付けない (現在コンテキストで直接呼ばれた caller が戻り値をそのまま後続 step で使うため)。`Write` ツールでファイルに書き出すことはしない。
+完成 JSON を **ファイル経由でハンドオフ** する。手順は以下の順で行う:
 
-スキーマ (PR モード):
+1. **書き出し先パスを確定**: `HANDOFF_PATH` が渡されていればそれを使う。未指定なら `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json` (`date -u +%Y%m%dT%H%M%SZ` + 一意サフィックス) を本 skill で生成する (同一秒衝突回避。詳細は「入力」節の `HANDOFF_PATH`)。
+2. **完成 JSON を `Write` ツールで書き出す**: 書き出し前に `Bash` ツールで `mkdir -p "$(dirname "<確定した書き出し先パス>")"` を実行し親ディレクトリを作成する (caller がネストしたパスを渡しても堅牢にするため。本 skill は既に Bash を使うため「守ること」の Write 制限には抵触しない)。その上で下記スキーマの **生 JSON 1 つだけ** をファイル本体として書く (fenced ブロック (` ```json ... ``` ` ) も前置き文も付けない)。caller が `Read` 後そのまま parse できる純粋な JSON にする。`HANDOFF_PATH` は **新規ファイル前提**で渡される (caller は空ファイルを作らない契約) ため、通常は事前 `Read` 不要で `Write` できる。
+3. **最終メッセージとして継続指示文を返す** (JSON は **含めない**)。例:
+
+   > compose-review handoff 完了: 完成 JSON を `<確定した書き出し先パス>` に書き出した。**応答を終了するな。** caller (orchestrator) は今すぐ `<同パス>` を `Read` ツールで読み込み、その JSON を `error` → `mode` → 正常 の順で評価して、後続 step (PR モードなら投稿 → resolve → 報告、ローカルモードなら markdown 出力 → 報告) を **同一応答内で続行せよ**。
+
+   **自己完結 JSON を最終メッセージに出さないこと** — それは「タスク完了」シグナルに見え、caller が後続 step を実行する前にターンを終了する停止バグを誘発する。継続指示文 (上記) を本 skill の **最終出力**にすることで、caller の次アクションを「具体的な `Read` ツール呼び出し」に固定する。
+
+スキーマ (PR モード) — 以下を `HANDOFF_PATH` に書き出す:
 
 ```json
 {
@@ -182,7 +192,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 ### 失敗時
 
-致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空など) は `{"error":"<人間向けメッセージ>"}` を最終メッセージとして返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は `error` フィールドがあれば caller に転送して停止する。
+致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空など) は `{"error":"<人間向けメッセージ>"}` を Step 6 と同じ手順で `HANDOFF_PATH` に書き出し、最終メッセージでは「`<書き出し先パス>` を `Read` して error 分岐に従え」という継続指示を返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は読み込んだ JSON に `error` フィールドがあれば caller に転送して停止する。
 
 ## 守ること
 
@@ -192,4 +202,5 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - `git fetch` / `git pull` / `git checkout` / `git reset` / `git commit` / `git push` 等の書き換え操作は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git remote get-url`) のみ。
 - CI failure log の **収集** や reviewThreads の **取得** は本 skill では行わない (caller が `CI_FAILURE_CONTEXT` / `EXISTING_THREADS_CONTEXT` 経由で渡す前提)。
 - AI 自動投稿マーカーは付けない (`post-pr-review` が prepend する)。
-- ファイル出力 (`Write` ツールでの markdown / JSON 書き出し) は行わない。最終メッセージとしての生 JSON 返却のみ。
+- `Write` ツールでのファイル出力は **`HANDOFF_PATH` への完成 JSON / error JSON 書き出しのみ許可** (Step 6 / 失敗時)。markdown 等それ以外の Write は行わない。
+- **最終メッセージに自己完結 JSON を出さない**。最終メッセージは常に「`HANDOFF_PATH` を `Read` して続行せよ」という継続指示文にする (停止バグ防止。詳細は Step 6 / 冒頭概要)。

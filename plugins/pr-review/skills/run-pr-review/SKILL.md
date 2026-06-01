@@ -45,7 +45,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 #### 渡す引数
 
-`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
 
 ```
 MODE=pr
@@ -54,18 +54,19 @@ REPO=<REPO>
 PR_NUMBER=<PR_NUMBER>
 COMMIT_ID=<Step 2 で取得した headRefOid>
 MAX_INLINE_COMMENTS=<値>
+HANDOFF_PATH=<本 step で生成した /tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
 EXISTING_THREADS_CONTEXT=<Step 2 で組み立てたテキスト>
 CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 ```
 
 #### 戻り値の扱い
 
-> ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は自身の出力契約として「最終メッセージとして生 JSON 1 つだけを返す」と指示されているが、これは **`compose-review` サブ手順の出力規約であって orchestrator (本 skill) の応答終了を意味しない**。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、`compose-review` の JSON を出力した直後に応答を打ち切ると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この設計で最も起こりやすい失敗)。`compose-review` の JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行すること**。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。
+> ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、ここで応答を打ち切ると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この設計で最も起こりやすい失敗)。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 3 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行する**。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。
 
-`compose-review` は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `commit_id`) を最終メッセージ (JSON テキスト) として出力する。**同一コンテキスト実行なので別 agent への受け渡しのような厳密な `json.loads()` 境界こそ無いが、出力は JSON 文字列なので各フィールドを読み取って** 後続 step に渡す:
+`Read` で取得した `HANDOFF_PATH` の中身は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `commit_id`) または error JSON。これを parse して各フィールドを読み取り、後続 step に渡す:
 
-- **`{"error": ...}` だけが返った場合** → Step 4 / 5 は実行せず停止し、Step 6 の caller 報告でそのメッセージを転送する。
-- **`mode` が `"pr"` でない、または出力が JSON として読めない (fenced ブロック付き / 複数 JSON / 想定外形式 / 必須フィールド `body`・`event`・`comments` の欠落) 場合** → 整合性エラーとして Step 4 / 5 は実行せず停止し、Step 6 で「compose-review 戻り値が想定形式でなかった」旨を caller に報告する (壊れた入力のまま post-pr-review へ進めない)。
+- **`{"error": ...}` だけだった場合** → Step 4 / 5 は実行せず停止し、Step 6 の caller 報告でそのメッセージを転送する。
+- **`HANDOFF_PATH` の `Read` が失敗した (file-not-found 等。compose-review が JSON を書き出す前に停止した場合に起こりうる)、`mode` が `"pr"` でない、または JSON として読めない (壊れている / 必須フィールド `body`・`event`・`comments` の欠落) 場合** → 整合性エラーとして Step 4 / 5 は実行せず停止し、Step 6 で「compose-review のハンドオフ JSON が取得できなかった / 想定形式でなかった」旨を caller に報告する (壊れた / 欠落した入力のまま post-pr-review へ進めない)。
 - **正常時** → `body` / `event` / `comments` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
@@ -102,6 +103,6 @@ Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `reso
 
 - 各 step で使う既存資産 (`compose-review` / `post-pr-review` / `resolve-pr-threads`) は **必ず本 skill 経由で利用** する。本 skill 内で同等の処理を再実装してはならない (スタイル参考ガイド・投稿手順・resolve 判定・本文生成の二重管理を防ぐため)。
 - `compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (`compose-review` の `code-review` 等外部レビュースキル併用の fan-out を成立させるため)。
-- `compose-review` が JSON を出力しても **そこで応答を終了しない**。それは中間成果物であり、Step 4 (投稿) → Step 5 (resolve) → Step 6 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、JSON 出力をターン終了と誤認して投稿前に停止する事故が起きやすい。詳細は Step 3「戻り値の扱い」冒頭の警告)。
+- `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 4 (投稿) → Step 5 (resolve) → Step 6 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、投稿前に停止する事故が起きやすい。詳細は Step 3「戻り値の扱い」冒頭の警告)。
 - レビュー方針 (重要度ラベル等) / プロジェクト指示ファイル読み込み / `/pr-review-style-reference` の参照は `compose-review` の責務。本 skill では再実装しない。
 - 判定に迷ったら resolve しない / 投稿は 1 回だけ、という既存 skill の安全側ルールはそのまま守る。

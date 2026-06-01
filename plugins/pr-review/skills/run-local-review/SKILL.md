@@ -28,23 +28,24 @@ Skill ツール (`skill: "compose-review"`) を **現在のコンテキストで
 
 #### 渡す引数
 
-`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する):
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-local-<branch>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。`<branch>` は `OUTPUT_PATH` の `{branch}` 規則と同様に **現在ブランチ名の英数記号以外 (`/` 等) を `-` に置換** してから埋め込む (本リポジトリの `claude/...` のようなスラッシュ入りブランチで `/tmp/.../` のネストパスになり親ディレクトリ不在で `Write` 失敗するのを防ぐ)。これは markdown 出力先 `OUTPUT_PATH` とは **別物** (compose-review からの JSON 受け渡し用 temp ファイル) であり、**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため):
 
 ```
 MODE=local
 BASE_BRANCH=<値>
 MAX_INLINE_COMMENTS=<値>
+HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-<branch (/ 等を - に置換)>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
 ```
 
 #### 戻り値の扱い
 
-> ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は自身の出力契約として「最終メッセージとして生 JSON 1 つだけを返す」と指示されているが、これは **`compose-review` サブ手順の出力規約であって orchestrator (本 skill) の応答終了を意味しない**。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、`compose-review` の JSON を出力した直後に応答を打ち切ると、レビュー本文を生成しただけで **Step 2 (markdown 出力) 以降が実行されず、何も出力されないまま停止する** (この設計で最も起こりやすい失敗)。`compose-review` の JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 2 → Step 3 まで連続実行すること**。markdown 出力・報告 (Step 3) を終えるまで応答を終了してはならない。
+> ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、ここで応答を打ち切ると、レビュー本文を生成しただけで **Step 2 (markdown 出力) 以降が実行されず、何も出力されないまま停止する** (この設計で最も起こりやすい失敗)。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 1 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 2 → Step 3 まで連続実行する**。markdown 出力・報告 (Step 3) を終えるまで応答を終了してはならない。
 
 > ⚠️ **外部レビュー fan-out の待ちでターンを yield しない (上記停止バグの変種)**: `compose-review` の Step 5-2 は `code-review` 等の外部レビュースキルを現在コンテキストで呼び、その内部で **Agent ツールによる finder/verifier の fan-out** が走る。リモート実行環境では並列起動した Agent の一部が **harness によって自動で background 実行に回される** ことがあるが、その完了を **`Monitor` / `run_in_background` の完了通知 / sleep ループ等で待って応答 (ターン) を終了してはならない**。background agent の完了を待つために応答を打ち切った時点で「何も出力しないまま停止」に見え、上の停止バグと同じ結末になる。**同期的に得られた finder 結果だけで先へ進む** — recall は `compose-review` の 5-1 自前レビューが必ず担保しており、background 化した一部 finder を取りこぼしても致命ではない。Step 2 (markdown 出力) → Step 3 (報告) を **同一応答内で完了させることを最優先** する。background agent の結果がどうしても要るなら、ターンを yield せず現在の応答内で待ち合わせる手段だけを使う (`compose-review` 側も sub-agent を直接 spawn せず外部スキルに委ねる契約のため、本 skill が背後の Agent を background 化して待つ必要は本来無い)。
 
-`compose-review` はローカルモードの JSON (`mode` / `base_branch` / `diff_mode` / `commit_count` / `body` / `event` / `comments[]`) を最終メッセージ (JSON テキスト) として出力する。**同一コンテキスト実行なので別 agent への受け渡しのような厳密な `json.loads()` 境界こそ無いが、出力は JSON 文字列なので各フィールドを読み取り**、得られた `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` をそのまま Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
+`Read` で取得した `HANDOFF_PATH` の中身はローカルモードの JSON (`mode` / `base_branch` / `diff_mode` / `commit_count` / `body` / `event` / `comments[]`) または error JSON。これを parse して各フィールドを読み取り、得られた `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` をそのまま Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
 
-ただし `compose-review` が致命エラーで `{"error": ...}` だけを返した場合 (例: `HEAD` detached、ベースブランチ解決失敗) は、擬似結果 (`comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` / `body="compose-review エラー: <error message>"`) を組み立てて Step 2 (markdown 出力) を **必ず実行** し、Step 3 で同旨を報告する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。
+ただし `HANDOFF_PATH` の中身が致命エラーの `{"error": ...}` だけだった場合 (例: `HEAD` detached、ベースブランチ解決失敗)、**`HANDOFF_PATH` の `Read` が file-not-found 等で失敗した場合** (compose-review が JSON を書き出す前に停止した可能性)、**または読み込んだ内容が JSON として parse できない / `mode` が `"local"` でない / 必須フィールド (`base_branch` / `diff_mode` / `body` / `comments`) を欠く場合** は、擬似結果 (`comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` / `body="compose-review エラー: <error message / ハンドオフ JSON 取得・parse 失敗>"`) を組み立てて Step 2 (markdown 出力) を **必ず実行** し、Step 3 で同旨を報告する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。なお正常時も、同一コンテキスト実行だからと parse を省かず、必ず読み込んだ JSON を parse して各フィールドを抽出する (前段落参照)。
 
 ### Step 2. 結果を出力する (チャット + markdown ファイル)
 
@@ -113,7 +114,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 ## 守ること
 
 - レビュー本文生成は **`compose-review` skill に委譲** する (本 skill 内で `/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 差分取得 / 本文生成を再実装しない)。`compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (sub-agent 起動のオーバーヘッドを避けるため、かつ `compose-review` の Step 5-2 で `code-review` 等の外部レビュースキルを併用する際その fan-out (Agent ツール) が現在コンテキストでないと動かないため。後者の制約上、直接呼びは任意の最適化ではなく**必須**)。
-- `compose-review` が JSON を出力しても **そこで応答を終了しない**。それは中間成果物であり、Step 2 (markdown 出力) → Step 3 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、JSON 出力をターン終了と誤認して出力前に停止する事故が起きやすい。詳細は Step 1「戻り値の扱い」冒頭の警告)。
+- `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 2 (markdown 出力) → Step 3 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、出力前に停止する事故が起きやすい。詳細は Step 1「戻り値の扱い」冒頭の警告)。
 - 外部レビュー (`compose-review` Step 5-2 / `code-review`) の内部 fan-out で起きた **sub-agent が harness により background 化しても、その完了を待って応答を終了しない**。`Monitor` / background 完了通知待ち / sleep ループでターンを yield せず、**同期的に得られた結果だけで Step 2 → Step 3 を完了する** (recall は `compose-review` の 5-1 自前レビューが担保する。詳細は Step 1「戻り値の扱い」2 つ目の警告)。
 - GitHub への投稿は行わない。`post-pr-review` / `resolve-pr-threads` skill は呼ばない。`gh pr comment` / `gh pr review` / `gh api .../reviews` も使わない。
 - `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git remote get-url`) のみ。
