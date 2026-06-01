@@ -28,13 +28,13 @@ Skill ツール (`skill: "compose-review"`) を **現在のコンテキストで
 
 #### 渡す引数
 
-`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-local-<branch>-<UTCタイムスタンプ>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。これは markdown 出力先 `OUTPUT_PATH` とは **別物** (compose-review からの JSON 受け渡し用 temp ファイル) であり、**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため):
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-local-<branch>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。これは markdown 出力先 `OUTPUT_PATH` とは **別物** (compose-review からの JSON 受け渡し用 temp ファイル) であり、**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため):
 
 ```
 MODE=local
 BASE_BRANCH=<値>
 MAX_INLINE_COMMENTS=<値>
-HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-... のパス文字列>
+HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-<branch>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
 ```
 
 #### 戻り値の扱い
@@ -45,7 +45,7 @@ HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-... のパス�
 
 `Read` で取得した `HANDOFF_PATH` の中身はローカルモードの JSON (`mode` / `base_branch` / `diff_mode` / `commit_count` / `body` / `event` / `comments[]`) または error JSON。これを parse して各フィールドを読み取り、得られた `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` をそのまま Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
 
-ただし `HANDOFF_PATH` の中身が致命エラーの `{"error": ...}` だけだった場合 (例: `HEAD` detached、ベースブランチ解決失敗)、**または `HANDOFF_PATH` の `Read` が file-not-found 等で失敗した場合** (compose-review が JSON を書き出す前に停止した可能性) は、擬似結果 (`comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` / `body="compose-review エラー: <error message / ハンドオフ JSON 取得失敗>"`) を組み立てて Step 2 (markdown 出力) を **必ず実行** し、Step 3 で同旨を報告する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。
+ただし `HANDOFF_PATH` の中身が致命エラーの `{"error": ...}` だけだった場合 (例: `HEAD` detached、ベースブランチ解決失敗)、**`HANDOFF_PATH` の `Read` が file-not-found 等で失敗した場合** (compose-review が JSON を書き出す前に停止した可能性)、**または読み込んだ内容が JSON として parse できない / `mode` が `"local"` でない / 必須フィールド (`base_branch` / `diff_mode` / `body` / `comments`) を欠く場合** は、擬似結果 (`comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` / `body="compose-review エラー: <error message / ハンドオフ JSON 取得・parse 失敗>"`) を組み立てて Step 2 (markdown 出力) を **必ず実行** し、Step 3 で同旨を報告する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。なお正常時も、同一コンテキスト実行だからと parse を省かず、必ず読み込んだ JSON を parse して各フィールドを抽出する (前段落参照)。
 
 ### Step 2. 結果を出力する (チャット + markdown ファイル)
 

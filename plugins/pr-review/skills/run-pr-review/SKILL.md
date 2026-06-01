@@ -45,7 +45,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 #### 渡す引数
 
-`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
 
 ```
 MODE=pr
@@ -54,7 +54,7 @@ REPO=<REPO>
 PR_NUMBER=<PR_NUMBER>
 COMMIT_ID=<Step 2 で取得した headRefOid>
 MAX_INLINE_COMMENTS=<値>
-HANDOFF_PATH=<本 step で生成した /tmp/compose-review-pr-... のパス文字列>
+HANDOFF_PATH=<本 step で生成した /tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
 EXISTING_THREADS_CONTEXT=<Step 2 で組み立てたテキスト>
 CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 ```
