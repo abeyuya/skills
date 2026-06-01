@@ -149,7 +149,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 完成 JSON を **ファイル経由でハンドオフ** する。手順は以下の順で行う:
 
 1. **書き出し先パスを確定**: `HANDOFF_PATH` が渡されていればそれを使う。未指定なら `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json` (`date -u +%Y%m%dT%H%M%SZ` + 一意サフィックス) を本 skill で生成する (同一秒衝突回避。詳細は「入力」節の `HANDOFF_PATH`)。
-2. **完成 JSON を `Write` ツールで書き出す**: 下記スキーマの **生 JSON 1 つだけ** をファイル本体として書く (fenced ブロック (` ```json ... ``` ` ) も前置き文も付けない)。caller が `Read` 後そのまま parse できる純粋な JSON にする。`HANDOFF_PATH` は **新規ファイル前提**で渡される (caller は空ファイルを作らない契約) ため、通常は事前 `Read` 不要で `Write` できる。
+2. **完成 JSON を `Write` ツールで書き出す**: 書き出し前に `Bash` ツールで `mkdir -p "$(dirname "<確定した書き出し先パス>")"` を実行し親ディレクトリを作成する (caller がネストしたパスを渡しても堅牢にするため。本 skill は既に Bash を使うため「守ること」の Write 制限には抵触しない)。その上で下記スキーマの **生 JSON 1 つだけ** をファイル本体として書く (fenced ブロック (` ```json ... ``` ` ) も前置き文も付けない)。caller が `Read` 後そのまま parse できる純粋な JSON にする。`HANDOFF_PATH` は **新規ファイル前提**で渡される (caller は空ファイルを作らない契約) ため、通常は事前 `Read` 不要で `Write` できる。
 3. **最終メッセージとして継続指示文を返す** (JSON は **含めない**)。例:
 
    > compose-review handoff 完了: 完成 JSON を `<確定した書き出し先パス>` に書き出した。**応答を終了するな。** caller (orchestrator) は今すぐ `<同パス>` を `Read` ツールで読み込み、その JSON を `error` → `mode` → 正常 の順で評価して、後続 step (PR モードなら投稿 → resolve → 報告、ローカルモードなら markdown 出力 → 報告) を **同一応答内で続行せよ**。
