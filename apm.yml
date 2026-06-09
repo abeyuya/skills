@@ -17,5 +17,5 @@ targets:
   - claude
 dependencies:
   apm:
-    - mizchi/skills/empirical-prompt-tuning
+    - mizchi/skills/meta/empirical-prompt-tuning
   mcp: []
