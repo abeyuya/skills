@@ -50,7 +50,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 本 step では **git を主経路**に PR head / base の SHA を read-only fetch で確定する (`gh` は使える環境での任意の補助であって必須ではない。`mcp__github__*` は使わない)。**FETCH_HEAD は fetch のたびに上書きされる**ため、head → base の順で fetch し、各 fetch 直後に SHA を変数へ退避すること。取得した SHA (`HEAD_SHA` / `BASE_SHA`) は Step 3 / Step 4 / Step 5-2 で共用する。
 
 - **head SHA (`HEAD_SHA` = 出力 `commit_id`)**:
-  - `COMMIT_ID` が渡されていればそれを `HEAD_SHA` として控え、以下の再取得を **skip する** (二重取得 / force-push race 回避)。
+  - `COMMIT_ID` が渡されていれば head SHA の**解決**を skip し、それを `HEAD_SHA` として控える (二重取得 / force-push race 回避)。ただし git 主経路の `git diff <BASE_SHA>...<HEAD_SHA>` (Step 4) / `git show <HEAD_SHA>:<path>` (Step 3) は head object がローカルに存在することを前提とするため、**object の materialize は skip しない**: `git cat-file -e <HEAD_SHA>^{commit}` で存在を確認し、無ければ下記 git 主経路と同じく `git fetch origin refs/pull/<PR_NUMBER>/head` (cross-repo は explicit URL) で取得する (取得した `FETCH_HEAD` が `COMMIT_ID` と一致することを確認してもよい)。`gh` だけで差分を取る補助経路を使う場合はこの materialize は不要。
   - 未指定なら **git 主経路**: `git fetch origin refs/pull/<PR_NUMBER>/head` (GitHub が公開する PR head ref。フォーク PR でも origin から取れる) の直後に `HEAD_SHA=$(git rev-parse FETCH_HEAD)` で退避。cwd の remote が PR 所属リポジトリと異なる cross-repo 実行では `git fetch https://github.com/<OWNER>/<REPO>.git refs/pull/<PR_NUMBER>/head` と explicit URL から fetch する。
   - 任意の補助 (使える環境のみ): `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid`。
   - git 経路も失敗し `HEAD_SHA` を確定できない場合のみ「失敗時」節に従い `{"error":"..."}` を書き出して停止する。
