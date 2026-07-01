@@ -55,7 +55,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   - 任意の補助 (使える環境のみ): `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid`。
   - git 経路も失敗し `HEAD_SHA` を確定できない場合のみ「失敗時」節に従い `{"error":"..."}` を書き出して停止する。
 - **base SHA (`BASE_SHA`)**:
-  - `BASE_BRANCH` 指定時は `git fetch origin <BASE_BRANCH>` 直後に `BASE_SHA=$(git rev-parse FETCH_HEAD)` で退避 (この fetch は head 用 FETCH_HEAD を上書きするので、必ず `HEAD_SHA` 退避後に行う)。base ブランチが既にローカルにあればその ref を直接使ってもよい。
+  - `BASE_BRANCH` 指定時は `git fetch origin <BASE_BRANCH>` (cross-repo は head と同じ explicit URL `git fetch https://github.com/<OWNER>/<REPO>.git <BASE_BRANCH>` から。base ref は PR 所属リポジトリのものを指すため、cwd の origin から引くと別リポジトリの同名ブランチを掴む) 直後に `BASE_SHA=$(git rev-parse FETCH_HEAD)` で退避 (この fetch は head 用 FETCH_HEAD を上書きするので、必ず `HEAD_SHA` 退避後に行う)。base ブランチが既にローカルにあればその ref を直接使ってもよい。
   - 未指定時は `git ls-remote --symref origin HEAD` の `ref: refs/heads/<name>` 行から default branch 名を抽出 (cross-repo は explicit URL に対して同コマンド) し、それを上記同様 fetch して `BASE_SHA` を退避。任意の補助として `gh pr view ... --json baseRefName` で base 名を得てもよい。
   - default branch 仮定で解決した場合、PR が非 default base を対象にしていると diff 範囲がズレうる。その懸念があるときは caller に `BASE_BRANCH` 明示を促す。
 
