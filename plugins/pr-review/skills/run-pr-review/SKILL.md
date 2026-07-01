@@ -35,7 +35,7 @@ caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを�
 
 いずれの `gh` コマンドも、cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう、Step 1 で確定した `OWNER`/`REPO` を `--repo <OWNER>/<REPO>` で必ず明示する (`gh api graphql` は除く)。
 
-- `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup` で PR メタ情報と CI 状態を取得する。`headRefOid` を head SHA として控え、Step 4 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) として常時転送する。
+- `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup` で PR メタ情報と CI 状態を取得する。`headRefOid` を head SHA として控え、Step 4 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) として常時転送する。`baseRefName` (PR の base ブランチ名) も控え、Step 3 で `compose-review` の `BASE_BRANCH` として転送する (非 default base の PR で compose-review が git 主経路の base を default branch に誤推定し差分範囲がズレるのを防ぐ)。
 - 既存レビュー / コメント (compose-review に渡す重複指摘抑制用 context) は GraphQL で `reviewThreads` を取得する。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `path` / `line` / `comments.nodes[].body` まで取り、各スレッドを `<path>:<line> - <主旨 1〜2 文要約>` の形式で 1 行ずつ整形し改行で連結したテキストを **`EXISTING_THREADS_CONTEXT`** として保持する (`path:line` を必ず併記。自由文の段落要約では位置が落ちて dedupe 精度が下がる)。要約はコメント本文 (コード断片 / 設定例 `ENV=production` 等を含み得る) から作るため、各要約内の改行は除去して 1 スレッド 1 行に保ち、`^[A-Z_]+=` 行頭パターンが生じる場合は `CI_FAILURE_CONTEXT` と同様に先頭にスペース 1 文字を入れて escape する (compose-review 側 KEY=VALUE parser の早期切断防止。context 2 値で escape 方針を揃える)。
 - `statusCheckRollup` に `FAILURE` のジョブがあれば **失敗したジョブのログだけをピンポイントで読む** (全ジョブ一括の `gh run view <RUN_ID> --log` はログが巨大化しトークン上限超過 / タイムアウトを招くため使わない): `statusCheckRollup.contexts[].detailsUrl` の末尾 (`https://github.com/<O>/<R>/actions/runs/<RUN_ID>/job/<JOB_ID>`) から `JOB_ID` を取り、失敗ジョブごとに `gh run view --job=<JOB_ID> --log --repo <OWNER>/<REPO>` で対象ジョブのログのみを取得する (`detailsUrl` に `JOB_ID` が無い旧形式では `RUN_ID` を取り `gh run view <RUN_ID> --log-failed --repo <OWNER>/<REPO>` で失敗 step に絞る)。要点を **`CI_FAILURE_CONTEXT`** として整形する: 1 失敗ごとに `<ジョブ名>: <失敗箇所抜粋 1〜数行>` を 1 ブロックとし、空行で区切って連結する。ANSI escape は除去し、全体は 2000 文字以内に丸める (超過分は `(...truncated)` で打ち切る)。本値の中に `^[A-Z_]+=` 行頭パターン (例: `ENV=production`) があれば、compose-review 側の KEY=VALUE parser を破壊しないよう先頭にスペース 1 文字をインデントして escape する。失敗ジョブが無ければ本値は組み立てず、Step 3 で行ごと省略する。
 
@@ -53,6 +53,7 @@ OWNER=<OWNER>
 REPO=<REPO>
 PR_NUMBER=<PR_NUMBER>
 COMMIT_ID=<Step 2 で取得した headRefOid>
+BASE_BRANCH=<Step 2 で取得した baseRefName>
 MAX_INLINE_COMMENTS=<値>
 HANDOFF_PATH=<本 step で生成した /tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
 EXISTING_THREADS_CONTEXT=<Step 2 で組み立てたテキスト>

@@ -24,7 +24,8 @@ description: PR 差分 or ローカルブランチ差分に対してレビュー
 
 ### PR モードのみ (任意)
 
-- `COMMIT_ID`: caller (orchestrator) が既に取得した head SHA。渡されればそのまま Step 6 の `commit_id` として使い、Step 1 の `gh pr view` 再取得を skip する (二重取得回避 + force-push race 防止)。
+- `COMMIT_ID`: caller (orchestrator) が既に取得した head SHA。渡されればそのまま Step 6 の `commit_id` として使い、Step 1 の head SHA 取得 (`git fetch` / `gh pr view`) を skip する (二重取得回避 + force-push race 防止)。
+- `BASE_BRANCH`: PR の base ブランチ名。渡されれば非 default base の PR でも正しい diff 範囲 (`<base>...HEAD`) を取れる。未指定なら Step 1 が `git ls-remote --symref origin HEAD` で判定した default branch を base と仮定する (base ref 名を pure-git で引く標準手段が無いための既定。詳細は Step 1)。`COMMIT_ID` と同様、caller が既知なら渡す前提。
 - `EXISTING_THREADS_CONTEXT`: caller が既に取得した既存 reviewThreads の主旨サマリ (各スレッドの `path:line` 併記 1〜2 文要約)。Step 5 の重複指摘抑制に使う。
 - `CI_FAILURE_CONTEXT`: caller が既に収集した CI 失敗ログのサマリ。Step 5 で `[must]` 指摘の根拠として使う (失敗ジョブがあれば必ず `[must]` 扱いに昇格)。
 
@@ -44,9 +45,19 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 #### PR モード
 
-- `OWNER` / `REPO` / `PR_NUMBER` のいずれかが空ならエラーとし、`{"error":"PR モードで OWNER/REPO/PR_NUMBER が欠けています"}` を Step 6 の手順で `HANDOFF_PATH` に書き出し、継続指示を返して停止する (caller のガード漏れを本 skill 側でも弾く)。
-- `COMMIT_ID` が caller から渡されていればそれを Step 6 出力 JSON の `commit_id` として控え、本 step での `gh pr view` 再取得は **skip する** (二重取得 / force-push race 回避)。
-- `COMMIT_ID` 未指定なら `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid` で head SHA を取得し `commit_id` として控える。失敗時は本 skill の「失敗時」節に従い `{"error":"..."}` を `HANDOFF_PATH` に書き出して停止する (transient/致命の自動判別はしない)。
+`OWNER` / `REPO` / `PR_NUMBER` のいずれかが空ならエラーとし、`{"error":"PR モードで OWNER/REPO/PR_NUMBER が欠けています"}` を Step 6 の手順で `HANDOFF_PATH` に書き出し、継続指示を返して停止する (caller のガード漏れを本 skill 側でも弾く)。
+
+本 step では **git を主経路**に PR head / base の SHA を read-only fetch で確定する (`gh` は使える環境での任意の補助であって必須ではない。`mcp__github__*` は使わない)。**FETCH_HEAD は fetch のたびに上書きされる**ため、head → base の順で fetch し、各 fetch 直後に SHA を変数へ退避すること。取得した SHA (`HEAD_SHA` / `BASE_SHA`) は Step 3 / Step 4 / Step 5-2 で共用する。
+
+- **head SHA (`HEAD_SHA` = 出力 `commit_id`)**:
+  - `COMMIT_ID` が渡されていれば head SHA の**解決**を skip し、それを `HEAD_SHA` として控える (二重取得 / force-push race 回避)。ただし git 主経路の `git diff <BASE_SHA>...<HEAD_SHA>` (Step 4) / `git show <HEAD_SHA>:<path>` (Step 3) は head object がローカルに存在することを前提とするため、**object の materialize は skip しない**: `git cat-file -e <HEAD_SHA>^{commit}` で存在を確認し、既にあればそのまま使う。無ければ下記 git 主経路と同じく `git fetch origin refs/pull/<PR_NUMBER>/head` (cross-repo は explicit URL) で取得する。**この fetch で得た `FETCH_HEAD` が `COMMIT_ID` と一致するか必ず確認する**: 一致すれば `HEAD_SHA=<COMMIT_ID>` のまま。**不一致なら `COMMIT_ID` 取得後に force-push が起きた**ことを意味し (旧 head object は `refs/pull/<PR_NUMBER>/head` からは取れずローカルにも無い)、この場合は fetch した現 head を採用して `HEAD_SHA=$(git rev-parse FETCH_HEAD)` に更新する (Step 6 出力の `commit_id` もこの値にする)。これで diff 範囲・コメント anchor が実 head と一致する (stale な `COMMIT_ID` に固定して materialize 不能に陥るのを避ける)。`gh` だけで差分を取る補助経路を使う場合はこの materialize は不要。
+  - 未指定なら **git 主経路**: `git fetch origin refs/pull/<PR_NUMBER>/head` (GitHub が公開する PR head ref。フォーク PR でも origin から取れる) の直後に `HEAD_SHA=$(git rev-parse FETCH_HEAD)` で退避。cwd の remote が PR 所属リポジトリと異なる cross-repo 実行では `git fetch https://github.com/<OWNER>/<REPO>.git refs/pull/<PR_NUMBER>/head` と explicit URL から fetch する。
+  - 任意の補助 (使える環境のみ): `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid`。
+  - git 経路も失敗し `HEAD_SHA` を確定できない場合のみ「失敗時」節に従い `{"error":"..."}` を書き出して停止する。
+- **base SHA (`BASE_SHA`)**:
+  - `BASE_BRANCH` 指定時は `git fetch origin <BASE_BRANCH>` (cross-repo は head と同じ explicit URL `git fetch https://github.com/<OWNER>/<REPO>.git <BASE_BRANCH>` から。base ref は PR 所属リポジトリのものを指すため、cwd の origin から引くと別リポジトリの同名ブランチを掴む) 直後に `BASE_SHA=$(git rev-parse FETCH_HEAD)` で退避 (この fetch は head 用 FETCH_HEAD を上書きするので、必ず `HEAD_SHA` 退避後に行う)。base ブランチが既にローカルにあればその ref を直接使ってもよい。
+  - 未指定時は `git ls-remote --symref origin HEAD` の `ref: refs/heads/<name>` 行から default branch 名を抽出 (cross-repo は explicit URL に対して同コマンド) し、それを上記同様 fetch して `BASE_SHA` を退避。任意の補助として `gh pr view ... --json baseRefName` で base 名を得てもよい。
+  - default branch 仮定で解決した場合、PR が非 default base を対象にしていると diff 範囲がズレうる。その懸念があるときは caller に `BASE_BRANCH` 明示を促す。
 
 #### ローカルモード
 
@@ -78,10 +89,10 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 #### 取得方法
 
 - **ローカルモード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す。
-- **PR モード**: cwd の git remote URL から OWNER/REPO (大文字小文字無視) を頑健に抽出して入力 `OWNER`/`REPO` と比較。SSH 形式 (`git@github.com:owner/repo.git`) と HTTPS 形式 (`https://github.com/owner/repo.git`) の両方を扱うため、`:` と `/` のどちらの区切りでも末尾 2 セグメントを取れる抽出を使う (例: `git remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'`。先に末尾 `.git` を除去してから最後の 2 セグメントを取る。1 段で `(\.git)?` を末尾任意にすると貪欲マッチで `repo.git` ごと拾い `.git` が残るため 2 段に分ける)。
-  - **cwd 一致**: cwd 直下を 1 候補ずつ `Read` → 不在なら `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<commit_id>` で remote fetch → 404 なら次の候補。`<commit_id>` は Step 1 で確定した head SHA (caller から `COMMIT_ID` 経由で渡されたもの、または `gh pr view` で取得したもの)。`?ref=` を省略すると default branch から取れて PR で新設・編集された REVIEW.md が反映されない不整合になる。
-  - **cwd 非一致 / remote 抽出失敗**: cwd を読まず remote fetch のみ (`?ref=<commit_id>` を必ず付ける)。
-  - API レスポンスの `content` は Base64 なので `--jq .content` で取り、デコードする。実行環境に `python3` が無い場合があるため、Node.js (Claude Code 実行環境に常在) を使う `node -e "process.stdout.write(Buffer.from(require('fs').readFileSync(0,'utf-8'),'base64').toString('utf-8'))"` を優先し、`python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` をフォールバックとする (どちらでも可)。
+- **PR モード**: cwd の git remote URL から OWNER/REPO (大文字小文字無視) を頑健に抽出して入力 `OWNER`/`REPO` と比較。SSH 形式 (`git@github.com:owner/repo.git`) と HTTPS 形式 (`https://github.com/owner/repo.git`) の両方を扱うため、`:` と `/` のどちらの区切りでも末尾 2 セグメントを取れる抽出を使う (例: `git remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'`。先に末尾 `.git` を除去してから最後の 2 セグメントを取る。1 段で `(\.git)?` を末尾任意にすると貪欲マッチで `repo.git` ごと拾い `.git` が残るため 2 段に分ける)。PR head での内容取得は **git 主経路** (Step 1 で `refs/pull/<PR_NUMBER>/head` を fetch 済みなので、その object から直接読める。`gh` は任意の補助)。`<HEAD_SHA>` は Step 1 で確定した head SHA。
+  - **cwd 一致**: cwd 直下を 1 候補ずつ `Read` → 不在なら **`git show <HEAD_SHA>:<path>`** で PR head の内容を取得 (fetch 済み object から読むので `gh` 不要。fatal: path が無いなら次の候補)。cwd の `Read` ではなく PR head 側を見るのは、PR で新設・編集された REVIEW.md を反映するため (default branch から取ると不整合になる)。
+  - **cwd 非一致 / remote 抽出失敗**: cwd を読まず `git show <HEAD_SHA>:<path>` のみ (cross-repo でも Step 1 で explicit URL から head を fetch 済みなら読める)。
+  - **任意の補助 (git が使えない稀な環境)**: `gh api repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>` で remote fetch (404 なら次の候補)。`?ref=` を省略すると default branch から取れて不整合になるため必ず付ける。レスポンスの `content` は Base64 なので `--jq .content` で取り、Node.js (Claude Code 実行環境に常在) の `node -e "process.stdout.write(Buffer.from(require('fs').readFileSync(0,'utf-8'),'base64').toString('utf-8'))"` を優先、`python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())"` をフォールバックにデコードする。
 
 ファイル内容は **そのままレビュー方針として扱う**。スタイル参考ガイドと矛盾する箇所はプロジェクト側を優先、矛盾しない箇所は両者を併用。プロジェクト側で「スタイル参考ガイドを使わない」旨が明示されていればそれに従う。
 
@@ -89,12 +100,9 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ### Step 4. 差分を取得する
 
-- **PR モード**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>` で差分を取得。**truncation 検知**: `gh pr diff --name-only` で取った件数と、`gh pr diff` の patch hunk header (`diff --git a/...`) の出現件数が一致するかを突合する。一致しない / 出力末尾に打ち切り表示 (`... (truncated)` 等) が出る場合は `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) でファイル単位に追い読み (`--paginate` 必須。`per_page=30` のデフォルトで 30 ファイル超が落ちる事故防止)。
-  - **`gh`/API 経路が落ちている場合のフォールバック (read-only fetch)**: `gh pr diff` と `gh api .../files` がともに失敗する (例: `gh` が 403 で恒常的に使えない環境) 場合、git remote 経由で PR head を **read-only 取得**して差分を作る。手順 (FETCH_HEAD は fetch のたびに上書きされるため、**取得した SHA を即座に変数へ退避**してから次の fetch を行う):
-    1. PR head を取得: `PR_NUMBER` だけで引ける `git fetch origin refs/pull/<PR_NUMBER>/head` (GitHub が公開する PR head ref。`gh`/API が落ちていても git remote が生きていれば取れ、**フォーク PR でも origin から取得できる**ため第一手段) を使い、直後に `HEAD_SHA=$(git rev-parse FETCH_HEAD)` で SHA を退避する。`git fetch origin <headRefName>` は **同一リポジトリ内 PR であることが確実な場合のみ** 可 (フォーク PR では origin に当該ブランチが無く失敗するため使わない)。
-    2. base 側を解決: base ブランチがローカルに既にあれば (`main` / `master` 等) その ref を使う。無く `baseRefName` が分かるなら `git fetch origin <baseRefName>` で取得し直後に `BASE_SHA=$(git rev-parse FETCH_HEAD)` で退避する (この fetch は手順 1 の FETCH_HEAD を上書きするので、必ず手順 1 で `HEAD_SHA` を退避済みにしておく)。
-    3. `git diff <BASE_SHA>...$HEAD_SHA` (三点記法) を差分ソースにする (`<BASE_SHA>` は手順 2 で退避した `$BASE_SHA`、またはローカルに既にある base ref)。
-    いずれも作業ツリー・ローカルブランチを変えない (「守ること」の read-only fetch 例外。詳細は同節)。git remote 経由でも head ref を取れないときに限り差分取得不能として扱う。
+- **PR モード**: **git 主経路** — Step 1 で退避した SHA を使い `git diff <BASE_SHA>...<HEAD_SHA>` (三点記法 = merge-base 基準で base 進行を除外。GitHub の "Files changed" と一致) を差分ソースにする。head/base の object は Step 1 で read-only fetch 済みなので `gh` は不要。ローカルの作業ツリー・ローカルブランチは一切変えない (「守ること」の read-only fetch 例外)。git 経路では出力打ち切りが起きないため truncation 検知 / ファイル単位の追い読みは不要。
+  - **任意の補助 (使える環境のみ)**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>`。この場合 **truncation 検知** (`gh pr diff --name-only` の件数と patch hunk header (`diff --git a/...`) の出現件数の突合、末尾 `... (truncated)` の有無) を行い、疑わしければ `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) で追い読みする (`--paginate` 必須。`per_page=30` デフォルトで 30 ファイル超が落ちる事故防止)。ただし git 経路が使えるなら上記主経路を優先する。
+  - git 経路でも SHA を確定できず差分を取れないときに限り差分取得不能として扱う (Step 1 で既に `HEAD_SHA` を確定しているのが前提)。
   - 差分が空なら Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]` で返す。
 - **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` でファイル一覧を取りファイル単位で追い読み。`commit` モードでは差分本体とは別に **`commit_count = git rev-list --count <base>..HEAD` で件数を取得** し Step 6 出力に含める (`--oneline | wc -l` ではなく `rev-list --count` を使う。コミットメッセージ改行等で値ズレしない正準コマンド)。`staged` / `worktree` / `none` モードでは `commit_count = 0` 固定。
   - `commit`: `git diff <base>...HEAD` (三点記法でベース進行を除外)
@@ -117,18 +125,26 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 本 skill は `run-pr-review` / `run-local-review` から **現在コンテキストで直接呼ばれる前提** に統一されているため、5-2 は **通常は常に実施する** (見出しの条件は「現在コンテキスト = Agent ツールが使える」異常時ガードであり、dead condition ではない)。自身の実行コンテキストを判断しかねた場合に 5-2 全体を勝手にスキップして 5-1 単独へ退化しない (それは本 skill の主目的=外部レビュー併用を黙って無効化する)。外部レビューを省くのは、下の解決順で **外部スキルが 1 つも利用できない / Agent ツールが使えない** と確認できたときだけ。
 
-- **退化条件の厳格化 (重要)**: 自前単独 (5-1 のみ) へ退化してよいのは、**(a) 差分取得が `gh`/API 経路と read-only `git fetch` 経路の両方で失敗し** (下の「リカバリ」参照)、**かつ (b) code-review がどの差分入力でも動かないと確認できたとき** だけ。**`gh` 1 経路の失敗だけでは退化しない**: `gh` が 403 等で落ちていても、`git fetch origin refs/pull/<PR_NUMBER>/head` で取った差分を 5-1 の基盤にできるし、code-review も生かせる経路が残る。`gh` の失敗を「GitHub アクセス全不能」と一般化して code-review をスキップするのは既知の誤判断であり、してはならない。
+- **退化条件の厳格化 (重要)**: 自前単独 (5-1 のみ) へ退化してよいのは、**(a) 差分取得が git 経路 (Step 1 の read-only fetch → `git diff <BASE_SHA>...<HEAD_SHA>`) でも失敗し**、**かつ (b) code-review が ref range target でローカル (`branch`) review に入れないと確認できたとき** だけ。**`gh` 1 経路の失敗だけでは退化しない**: PR モードの差分取得は git を主経路にしており (Step 4)、`gh` が 403 等で落ちていても Step 1 で fetch 済みの SHA から差分を組めるし、その ref range を code-review の target に渡せば `branch` モードでローカル review できる (下の「PR モード」「リカバリ」参照)。`gh` の失敗を「GitHub アクセス全不能」と一般化して code-review をスキップするのは既知の誤判断であり、してはならない。
 
 - **解決順**:
   1. `code-review` (Claude Code 組み込み) が当セッションで利用可能、**かつ** Agent/Task ツールが当コンテキストで利用可能なら → これを使う。`code-review` は内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが利用できない環境では使えない。
   2. ↑が無い/不可なら、ホスト coding agent の標準レビュースキル (例: **Codex の `/review`**) が当セッションで利用可能ならそれを使う。
   3. いずれも無ければ外部レビューは行わず、5-1 の自前レビュー単独で 5-3 へ進む。
 - **実行 (read-only)**: 解決したスキルを **read-only モードで** 呼ぶ。**投稿 / 自動修正フラグは付けない** (`code-review` なら `--comment` / `--fix` を付けない。他ホストでも投稿・working tree 改変モードは使わない。投稿は `post-pr-review` の責務、working tree 改変は本 skill の禁止事項)。特に PR モードで `--comment` を付けると、`code-review` 由来の生 inline コメント (AI 自動投稿マーカーなし) が `post-pr-review` の 1 Review と **二重投稿** されるため厳禁。
-- **scope 引数** (レビュー対象の diff 範囲を伝える): 外部レビュースキルの scope 引数は **単一値 (PR番号 / branch名 / file path) を取る前提で、`<base>...HEAD` のような範囲そのものは渡せないことが多い**。`code-review` は引数に **PR番号 / branch名 / file path を受け取ると、その対象を作業ツリーと無関係にレビューする** (code-review 自身の手順が「PR 番号等が引数で渡されたらそれをレビュー対象にする」と規定しており、`gh pr diff <対象>` 等で対象差分を自前取得する)。以下を目安にしつつ、**自前レビュー (5-1) が見ている diff 範囲と外部スキルが見る範囲が一致しているか実行時に確認する** (一致しないなら不一致を前提に扱い、取りこぼしは 5-1 の自前レビューが拾う):
-  - PR モード: **`https://github.com/<OWNER>/<REPO>/pull/<PR_NUMBER>` (PR の URL) を scope として必ず渡す** (URL は host / owner / repo / 番号を自己完結で含むため、現在 cwd の git remote が PR 所属リポジトリと異なるクロスリポジトリ実行でも `gh pr diff <URL>` がそのまま解決できる。`<OWNER>/<REPO>#<PR_NUMBER>` のような結合形式は `gh pr diff` が単一引数として直接受け付けないため使わない。cwd remote と PR が同一リポジトリだと確実な場合に限り `<PR_NUMBER>` (PR番号単体) でも可)。code-review はこれを受け取ると、**現在の作業ツリーがどのブランチであっても (PR ブランチが checkout されていなくても) `gh pr diff` 経由で PR 差分を取得してレビューする**。したがって **「ローカル作業ツリーが PR ブランチと異なる」「fetch/checkout が禁止されている」ことを理由に code-review をスキップしてはならない** — これは 5-2 を 5-1 単独へ黙って退化させる既知の誤判断であり、PR モードでは scope に PR 番号を渡せば作業ツリーの状態に依存せず常に code-review を併用できる (本 skill の fetch/checkout 禁止は作業ツリーに対するものであり、code-review が自身の責務として PR を read-only 取得することは妨げない)。
+- **scope (target) 引数** (レビュー対象の diff 範囲を伝える): `code-review` の target 引数は **PR番号 / PR URL / branch名 / ref range (`<base>...HEAD` の三点記法) / file path** を受け取る (argumentHint は `[level] [--fix] [--comment] [<target>]`)。**target の種別で内部の diff 取得経路が変わる点が最重要**:
+  - **PR番号 / PR URL → `pr` モード**: 内部で `gh pr diff` を実行。**`gh` に依存**するため 403 だと空振りする (→「リカバリ」)。
+  - **branch名 / ref range → `branch` モード**: **ローカル `git diff` で review (`gh` 不要)**。Step 1 で read-only fetch 済みなら `<BASE_SHA>...<HEAD_SHA>` をそのまま target に渡せる。「範囲は渡せない」は誤りで、**ref range は正規の target 形式**。
+  以下を目安にしつつ、**自前レビュー (5-1) が見ている diff 範囲と外部スキルが見る範囲が一致しているか実行時に確認する** (一致しないなら不一致を前提に扱い、取りこぼしは 5-1 の自前レビューが拾う):
+  - PR モード: **主経路は Step 1 の ref range `<BASE_SHA>...<HEAD_SHA>` を target に渡す** → code-review が `branch` モードに入り、fetch 済み object に対するローカル `git diff` で review する (`gh` 不要・checkout/worktree 不要)。`gh` が使える環境では PR URL `https://github.com/<OWNER>/<REPO>/pull/<PR_NUMBER>` (または cwd remote と PR が同一リポジトリだと確実なときは `<PR_NUMBER>` 単体) を渡して `pr` モードで取得させてもよい (URL は host/owner/repo/番号を自己完結で含み cross-repo でも解決できる。`<OWNER>/<REPO>#<PR_NUMBER>` の結合形式は `gh pr diff` が単一引数として受け付けないため使わない)。いずれの target でも code-review は **現在の作業ツリーがどのブランチであっても (PR ブランチが checkout されていなくても)** その対象をレビューする。したがって **「ローカル作業ツリーが PR ブランチと異なる」「fetch/checkout が禁止されている」ことを理由に code-review をスキップしてはならない** — これは 5-2 を 5-1 単独へ黙って退化させる既知の誤判断であり、PR モードでは ref range (または PR URL) を target に渡せば作業ツリーの状態に依存せず常に code-review を併用できる (本 skill の fetch/checkout 禁止は作業ツリーに対するものであり、ref range を渡す `branch` モードは read-only fetch 済み object を見るだけで作業ツリーを変えない)。
   - ローカル `commit` モード: branch 名を渡して `<base>...HEAD` 相当を見させる。ただし `BASE_BRANCH` が default branch 以外に上書きされている場合、外部スキルが別の merge-base 基準で diff を取り 5-1 と範囲がズレうる点に注意。範囲を正しく表現できなければ、自前レビュー (5-1) を主、外部スキルを補助として扱う。
   - ローカル `staged` / `worktree` モード: 外部スキルの既定 scope (uncommitted 差分) に委ねる。`code-review` は既定で `git diff HEAD` 相当も見るため staged 差分も拾えるが、**staged のみ (worktree クリーン) のケースで外部スキルが空 diff を返したら、その回は外部レビューを「指摘なし」として扱い 5-1 のみで続行する** (silent skip ではなく自前レビューで担保)。
-- **リカバリ: `gh`/API 経路が落ちていて code-review が PR を自前取得できない場合**: code-review は scope に PR を渡されると内部で `gh pr diff` 等を使うため、`gh` が 403 等で落ちていると外部レビューが空振りする。その場合でも 5-1 自前レビューは Step 4 のフォールバック (read-only `git fetch` で退避した SHA による差分。`git diff <BASE_SHA>...$HEAD_SHA`。詳細は Step 4 手順) で差分を持てるので、**まず 5-1 の品質を担保する**。さらに code-review が file path / 差分入力を直接受け取れる形態なら、Step 4 で取得済みの差分を入力として渡して併用を試みる。`gh`/API と read-only fetch の **両方** が失敗して初めて外部レビューを諦める (退化条件は上記「退化条件の厳格化」参照。1 経路の失敗では諦めない)。
+- **リカバリ: `gh` 経路が落ちて code-review が `pr` モードで取得できない場合**: PR URL / PR番号を渡すと code-review は内部で `gh pr diff` を使うため、`gh` が 403 等で落ちていると外部レビューが空振りする (web/remote では GitHub が `mcp__github__*` 経由のみになり `gh` が恒常 403 になりうる)。この場合は PR URL の代わりに **Step 1 で read-only fetch 済みの ref range `<BASE_SHA>...<HEAD_SHA>` を target に渡す**。code-review は `branch` モードに入り、ローカル `git diff` で review する (`gh` 不要・checkout/worktree 不要、fetch 済み object だけで完結)。手順:
+  1. Step 1 で退避した `BASE_SHA` / `HEAD_SHA` をそのまま使う (このリカバリのために追加の fetch は不要)。
+  2. `git cat-file -e <BASE_SHA>^{commit}` と `git cat-file -e <HEAD_SHA>^{commit}` で両 object が commit として存在することを確認し (ref range diff は commit 前提。Step 1 の存在確認と peel を揃える)、`git diff <BASE_SHA>...<HEAD_SHA> --name-only` の件数を 5-1 の自前レビュー対象と突合する (範囲一致の確認)。
+  3. code-review を `<BASE_SHA>...<HEAD_SHA>` を target にして起動し、「Reviewing … against …」等の出力でローカル (`branch`) モードに入ったことを確認する。
+  4. ref range target を受け付けずローカル review に入れないと確認できた場合のみ、その回の外部レビューは「指摘なし」扱いとし 5-1 の自前レビュー単独で 5-3 へ進む。
+  なお 5-1 自前レビューも同じ ref range 差分 (Step 4 の `git diff <BASE_SHA>...<HEAD_SHA>`) を基盤にできるので、**まず 5-1 の品質を担保する**。**`gh` と git 経路 (read-only fetch → ref range) の両方が失敗して初めて外部レビューを諦める** (退化条件は上記「退化条件の厳格化」参照。`gh` 1 経路の失敗では諦めない)。
 - **正規化** (外部スキルの findings → 本 skill の指摘形式):
   - 各 finding の対象ファイル / 行を `path` / `line`、`side="RIGHT"` (単一行) に正規化する。`path` は **リポジトリルートからの相対パスに揃える** (外部スキルが絶対パスや `./` 始まりで返す場合があり、`post-pr-review` の投稿や 5-3 の重複排除が `path` の表記一貫性に依存するため)。
   - 外部スキルの出力に本 skill 互換の重要度ラベルが無い場合 (例: `code-review` の出力は `[{file,line,summary,failure_scenario}]` の配列で、配列順=重大度のみでラベル無し) は、Step 2 のスタイル参考ガイド + Step 3 の `REVIEW.md` 方針で `[must]` / `[should]` / `[nit]` / `[question]` を付与する (correctness 上位は `[must]` / `[should]`、cleanup / altitude 下位は `[nit]` を基準にし、`REVIEW.md` が必須化する観点は昇格)。
@@ -194,7 +210,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 }
 ```
 
-- `commit_id` は **PR モードのみ** 含める。差分なし (Step 4 で `gh pr diff` が空) の場合も Step 1 で取得した値を必ず含める (force-push 行ズレ防止のため optional ではなく必須)。
+- `commit_id` は **PR モードのみ** 含める。差分なし (Step 4 の `git diff <BASE_SHA>...<HEAD_SHA>` が空) の場合も Step 1 で確定した `HEAD_SHA` を必ず含める (force-push 行ズレ防止のため optional ではなく必須)。
 - `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` の取得手順は Step 4 ローカルモードに集約 (`git rev-list --count <base>..HEAD`、`staged` / `worktree` / `none` 時は `0` 固定)。
 - 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
 - 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`。空文字列は不可。
@@ -208,8 +224,8 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - Task ツール / Agent ツールで **本 skill 自身が直接 sub-agent を spawn しない**。ただし Step 5-2 の外部レビュースキル併用 (`code-review` / Codex `/review` 等) を許容し、**その外部スキルが内部で Agent ツール等を使うことは妨げない** (本 skill が直接 spawn するのではなく、Skill 経由で呼んだ外部スキルが行う)。`/run-pr-review` / `/run-local-review` を再帰的に呼ぶこともしない (orchestrator が parent 側の責務)。
 - `post-pr-review` / `resolve-pr-threads` は呼ばない (orchestrator の責務)。
 - `gh pr review` / `gh pr comment` / `gh api .../reviews` を直接叩かない。レビュー投稿は本 skill の責務外。
-- 作業ツリー / ローカルブランチを書き換える git 操作 (`git checkout` / `git reset` / `git commit` / `git push` / `git pull` 等) は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git symbolic-ref` / `git remote get-url`) のみ。**この禁止は本 skill 自身の作業ツリー / ローカル ref に対するもの**であり、Step 5-2 で PR 番号を scope として渡した `code-review` が自身の責務として PR を read-only 取得する (内部で `gh pr diff` 等を使う) ことは妨げない。「fetch/checkout 禁止だから PR モードで code-review を使えない」は誤読であり、PR モードでは作業ツリーの状態に関係なく code-review を併用する (Step 5-2 PR モード参照)。
-  - **例外: PR ref の read-only fetch は許可** — `git fetch origin refs/pull/<PR_NUMBER>/head` (フォーク PR でも可) 等で PR head を `FETCH_HEAD` に取得するのは、現ブランチ・作業ツリー・ローカルブランチを一切変えない read-only 操作なので許容する (Step 4 / 5-2 の `gh`/API 経路フォールバックで使う)。取得した SHA は `git diff <BASE_SHA>...$HEAD_SHA` の参照にのみ使い、`checkout` 等でローカルに反映しない。`git pull` (= fetch + merge/rebase で作業ツリーを進める) は引き続き禁止。
+- 作業ツリー / ローカルブランチを書き換える git 操作 (`git checkout` / `git reset` / `git commit` / `git push` / `git pull` 等) は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git show` / `git cat-file` / `git ls-remote` / `git symbolic-ref` / `git remote get-url`) のみ。**この禁止は本 skill 自身の作業ツリー / ローカル ref に対するもの**であり、Step 5-2 で ref range (または PR URL) を target として渡した `code-review` が自身の責務でレビュー対象を取得することは妨げない。「fetch/checkout 禁止だから PR モードで code-review を使えない」は誤読であり、PR モードでは作業ツリーの状態に関係なく code-review を併用する (Step 5-2 PR モード参照)。ref range を渡す `branch` モードは read-only fetch 済み object に対するローカル `git diff` で review するだけで checkout を伴わないため、この禁止に抵触しない。
+  - **例外: PR ref / base ブランチ / default branch の read-only fetch は許可** — `git fetch origin refs/pull/<PR_NUMBER>/head` (フォーク PR でも可)、base/default ブランチの `git fetch origin <ref>`、cross-repo の `git fetch https://github.com/<OWNER>/<REPO>.git <refspec>`、および `git ls-remote --symref origin HEAD` (default branch 判定) は、いずれも `FETCH_HEAD` / remote-tracking ref のみを更新し現ブランチ・作業ツリー・ローカルブランチを一切変えない read-only 操作なので許容する (Step 1 の head/base SHA 解決、Step 4 の差分取得、Step 5-2 の ref range target で使う)。取得した SHA は `git diff <BASE_SHA>...<HEAD_SHA>` / `git show <SHA>:<path>` 等の参照にのみ使い、`checkout` 等でローカルに反映しない。`git pull` (= fetch + merge/rebase で作業ツリーを進める) は引き続き禁止。
 - CI failure log の **収集** や reviewThreads の **取得** は本 skill では行わない (caller が `CI_FAILURE_CONTEXT` / `EXISTING_THREADS_CONTEXT` 経由で渡す前提)。
 - AI 自動投稿マーカーは付けない (`post-pr-review` が prepend する)。
 - `Write` ツールでのファイル出力は **`HANDOFF_PATH` への完成 JSON / error JSON 書き出しのみ許可** (Step 6 / 失敗時)。markdown 等それ以外の Write は行わない。
