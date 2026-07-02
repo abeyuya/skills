@@ -11,6 +11,8 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 **本 skill のスコープは proposals.md 出力で停止する。** REVIEW.md の編集 / commit / push / PR 作成は一切行わない。
 状態管理ファイルは持たず、毎回期間引数を渡す方式 (運用がシンプルで監査性が高い)。
 
+**本 skill は gh チャネル専用**: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり bash からは GitHub MCP ツールを呼べないため、`gh` CLI が使えない環境 (Claude Code の web/remote セッション等。gh が恒常 403 になる) では実行できない。その場合はエラーとして caller に報告して停止する。
+
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
 すべて省略可。省略時の挙動は各項目に記載。

@@ -22,22 +22,49 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 ## 手順
 
-### Step 1. PR 識別情報を確定する
+### Step 1. PR 識別情報と GitHub アクセスチャネルを確定する
 
-caller から `OWNER` / `REPO` / `PR_NUMBER` が渡されていればそれを使う。揃っていない値だけ以下で補う:
+#### 1-1. OWNER / REPO (pure-git)
 
-- `OWNER` / `REPO`: `gh repo view --json nameWithOwner -q .nameWithOwner` で `OWNER/REPO` 形式を取得し分解する。
-- `PR_NUMBER`: `gh pr view --json number -q .number` で現在のブランチに紐づく PR 番号を取得する。紐づく PR が無い場合はエラーとして停止し、caller に明示的に PR 番号を渡すよう促す。
+caller から渡されていればそれを使う。未指定なら `git remote get-url origin` の URL から抽出する (SSH 形式 / HTTPS 形式の両対応: `git remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'`。`compose-review` Step 3 と同じ抽出)。gh が使える環境では `gh repo view --json nameWithOwner -q .nameWithOwner` を補助に使ってもよい。
 
-3 つすべてが非空であることを確認してから次 step に進む。1 つでも空文字 / 未取得が混じると `compose-review` がローカルモードに falls through する可能性があるため、本 step で弾く責務は本 skill にある。
+#### 1-2. GitHub アクセスチャネル (`CHANNEL`) の解決
+
+後続 step の GitHub API 操作 (Step 2 の PR メタ / reviewThreads / CI ログ取得、Step 4 の投稿、Step 5 の resolve) で使うチャネルを本 step で 1 回だけ確定し、`CHANNEL` として保持する:
+
+1. `gh api repos/<OWNER>/<REPO> --jq .full_name` が成功する → `CHANNEL=gh`
+2. gh が失敗 (未インストール / 未認証 / 403。Claude Code の web/remote セッションでは GitHub API の直接アクセスが遮断され gh は恒常 403 になる) し、GitHub MCP ツール (`mcp__github__*`) がセッションで利用可能 → `CHANNEL=mcp`
+3. どちらも不可 → エラー停止し、caller に「gh を認証するか、GitHub MCP を接続してほしい」と報告する。
+
+gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)。GitHub Actions では通常 gh のみ、web/remote では MCP のみが使えるため、どちらか一方に決め打ちしない。確定した `CHANNEL` は Step 4 (`post-pr-review`) / Step 5 (`resolve-pr-threads`) にもそのまま転送し、skill 間で判定をブレさせない。
+
+#### 1-3. PR_NUMBER
+
+caller から渡されていればそれを使う。未指定なら現在のブランチ (`git rev-parse --abbrev-ref HEAD`) に紐づく open PR を引く:
+
+- `CHANNEL=gh`: `gh pr view --json number -q .number`
+- `CHANNEL=mcp`: `mcp__github__list_pull_requests` を `owner` / `repo` / `head=<OWNER>:<現在ブランチ名>` / `state=open` で呼び、返った PR の番号を使う。
+
+紐づく PR が無い場合はエラーとして停止し、caller に明示的に PR 番号を渡すよう促す。
+
+`OWNER` / `REPO` / `PR_NUMBER` の 3 つすべてが非空であることを確認してから次 step に進む。1 つでも空文字 / 未取得が混じると `compose-review` がローカルモードに falls through する可能性があるため、本 step で弾く責務は本 skill にある。
 
 ### Step 2. PR 状態と context を取得する
 
-いずれの `gh` コマンドも、cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう、Step 1 で確定した `OWNER`/`REPO` を `--repo <OWNER>/<REPO>` で必ず明示する (`gh api graphql` は除く)。
+本 step の取得はすべて Step 1 で確定した `CHANNEL` の経路で行う。cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう、対象リポジトリは常に明示する: `CHANNEL=gh` では Step 1 で確定した `OWNER`/`REPO` を `--repo <OWNER>/<REPO>` で必ず明示し (`gh api graphql` は除く)、`CHANNEL=mcp` では各ツールの必須引数 `owner` / `repo` に Step 1 の値を渡す (引数が必須なので明示が内在化される)。
 
-- `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup` で PR メタ情報と CI 状態を取得する。`headRefOid` を head SHA として控え、Step 4 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) として常時転送する。`baseRefName` (PR の base ブランチ名) も控え、Step 3 で `compose-review` の `BASE_BRANCH` として転送する (非 default base の PR で compose-review が git 主経路の base を default branch に誤推定し差分範囲がズレるのを防ぐ)。
-- 既存レビュー / コメント (compose-review に渡す重複指摘抑制用 context) は GraphQL で `reviewThreads` を取得する。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `path` / `line` / `comments.nodes[].body` まで取り、各スレッドを `<path>:<line> - <主旨 1〜2 文要約>` の形式で 1 行ずつ整形し改行で連結したテキストを **`EXISTING_THREADS_CONTEXT`** として保持する (`path:line` を必ず併記。自由文の段落要約では位置が落ちて dedupe 精度が下がる)。要約はコメント本文 (コード断片 / 設定例 `ENV=production` 等を含み得る) から作るため、各要約内の改行は除去して 1 スレッド 1 行に保ち、`^[A-Z_]+=` 行頭パターンが生じる場合は `CI_FAILURE_CONTEXT` と同様に先頭にスペース 1 文字を入れて escape する (compose-review 側 KEY=VALUE parser の早期切断防止。context 2 値で escape 方針を揃える)。
-- `statusCheckRollup` に `FAILURE` のジョブがあれば **失敗したジョブのログだけをピンポイントで読む** (全ジョブ一括の `gh run view <RUN_ID> --log` はログが巨大化しトークン上限超過 / タイムアウトを招くため使わない): `statusCheckRollup.contexts[].detailsUrl` の末尾 (`https://github.com/<O>/<R>/actions/runs/<RUN_ID>/job/<JOB_ID>`) から `JOB_ID` を取り、失敗ジョブごとに `gh run view --job=<JOB_ID> --log --repo <OWNER>/<REPO>` で対象ジョブのログのみを取得する (`detailsUrl` に `JOB_ID` が無い旧形式では `RUN_ID` を取り `gh run view <RUN_ID> --log-failed --repo <OWNER>/<REPO>` で失敗 step に絞る)。要点を **`CI_FAILURE_CONTEXT`** として整形する: 1 失敗ごとに `<ジョブ名>: <失敗箇所抜粋 1〜数行>` を 1 ブロックとし、空行で区切って連結する。ANSI escape は除去し、全体は 2000 文字以内に丸める (超過分は `(...truncated)` で打ち切る)。本値の中に `^[A-Z_]+=` 行頭パターン (例: `ENV=production`) があれば、compose-review 側の KEY=VALUE parser を破壊しないよう先頭にスペース 1 文字をインデントして escape する。失敗ジョブが無ければ本値は組み立てず、Step 3 で行ごと省略する。
+- **PR メタ情報** (title / body / head ref / head SHA / base ref):
+  - `CHANNEL=gh`: `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup` (CI 状態 `statusCheckRollup` も同時に取れる)。
+  - `CHANNEL=mcp`: `mcp__github__pull_request_read` を method=`get` で呼ぶ (`head.sha` = headRefOid 相当 / `head.ref` = headRefName 相当 / `base.ref` = baseRefName 相当)。
+  - head SHA (`headRefOid`) を控え、Step 4 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) として常時転送する。`baseRefName` (PR の base ブランチ名) も控え、Step 3 で `compose-review` の `BASE_BRANCH` として転送する (非 default base の PR で compose-review が git 主経路の base を default branch に誤推定し差分範囲がズレるのを防ぐ)。
+- **既存レビュー / コメント** (compose-review に渡す重複指摘抑制用 context):
+  - `CHANNEL=gh`: GraphQL で `reviewThreads` を取得する。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `path` / `line` / `comments.nodes[].body` まで取る。
+  - `CHANNEL=mcp`: `mcp__github__pull_request_read` を method=`get_review_comments` で呼ぶ。スレッド単位で `path` / `line` / 各コメント `body` が返る。`pageInfo.hasNextPage` が `true` の間 `after=<endCursor>` を付けて全件取得する (`perPage` は最大 100)。
+  - 整形 (チャネル共通): 各スレッドを `<path>:<line> - <主旨 1〜2 文要約>` の形式で 1 行ずつ整形し改行で連結したテキストを **`EXISTING_THREADS_CONTEXT`** として保持する (`path:line` を必ず併記。自由文の段落要約では位置が落ちて dedupe 精度が下がる)。要約はコメント本文 (コード断片 / 設定例 `ENV=production` 等を含み得る) から作るため、各要約内の改行は除去して 1 スレッド 1 行に保ち、`^[A-Z_]+=` 行頭パターンが生じる場合は `CI_FAILURE_CONTEXT` と同様に先頭にスペース 1 文字を入れて escape する (compose-review 側 KEY=VALUE parser の早期切断防止。context 2 値で escape 方針を揃える)。
+- **CI 状態と失敗ログ**: 失敗ジョブがあれば **失敗したジョブのログだけをピンポイントで読む** (全ジョブ一括のログ取得はログが巨大化しトークン上限超過 / タイムアウトを招くため使わない)。
+  - `CHANNEL=gh`: `statusCheckRollup` に `FAILURE` のジョブがあれば、`statusCheckRollup.contexts[].detailsUrl` の末尾 (`https://github.com/<O>/<R>/actions/runs/<RUN_ID>/job/<JOB_ID>`) から `JOB_ID` を取り、失敗ジョブごとに `gh run view --job=<JOB_ID> --log --repo <OWNER>/<REPO>` で対象ジョブのログのみを取得する (`detailsUrl` に `JOB_ID` が無い旧形式では `RUN_ID` を取り `gh run view <RUN_ID> --log-failed --repo <OWNER>/<REPO>` で失敗 step に絞る)。
+  - `CHANNEL=mcp`: `mcp__github__pull_request_read` を method=`get_check_runs` で呼び head commit の check runs を取得する。`conclusion` が `failure` の run について `details_url` の末尾から `RUN_ID` / `JOB_ID` を取り (形式は gh と同じ)、失敗ジョブごとに `mcp__github__get_job_logs` を `job_id=<JOB_ID>` / `return_content=true` で呼んで対象ジョブのログのみを取得する (`tail_lines` で末尾に絞れる。`details_url` に `JOB_ID` が無い旧形式では `run_id=<RUN_ID>` + `failed_only=true` で失敗ジョブに絞る)。
+  - 整形 (チャネル共通): 要点を **`CI_FAILURE_CONTEXT`** として整形する: 1 失敗ごとに `<ジョブ名>: <失敗箇所抜粋 1〜数行>` を 1 ブロックとし、空行で区切って連結する。ANSI escape は除去し、全体は 2000 文字以内に丸める (超過分は `(...truncated)` で打ち切る)。本値の中に `^[A-Z_]+=` 行頭パターン (例: `ENV=production`) があれば、compose-review 側の KEY=VALUE parser を破壊しないよう先頭にスペース 1 文字をインデントして escape する。失敗ジョブが無ければ本値は組み立てず、Step 3 で行ごと省略する。
 
 ### Step 3. `compose-review` でレビュー本文を生成する (sub-agent を立てず現在コンテキストで直接呼ぶ)
 
@@ -72,9 +99,9 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 
-Step 1 の `OWNER` / `REPO` / `PR_NUMBER` と Step 3 で得たレビュー本文を `post-pr-review` skill に Skill ツール経由で渡し、**1 回の API コールで 1 つの Review として** 投稿する。`gh pr comment` や `gh pr review` での個別投稿はしない。
+Step 1 の `OWNER` / `REPO` / `PR_NUMBER` / `CHANNEL` と Step 3 で得たレビュー本文を `post-pr-review` skill に Skill ツール経由で渡し、**1 つの Review として** 投稿する (`CHANNEL=gh` は 1 回の API コール、`CHANNEL=mcp` は pending review の組み立て → submit。いずれも 1 つの Review オブジェクトになる)。`gh pr comment` / `gh pr review` / MCP の個別コメント投稿ツールでの個別投稿はしない。
 
-`compose-review` 出力 → `post-pr-review` 入力の対応:
+`compose-review` 出力 → `post-pr-review` 入力の対応 (加えて Step 1 の `CHANNEL` を `CHANNEL=<値>` としてそのまま転送する):
 
 | compose-review 出力 | post-pr-review 入力 |
 |---|---|
@@ -84,11 +111,11 @@ Step 1 の `OWNER` / `REPO` / `PR_NUMBER` と Step 3 で得たレビュー本文
 | `commit_id` | `COMMIT_ID` |
 | `mode` | (転送しない / 本 skill が `"pr"` 整合性チェック後に破棄。post-pr-review は `mode` を受け付けないため `--input` に含めると 422 になる) |
 
-`/tmp/review.json` の `Write` と `gh api .../reviews --input` の実行は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして書かない。
+投稿の実行 (`CHANNEL` に応じた `gh api .../reviews --input` または MCP での pending review 組み立て) は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして `/tmp/review.json` を書いたり API を叩いたりしない。
 
 ### Step 5. `resolve-pr-threads` skill で過去スレッドを整理する
 
-Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `resolve-pr-threads` skill に渡して呼び出す。`THREAD_RESOLVE_SCOPE=none` の場合は呼び出すが skill 側で skip される。
+Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `resolve-pr-threads` skill に渡して呼び出す。`THREAD_RESOLVE_SCOPE=none` の場合は呼び出すが skill 側で skip される。
 
 `THREAD_RESOLVE_SCOPE=own` の場合、caller から `SELF_LOGIN` が渡されていれば一緒に渡す。
 
@@ -106,4 +133,5 @@ Step 1 の PR 識別情報と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `reso
 - `compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (`compose-review` の `code-review` 等外部レビュースキル併用の fan-out を成立させるため)。
 - `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 4 (投稿) → Step 5 (resolve) → Step 6 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、投稿前に停止する事故が起きやすい。詳細は Step 3「戻り値の扱い」冒頭の警告)。
 - レビュー方針 (重要度ラベル等) / プロジェクト指示ファイル読み込み / `/pr-review-style-reference` の参照は `compose-review` の責務。本 skill では再実装しない。
-- 判定に迷ったら resolve しない / 投稿は 1 回だけ、という既存 skill の安全側ルールはそのまま守る。
+- GitHub API 操作は Step 1 で解決した `CHANNEL` の経路に統一し、下流 skill (`post-pr-review` / `resolve-pr-threads`) にも同じ値を転送する。gh が 403 になったことを理由に投稿や resolve を黙って skip しない — MCP チャネルが使えるならそちらで実行する (逆も同様)。
+- 判定に迷ったら resolve しない / 投稿は 1 つの Review だけ、という既存 skill の安全側ルールはそのまま守る。
