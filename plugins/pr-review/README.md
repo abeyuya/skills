@@ -1,15 +1,15 @@
 # pr-review plugin
 
-PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
+PR レビューを **1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
 
 ## 提供 skill / command
 
 - `skills/run-pr-review`: PR レビュー一式 (PR 取得 → `compose-review` でレビュー本文生成 → 投稿 → 過去スレッド resolve) を 1 コマンドで実行する thin orchestrator skill。caller はこれを呼ぶだけで済む。
 - `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (caller が渡す書き出し先パス。省略時は `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`。ランダムサフィックスは同一秒の再呼び出しでの衝突回避用) にファイル書き出し**し、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示** を返す (caller はそのファイルを `Read` して JSON を使う)。自己完結 JSON を最終メッセージに出さないのは、それが「タスク完了」シグナルに見え、caller (orchestrator) が投稿 step を実行する前にターンを終了する停止バグを誘発するため。指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` のいずれからも現在コンテキストで直接 (Skill ツール経由) 呼ばれる。
-- `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として `gh api .../reviews` 経由で投稿する。
+- `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として投稿する。投稿経路は 2 チャネル対応 (`CHANNEL=gh`: `gh api .../reviews` の 1 コール / `CHANNEL=mcp`: GitHub MCP ツールで pending review を組み立てて submit。詳細は後述「GitHub アクセスチャネル」)。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称で、両者とも sub-agent を立てず現在コンテキストで `compose-review` を直接呼ぶ。
-- `skills/distill-pr-reviews`: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を `proposals.md` として出力する skill。信号収集はスクリプト、最終的な採否分類 (`accept` / `hold` / `reject`) とクラスタリングは AI が行う。read-only で REVIEW.md 編集 / PR 作成は行わない。
+- `skills/distill-pr-reviews`: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を `proposals.md` として出力する skill。信号収集はスクリプト、最終的な採否分類 (`accept` / `hold` / `reject`) とクラスタリングは AI が行う。read-only で REVIEW.md 編集 / PR 作成は行わない。**収集スクリプトが `gh` CLI に依存するため gh チャネル専用** (gh が使えない環境では動かない。後述「GitHub アクセスチャネル」参照)。
 - `commands/pr-review-style-reference`: `/pr-review-style-reference` で呼び出す **スタイル参考ガイド** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。レビューコメントの書き方・体裁が対象で、技術観点 (何を見るか) は対象外。`compose-review` から内部的に呼ばれる。
 
 レビュー方針は caller (ユーザー) に委ねる前提。本スタイル参考ガイドは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。技術観点 (何をレビューするか) は caller 側で別途指定する想定。
@@ -46,7 +46,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 ## `post-pr-review` を他から呼ぶ場合
 
-`skills/post-pr-review` は **「レビュー本文を受け取って GitHub Review として 1 回の API コールで投稿する」専用の投稿 skill** として、`run-pr-review` 経由だけでなく外部 skill / 外部ワークフロー / 人手起動からも直接呼べる設計になっている。「レビューを書く」フェーズと「レビューを投稿する」フェーズを分離したい場合、書く側 (別 skill / 別エージェント / 人) が下記 Payload を生成して post-pr-review に流し込めばよい。
+`skills/post-pr-review` は **「レビュー本文を受け取って GitHub Review として 1 つの Review として投稿する」専用の投稿 skill** として、`run-pr-review` 経由だけでなく外部 skill / 外部ワークフロー / 人手起動からも直接呼べる設計になっている (投稿経路は `CHANNEL=gh|mcp` の 2 チャネル対応。前述「GitHub アクセスチャネル」参照)。「レビューを書く」フェーズと「レビューを投稿する」フェーズを分離したい場合、書く側 (別 skill / 別エージェント / 人) が下記 Payload を生成して post-pr-review に流し込めばよい。
 
 Payload (caller が渡す JSON 相当) の概要:
 
@@ -66,6 +66,22 @@ Payload (caller が渡す JSON 相当) の概要:
 - `[nit]` 軽微・好み寄り。実装者が無視してよい。
 - `[question]` 質問。実装者の意図確認のみで修正要求ではない。
 - `[pre_existing]` 本 PR で導入されたものではない既存バグ。マージ判断には影響させない。
+
+## GitHub アクセスチャネル (gh / GitHub MCP)
+
+GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 / スレッド resolve) は実行環境によって使える経路が異なるため、`run-pr-review` は実行時にチャネルを検出して選ぶ (`CHANNEL=gh|mcp`)。gh と GitHub MCP ツールは**対等な正規チャネル**であり、どちらか一方への決め打ちはしない:
+
+| 環境 | gh CLI | GitHub MCP ツール (`mcp__github__*`) |
+|---|---|---|
+| GitHub Actions (claude-code-action) | ✅ (`github_token` で動く) | ❌ 通常無い |
+| ローカル Claude Code | ✅ (`gh auth login` 済みなら) | △ 接続していれば有る |
+| Claude Code web/remote セッション | ❌ 恒常 403 (GitHub API 直接アクセスが遮断され、curl 直叩きも同様に不可) | ✅ 唯一の到達経路 |
+
+チャネル解決手順は `run-pr-review` Step 1-2 を正典とし (`gh api repos/<OWNER>/<REPO> --jq .full_name` の成否 → MCP ツールの有無 → どちらも不可ならエラー)、`run-pr-review` が 1 回だけ解決して `post-pr-review` / `resolve-pr-threads` へ `CHANNEL` として転送する。各 skill を単独で呼ぶ場合は skill 側が `run-pr-review` Step 1-2 と同じ手順で自力解決する (手順の全文は各 skill には再掲せず正典を参照)。
+
+例外は `distill-pr-reviews`: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり、bash からは MCP ツールを呼べないため **gh チャネル専用** (gh が使えない環境では実行できない)。
+
+なお PR 差分の取得 (`compose-review`) はどちらのチャネルにも依存せず pure-git (read-only fetch + `git diff`) で完結する。
 
 ## 利用方法 (GitHub Actions)
 
@@ -98,6 +114,8 @@ permissions:
     claude_args: |
       --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
 ```
+
+> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
 
 ## 利用方法 (ローカル Claude Code)
 
