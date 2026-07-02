@@ -46,7 +46,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 ## `post-pr-review` を他から呼ぶ場合
 
-`skills/post-pr-review` は **「レビュー本文を受け取って GitHub Review として 1 回の API コールで投稿する」専用の投稿 skill** として、`run-pr-review` 経由だけでなく外部 skill / 外部ワークフロー / 人手起動からも直接呼べる設計になっている。「レビューを書く」フェーズと「レビューを投稿する」フェーズを分離したい場合、書く側 (別 skill / 別エージェント / 人) が下記 Payload を生成して post-pr-review に流し込めばよい。
+`skills/post-pr-review` は **「レビュー本文を受け取って GitHub Review として 1 つの Review として投稿する」専用の投稿 skill** として、`run-pr-review` 経由だけでなく外部 skill / 外部ワークフロー / 人手起動からも直接呼べる設計になっている (投稿経路は `CHANNEL=gh|mcp` の 2 チャネル対応。前述「GitHub アクセスチャネル」参照)。「レビューを書く」フェーズと「レビューを投稿する」フェーズを分離したい場合、書く側 (別 skill / 別エージェント / 人) が下記 Payload を生成して post-pr-review に流し込めばよい。
 
 Payload (caller が渡す JSON 相当) の概要:
 
@@ -77,7 +77,7 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 | ローカル Claude Code | ✅ (`gh auth login` 済みなら) | △ 接続していれば有る |
 | Claude Code web/remote セッション | ❌ 恒常 403 (GitHub API 直接アクセスが遮断され、curl 直叩きも同様に不可) | ✅ 唯一の到達経路 |
 
-チャネル解決は `run-pr-review` Step 1 が 1 回だけ行い (`gh api repos/<OWNER>/<REPO>` の成否 → MCP ツールの有無 → どちらも不可ならエラー)、`post-pr-review` / `resolve-pr-threads` へ `CHANNEL` として転送する。各 skill を単独で呼ぶ場合は skill 側が同じ手順で自力解決する。
+チャネル解決手順は `run-pr-review` Step 1-2 を正典とし (`gh api repos/<OWNER>/<REPO> --jq .full_name` の成否 → MCP ツールの有無 → どちらも不可ならエラー)、`run-pr-review` が 1 回だけ解決して `post-pr-review` / `resolve-pr-threads` へ `CHANNEL` として転送する。各 skill を単独で呼ぶ場合は skill 側が `run-pr-review` Step 1-2 と同じ手順で自力解決する (手順の全文は各 skill には再掲せず正典を参照)。
 
 例外は `distill-pr-reviews`: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり、bash からは MCP ツールを呼べないため **gh チャネル専用** (gh が使えない環境では実行できない)。
 
@@ -115,7 +115,7 @@ permissions:
       --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
 ```
 
-> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__resolve_review_thread` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。
+> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__resolve_review_thread` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
 
 ## 利用方法 (ローカル Claude Code)
 

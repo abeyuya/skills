@@ -11,7 +11,7 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 ## 入力
 
 - `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR
-- `CHANNEL` (任意): GitHub アクセスチャネル。`gh` または `mcp`。caller (`run-pr-review` Step 1) が解決済みならその値を使う。未指定なら本 skill が自分で解決する: `gh api repos/<OWNER>/<REPO> --jq .full_name` が成功すれば `gh`、失敗して GitHub MCP ツール (`mcp__github__*`) がセッションで利用可能なら `mcp`、どちらも不可ならエラーとして caller に報告し停止する。gh と MCP は対等な正規チャネル (Claude Code の web/remote セッションでは gh が恒常 403 になるため MCP が唯一の経路)。
+- `CHANNEL` (任意): GitHub アクセスチャネル。`gh` または `mcp`。caller (`run-pr-review` Step 1) が解決済みならその値を使う。**未指定なら `run-pr-review` Step 1-2 と同じ手順で自力解決する** (gh probe → MCP ツールの有無 → どちらも不可ならエラー停止。解決手順は `run-pr-review` Step 1-2 を正典とする)。gh と MCP は対等な正規チャネル。
 - `THREAD_RESOLVE_SCOPE`: resolve 範囲
   - `all` (デフォルト): すべての未 resolve スレッドを対象に、author 種別 (本レビュアー Bot / 他 Bot レビュアー / 人間レビュアー) を問わず resolve 候補にする。
   - `own`: 本アクション自身 (claude-code-action が用いる Bot) が author のスレッドのみ resolve 候補にする。判定は自身の過去コメントの `author.login` と一致するか否かで行う。判定が困難な場合は resolve しない。
@@ -23,11 +23,13 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 
 ## 共通の resolve 判定ルール
 
-- 既に `isResolved: true` のスレッドは触らない。
+(スレッドの resolved / outdated フラグは、CHANNEL=gh の GraphQL では `isResolved` / `isOutdated`、CHANNEL=mcp の `get_review_comments` では `is_resolved` / `is_outdated` として返る。以下は両者を指す。)
+
+- 既に resolved 済み (`isResolved` / `is_resolved` が true) のスレッドは触らない。
 - resolve するのは **指摘内容どおりの修正が現在の差分・ファイル内容から確認できる場合のみ**。
 - 以下のいずれかに該当する場合は resolve しない:
   - 指摘箇所が削除されただけで、別の場所に同じ問題が残っている可能性がある。
-  - `isOutdated: true` だが、修正されたか単に行がずれただけかが判別できない。
+  - outdated (`isOutdated` / `is_outdated` が true) だが、修正されたか単に行がずれただけかが判別できない。
   - 指摘が複数論点を含み、一部しか対応されていない。
   - そもそも修正されたかどうか判断に迷う。
 
@@ -45,7 +47,7 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 
 `mcp__github__pull_request_read` を method=`get_review_comments` (`owner` / `repo` / `pullNumber`) で呼ぶ。スレッド単位で `id` (thread node ID) / `is_resolved` / `is_outdated` / 各コメントの `author` / `path` / `line` / `body` / `html_url` が返る。`pageInfo.hasNextPage` が `true` の間 `after=<endCursor>` を付けて全スレッドを取得しきるまで繰り返す (`perPage` は最大 100)。
 
-**Step 3-2 の reply 用に、各スレッド先頭コメントの数値 comment ID をここで控える**: `mcp__github__add_reply_to_pull_request_comment` は数値 ID を要求するが、`get_review_comments` は数値 ID を独立フィールドでは返さない。各コメントの `html_url` 末尾アンカー `#discussion_r<数値>` の `<数値>` 部分を抽出して保持する。
+**Step 3-2 の reply 用に、各スレッド先頭コメントの数値 comment ID をここで控える**: `mcp__github__add_reply_to_pull_request_comment` は数値 ID を要求する。`get_review_comments` が数値 ID を独立フィールド (例: `id` / `databaseId`) で返すならそれを優先し、無い場合は各コメントの `html_url` 末尾アンカー `#discussion_r<数値>` の `<数値>` 部分を抽出して保持する (アンカー抽出は tool schema の現状に対するフォールバックであり、数値 ID フィールドが提供されればそちらを使う)。どのスレッドでも数値 ID を確定できない場合は、そのスレッドの reply / resolve を skip し Step 5 で「コメント投稿失敗で見送り」として計上する (黙って全 skip しない)。
 
 #### CHANNEL=gh
 
@@ -179,8 +181,8 @@ resolve が失敗した場合は **再試行せず次のスレッドへ進む** 
 以下の件数をそれぞれ分けて caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように)。**4 件種別の合計は「未 resolved スレッド総数」と一致**するように振り分ける (既 resolved は対象外で別枠):
 
 - resolve したスレッド件数 (Step 4 まで成功したもの)
-- コメント投稿失敗で resolve を見送った件数 (Step 3 の `addPullRequestReviewThreadReply` が失敗したもの)
-- resolve 実行失敗で見送った件数 (Step 4 の `resolveReviewThread` が失敗したもの。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
+- コメント投稿失敗で resolve を見送った件数 (Step 3-2 の返信投稿が失敗したもの。CHANNEL=gh なら `addPullRequestReviewThreadReply`、CHANNEL=mcp なら `mcp__github__add_reply_to_pull_request_comment` の失敗)
+- resolve 実行失敗で見送った件数 (Step 4 の resolve が失敗したもの。CHANNEL=gh なら `resolveReviewThread`、CHANNEL=mcp なら `mcp__github__resolve_review_thread` の失敗。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
 - 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能 / scope=own で対象外、のもの)
 
 別枠で参考表示する項目 (4 件種別の合計には含めない):

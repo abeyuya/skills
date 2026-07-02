@@ -63,7 +63,7 @@ caller がラベル種別を独自定義した場合 (例: `[should]` / `[nit]` 
 
 ## CI の扱い
 
-- CI 状態の取得 (`gh pr view --json statusCheckRollup`、または GitHub MCP の `mcp__github__pull_request_read` method=`get_check_runs`) で得られるのは各ジョブの状態 (`SUCCESS` / `FAILURE` / `PENDING` 等) と URL のみ。失敗内容を読みたい場合は `detailsUrl` から run / job ID を取得し、失敗ログ本体を取得すること (`gh run view --job=<job-id> --log` / `gh run view <run-id> --log`、または `mcp__github__get_job_logs`)。
+- CI 状態の取得 (`gh pr view --json statusCheckRollup`、または GitHub MCP の `mcp__github__pull_request_read` method=`get_check_runs`) で得られるのは各ジョブの状態 (`SUCCESS` / `FAILURE` / `PENDING` 等) と URL のみ。失敗内容を読みたい場合は URL (`detailsUrl` (gh) / `details_url` (MCP)) から run / job ID を取得し、**失敗ジョブのログだけをピンポイントで取得** する (`gh run view --job=<job-id> --log`、または `mcp__github__get_job_logs` を `job_id`+`tail_lines` / `run_id`+`failed_only=true`+`tail_lines` で)。**全ジョブ一括の全ログ取得 (`gh run view <run-id> --log` 等) はログが巨大化しトークン上限超過を招くため使わない** (`run-pr-review` Step 2 と同方針)。
 - `FAILURE` のジョブがあれば上記手順でログ詳細まで読み、関連箇所への `[must]` の根拠として使う。
   - 失敗ログから関連ファイル / 行が特定できる場合は、その箇所をインラインの係留点 (anchor) にする。
   - 失敗ログから関連箇所が特定できない / 取得自体に失敗した場合は、インラインを無理に貼らず **総括 (`body`) の「総合判断」に CI failure として 1 文言及** する (anchor 不明のまま YAML 先頭に貼ると無関係な diff に紐づくため)。
