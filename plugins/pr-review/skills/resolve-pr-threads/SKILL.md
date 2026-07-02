@@ -159,7 +159,7 @@ Step 3 のコメント投稿が成功したスレッドのみ resolve する。S
 
 `<THREAD_ID>` は Step 1 で得たスレッドの `id` (thread node ID `PRRT_...`)。
 
-**CHANNEL=mcp**: `mcp__github__resolve_review_thread` を `owner` / `repo` / `threadId=<THREAD_ID>` で呼ぶ。
+**CHANNEL=mcp**: `mcp__github__pull_request_review_write` を method=`resolve_thread`、`owner` / `repo` / `pullNumber` / `threadId=<THREAD_ID>` で呼ぶ (post-pr-review の投稿と同じ review-write ツールに寄せる。標準の GitHub MCP サーバーでは resolve は独立ツールではなく本ツールの `resolve_thread` メソッドで行う。`pullNumber` は schema 上必須なので `PR_NUMBER` を渡す)。
 
 **CHANNEL=gh**: `resolveReviewThread` mutation を実行する。
 
@@ -182,7 +182,7 @@ resolve が失敗した場合は **再試行せず次のスレッドへ進む** 
 
 - resolve したスレッド件数 (Step 4 まで成功したもの)
 - コメント投稿失敗で resolve を見送った件数 (Step 3-2 の返信投稿が失敗したもの。CHANNEL=gh なら `addPullRequestReviewThreadReply`、CHANNEL=mcp なら `mcp__github__add_reply_to_pull_request_comment` の失敗)
-- resolve 実行失敗で見送った件数 (Step 4 の resolve が失敗したもの。CHANNEL=gh なら `resolveReviewThread`、CHANNEL=mcp なら `mcp__github__resolve_review_thread` の失敗。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
+- resolve 実行失敗で見送った件数 (Step 4 の resolve が失敗したもの。CHANNEL=gh なら `resolveReviewThread`、CHANNEL=mcp なら `mcp__github__pull_request_review_write` (method=resolve_thread) の失敗。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
 - 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能 / scope=own で対象外、のもの)
 
 別枠で参考表示する項目 (4 件種別の合計には含めない):

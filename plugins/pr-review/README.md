@@ -115,7 +115,7 @@ permissions:
       --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
 ```
 
-> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__resolve_review_thread` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
+> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
 
 ## 利用方法 (ローカル Claude Code)
 
