@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # distill-pr-reviews skill / Phase A+B (deterministic) collector.
 #
-# 入力: 環境変数 (OWNER / REPO / SINCE / UNTIL / DAYS / MAX_PRS /
+# 入力: 環境変数 (OWNER / REPO / SINCE / UNTIL / DAYS / MAX_PRS / MAX_BUGFIX_DIFFS /
 #                  FILTER_AUTHOR / FILTER_LABEL / INCLUDE_AI_AUTHORED / OUTPUT_DIR)
 # 出力:
 #   ${OUTPUT_DIR}/_pr_list.json      (中間: gh pr list --json 生 JSON)
@@ -22,6 +22,8 @@
 #   - 1 thread の comments が 50 件超の場合のみ node(id) で追加 query。
 #   - REST `pulls/{N}/commits` / `commits/{sha}` は全廃 (core 枠を数百 query 消費していたため)。
 #   - reactions は廃止 (信号価値が低くノード上限の圧迫が大きいため)。
+#   - バグ修正PR (pr_kind=bugfix) のみ `gh pr diff` で 1 PR = 1 コール取得 (Step 3.5)。
+#     subset 限定 + MAX_BUGFIX_DIFFS 件 + DIFF_CHAR_CAP 文字で抑制するため core 枠への影響は限定的。
 #   - 1 query あたりノード試算: reviewThreads(50) × comments(50) + commits(100) + files(100) + labels(0)
 #     ≈ 2,700 ノード (GraphQL 500k 上限の 0.5%)。
 
@@ -34,6 +36,7 @@ SINCE="${SINCE:-}"
 UNTIL="${UNTIL:-}"
 DAYS="${DAYS:-7}"
 MAX_PRS="${MAX_PRS:-100}"
+MAX_BUGFIX_DIFFS="${MAX_BUGFIX_DIFFS:-30}"
 FILTER_AUTHOR="${FILTER_AUTHOR:-}"
 FILTER_LABEL="${FILTER_LABEL:-}"
 INCLUDE_AI_AUTHORED="${INCLUDE_AI_AUTHORED:-true}"
@@ -117,7 +120,8 @@ if [[ "$PR_COUNT" -eq 0 ]]; then
     --arg collected_at "$COLLECTED_AT" \
     --argjson pr_count 0 --argjson max_prs_exceeded false \
     --argjson include_ai_authored "$INCLUDE_AI_AUTHORED" \
-    '{meta: {owner:$owner, repo:$repo, since:$since, until:$until, collected_at:$collected_at, pr_count:$pr_count, max_prs_exceeded:$max_prs_exceeded, include_ai_authored:$include_ai_authored}, prs: []}' \
+    --argjson bugfix_pr_count 0 --argjson bugfix_diffs_truncated false \
+    '{meta: {owner:$owner, repo:$repo, since:$since, until:$until, collected_at:$collected_at, pr_count:$pr_count, max_prs_exceeded:$max_prs_exceeded, include_ai_authored:$include_ai_authored, bugfix_pr_count:$bugfix_pr_count, bugfix_diffs_truncated:$bugfix_diffs_truncated}, prs: []}' \
     > "${OUTPUT_DIR}/signals.json"
   echo "${OUTPUT_DIR}/signals.json"
   exit 0
@@ -294,6 +298,11 @@ jq -n \
   --slurpfile pr_list "${OUTPUT_DIR}/_pr_list.json" \
   --slurpfile pr_data_lines "$PR_DATA_FILE" \
   '
+    # バグ修正PR検知: title (`<scope> fix:` / `fix:` / `fix(scope):`) / commit headline /
+    # ラベル / revert / キーワードのいずれかにマッチすれば bugfix。確信度の最終判断は Phase C の AI。
+    # `<scope> fix:` / `fix:` / `fix(scope):` 形式の fix 型トークン (title / commit headline 共用)
+    def has_fix_type($t): ($t | test("(^|\\s)fix(\\([^)]*\\))?\\s*:"; "i"));
+    def bugfix_label_re: "^(bug|bugfix|hotfix|regression|不具合|障害)$";
     ($pr_data_lines | map({(.pr_number | tostring): .}) | add // {}) as $data_map |
     {
       meta: {
@@ -302,12 +311,23 @@ jq -n \
         collected_at: $collected_at,
         pr_count: $pr_count,
         max_prs_exceeded: $max_prs_exceeded,
-        include_ai_authored: $include_ai_authored
+        include_ai_authored: $include_ai_authored,
+        # bugfix_pr_count / bugfix_diffs_truncated は diff 取得 (Step 3.5) 後に上書きする暫定値。
+        bugfix_pr_count: 0,
+        bugfix_diffs_truncated: false
       },
       prs: ($pr_list[0] | map(
         . as $pr |
         ($pr.number | tostring) as $key |
         ($data_map[$key] // {files: [], commits: [], threads: [], files_truncated: false, commits_truncated: false}) as $d |
+        ($pr.labels | map(.name)) as $labels |
+        {
+          title_type_fix: has_fix_type($pr.title),
+          commit_type_fix: ([$d.commits[]? | select(.message_headline != null and (.message_headline | has_fix_type(.)))] | length > 0),
+          label_bug: ($labels | any(. as $l | $l | ascii_downcase | test(bugfix_label_re))),
+          is_revert: ($pr.title | test("revert"; "i")),
+          title_keyword: ($pr.title | test("hotfix|regression|バグ|不具合|障害"; "i"))
+        } as $bugfix_signals |
         {
           number: $pr.number,
           title: $pr.title,
@@ -317,8 +337,12 @@ jq -n \
           merge_commit_sha: ($pr.mergeCommit.oid // null),
           base_ref: $pr.baseRefName,
           head_ref: $pr.headRefName,
-          labels: ($pr.labels | map(.name)),
+          labels: $labels,
           url: $pr.url,
+          pr_kind: (if ($bugfix_signals | any) then "bugfix" else "other" end),
+          bugfix_signals: $bugfix_signals,
+          bugfix_diff: null,
+          bugfix_diff_truncated: false,
           files: $d.files,
           files_truncated: $d.files_truncated,
           commits_truncated: $d.commits_truncated,
@@ -345,6 +369,64 @@ jq -n \
       ))
     }
   ' > "$PRS_FILE"
+
+# ====== Step 3.5: バグ修正PR の diff 取得 ======
+# バグ修正PRは「レビューをすり抜けたバグ」であり、その修正 diff を一般化すれば再発防止の
+# レビュー観点になる (Phase C/D の新しい抽出源)。コスト抑制のため pr_kind=bugfix の subset
+# のみ `gh pr diff` で取得 (1 PR = 1 コール)。件数は MAX_BUGFIX_DIFFS、サイズは DIFF_CHAR_CAP で制限。
+DIFF_CHAR_CAP=20000
+# bugfix PR 番号を一度だけ取得し、件数算出と diff 取得ループの双方で使い回す (jq の二重実行回避)。
+# gh pr list --search は検索 API 経由のため並び順 (既定 best-match) が merged_at 降順とは限らない。
+# 「新しい順に MAX_BUGFIX_DIFFS 件」の打ち切り保証は merged_at 降順の明示ソートで担保する。
+# mapfile + 配列で受けることで wc / ヒアストリングのサブシェル起動を避ける。
+mapfile -t BUGFIX_PR_ARRAY < <(jq -r '[.prs[] | select(.pr_kind == "bugfix")] | sort_by(.merged_at) | reverse | .[].number' "$PRS_FILE")
+BUGFIX_PR_COUNT=${#BUGFIX_PR_ARRAY[@]}
+BUGFIX_DIFFS_TRUNCATED=false
+log "bugfix PR count: ${BUGFIX_PR_COUNT} (diff fetch cap: ${MAX_BUGFIX_DIFFS})"
+
+DIFF_MAP_FILE="${OUTPUT_DIR}/_bugfix_diffs.jsonl"
+: > "$DIFF_MAP_FILE"
+
+DIFF_FETCHED=0
+for PR_NUMBER in "${BUGFIX_PR_ARRAY[@]}"; do
+  if [[ "$DIFF_FETCHED" -ge "$MAX_BUGFIX_DIFFS" ]]; then
+    BUGFIX_DIFFS_TRUNCATED=true
+    log "WARNING: bugfix diff fetch capped at MAX_BUGFIX_DIFFS=${MAX_BUGFIX_DIFFS} (残りの bugfix PR の diff は未取得)"
+    break
+  fi
+  log "Fetching diff for bugfix PR #${PR_NUMBER}"
+  # diff は巨大化しうるため、シェル変数経由 (argv 上限 / UTF-8 境界切断のリスク) ではなく
+  # ファイル経由 + jq の --rawfile で扱う。truncate も jq の codepoint 単位スライスで安全に行う。
+  DIFF_TMP="${OUTPUT_DIR}/_pr_diff_${PR_NUMBER}.tmp.diff"
+  if gh pr diff "$PR_NUMBER" --repo "${OWNER}/${REPO}" > "$DIFF_TMP" 2>/dev/null; then
+    jq -nc --argjson number "$PR_NUMBER" --argjson cap "$DIFF_CHAR_CAP" --rawfile diff "$DIFF_TMP" \
+      '{number: $number, diff: ($diff[0:$cap]), truncated: ($diff | length > $cap)}' >> "$DIFF_MAP_FILE"
+  else
+    # 取得失敗 (rate limit / 認証失効等) を「本当に diff が空の PR」と混同しないため、
+    # bugfix_diff は null のまま残し WARNING で可視化する。
+    log "WARNING: gh pr diff failed for bugfix PR #${PR_NUMBER} (bugfix_diff は null のまま)"
+  fi
+  rm -f "$DIFF_TMP"
+  # 失敗もコスト (gh 1 コール) を消費しているため、成功失敗を問わず cap にカウントする。
+  DIFF_FETCHED=$((DIFF_FETCHED + 1))
+done
+
+# 取得した diff を prs.json にマージし、meta.bugfix_* を確定値で上書きする。
+jq \
+  --slurpfile diffs "$DIFF_MAP_FILE" \
+  --argjson bugfix_pr_count "$BUGFIX_PR_COUNT" \
+  --argjson bugfix_diffs_truncated "$BUGFIX_DIFFS_TRUNCATED" \
+  '
+    ($diffs | map({(.number | tostring): .}) | add // {}) as $diff_map |
+    .meta.bugfix_pr_count = $bugfix_pr_count |
+    .meta.bugfix_diffs_truncated = $bugfix_diffs_truncated |
+    .prs |= map(
+      ($diff_map[.number | tostring]) as $d |
+      if $d then .bugfix_diff = $d.diff | .bugfix_diff_truncated = $d.truncated else . end
+    )
+  ' "$PRS_FILE" > "${PRS_FILE}.new"
+mv "${PRS_FILE}.new" "$PRS_FILE"
+rm -f "$DIFF_MAP_FILE"
 
 # ====== Step 4: 信号付与 → signals.json ======
 SIGNALS_FILE="${OUTPUT_DIR}/signals.json"
