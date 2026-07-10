@@ -1,6 +1,6 @@
 ---
 name: distill-pr-reviews
-description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を proposals.md として出力する skill。取り込み判定の信号収集はスクリプト、最終的な採否分類とクラスタリングは AI が行う。本 skill は read-only で、REVIEW.md の編集や PR 作成は行わない。収集スクリプトが gh CLI に依存するため gh チャネル専用 (gh が使えない web/remote セッション等では動かない)。
+description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を proposals.md として出力する skill。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する。取り込み判定の信号収集はスクリプト、最終的な採否分類とクラスタリングは AI が行う。本 skill は read-only で、REVIEW.md の編集や PR 作成は行わない。収集スクリプトが gh CLI に依存するため gh チャネル専用 (gh が使えない web/remote セッション等では動かない)。
 ---
 
 # distill-pr-reviews skill
@@ -87,7 +87,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
   - **rate limit 設計**: 1 PR = graphql 1 query が基本ケース。69 PR でも 70 query 前後で済み、graphql 枠 5000/h の 1〜2% しか使わない。REST `pulls/{N}/commits` および `commits/{sha}` は使わない (旧設計ではこれが core 枠を数百 query 消費して rate limit 到達の主因だった)。
   - **truncate 警告**: `files` / `commits` の `pageInfo.hasNextPage=true` (100 件超) の PR では `files_truncated` / `commits_truncated` を true にし、stderr に WARNING を出す。後段の `file_changed_after_comment` が偽陰性に倒れうる旨を Phase C の AI 判定に渡す。
 - **Step 1-4. `prs.json` 組み立て + バグ修正検知**: Step 1-3 で書き出した PR ごとの中間レコード (`_pr_data.jsonl`) を `_pr_list.json` (PR メタ) と join し、各 PR に `bugfix_signals` (title / commit headline / labels / revert / keyword から jq で判定。追加 API コールなし) と `pr_kind` を付与した上で、以下の TypeScript ライクなスキーマで `${OUTPUT_DIR}/prs.json` に書き出す。
-- **Step 1-5. バグ修正PR の diff 取得**: `pr_kind=bugfix` の PR に限定して `gh pr diff <N>` (1 PR = 1 コール) で unified diff を取得し `prs.json` の `bugfix_diff` にマージする。新しい順に `MAX_BUGFIX_DIFFS` 件まで、1 件あたり `DIFF_CHAR_CAP` (20000) 文字で truncate。上限超過は `meta.bugfix_diffs_truncated=true` + stderr WARNING で記録 (silent truncation を避ける)。subset 限定 + 件数 / サイズ上限で core 枠への影響を抑える。
+- **Step 1-5. バグ修正PR の diff 取得**: `pr_kind=bugfix` の PR に限定して `gh pr diff <N>` (1 PR = 1 コール) で unified diff を取得し `prs.json` の `bugfix_diff` にマージする。新しい順 (`merged_at` 降順に明示ソート。`gh pr list --search` の並び順は保証されないため) に `MAX_BUGFIX_DIFFS` 件まで、1 件あたり `DIFF_CHAR_CAP` (20000) 文字で truncate。上限超過は `meta.bugfix_diffs_truncated=true` + stderr WARNING で記録し、`gh pr diff` の取得失敗も空 diff と混同せず `bugfix_diff=null` のまま + stderr WARNING で可視化する (silent truncation / silent failure を避ける)。subset 限定 + 件数 / サイズ上限で core 枠への影響を抑える。
 
   ```ts
   type Collected = {
@@ -114,7 +114,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
         is_revert: boolean;           // title に revert を含む (本番に出荷されたバグの差し戻し = 強信号)
         title_keyword: boolean;       // title に hotfix / regression / バグ / 不具合 / 障害
       };
-      bugfix_diff: string | null;     // pr_kind=bugfix のみ `gh pr diff` で取得した unified diff (DIFF_CHAR_CAP=20000 文字で truncate)。other / 件数上限超過分は null
+      bugfix_diff: string | null;     // pr_kind=bugfix のみ `gh pr diff` で取得した unified diff (DIFF_CHAR_CAP=20000 文字で truncate)。other / 件数上限超過分 / 取得失敗時は null
       bugfix_diff_truncated: boolean; // diff が DIFF_CHAR_CAP を超えて切り詰められたか
       files: string[];                // PR 全体で変更されたファイル一覧 (GraphQL `pullRequest.files`)
       files_truncated: boolean;       // true なら 100 件超で取りこぼしあり (file_changed_after_comment が偽陰性に倒れる可能性)

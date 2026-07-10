@@ -339,7 +339,7 @@ jq -n \
           head_ref: $pr.headRefName,
           labels: $labels,
           url: $pr.url,
-          pr_kind: (if ($bugfix_signals | to_entries | any(.value)) then "bugfix" else "other" end),
+          pr_kind: (if ($bugfix_signals | any) then "bugfix" else "other" end),
           bugfix_signals: $bugfix_signals,
           bugfix_diff: null,
           bugfix_diff_truncated: false,
@@ -376,10 +376,10 @@ jq -n \
 # のみ `gh pr diff` で取得 (1 PR = 1 コール)。件数は MAX_BUGFIX_DIFFS、サイズは DIFF_CHAR_CAP で制限。
 DIFF_CHAR_CAP=20000
 # bugfix PR 番号を一度だけ取得し、件数算出と diff 取得ループの双方で使い回す (jq の二重実行回避)。
-# prs.json は gh pr list の既定順 (merged_at 降順 = 新しい順) を保持しているため、その並びで
-# 現れる bugfix PR を MAX_BUGFIX_DIFFS 件まで拾う。
-BUGFIX_NUMBERS=$(jq -r '.prs[] | select(.pr_kind == "bugfix") | .number' "$PRS_FILE")
-BUGFIX_PR_COUNT=$(echo -n "$BUGFIX_NUMBERS" | grep -c . || true)
+# gh pr list --search は検索 API 経由のため並び順 (既定 best-match) が merged_at 降順とは限らない。
+# 「新しい順に MAX_BUGFIX_DIFFS 件」の打ち切り保証は merged_at 降順の明示ソートで担保する。
+BUGFIX_NUMBERS=$(jq -r '[.prs[] | select(.pr_kind == "bugfix")] | sort_by(.merged_at) | reverse | .[].number' "$PRS_FILE")
+BUGFIX_PR_COUNT=$(($(wc -w <<< "$BUGFIX_NUMBERS")))
 BUGFIX_DIFFS_TRUNCATED=false
 log "bugfix PR count: ${BUGFIX_PR_COUNT} (diff fetch cap: ${MAX_BUGFIX_DIFFS})"
 
@@ -397,10 +397,16 @@ for PR_NUMBER in $BUGFIX_NUMBERS; do
   # diff は巨大化しうるため、シェル変数経由 (argv 上限 / UTF-8 境界切断のリスク) ではなく
   # ファイル経由 + jq の --rawfile で扱う。truncate も jq の codepoint 単位スライスで安全に行う。
   DIFF_TMP="${OUTPUT_DIR}/_pr_diff_${PR_NUMBER}.tmp.diff"
-  gh pr diff "$PR_NUMBER" --repo "${OWNER}/${REPO}" > "$DIFF_TMP" 2>/dev/null || : > "$DIFF_TMP"
-  jq -nc --argjson number "$PR_NUMBER" --argjson cap "$DIFF_CHAR_CAP" --rawfile diff "$DIFF_TMP" \
-    '{number: $number, diff: ($diff[0:$cap]), truncated: ($diff | length > $cap)}' >> "$DIFF_MAP_FILE"
+  if gh pr diff "$PR_NUMBER" --repo "${OWNER}/${REPO}" > "$DIFF_TMP" 2>/dev/null; then
+    jq -nc --argjson number "$PR_NUMBER" --argjson cap "$DIFF_CHAR_CAP" --rawfile diff "$DIFF_TMP" \
+      '{number: $number, diff: ($diff[0:$cap]), truncated: ($diff | length > $cap)}' >> "$DIFF_MAP_FILE"
+  else
+    # 取得失敗 (rate limit / 認証失効等) を「本当に diff が空の PR」と混同しないため、
+    # bugfix_diff は null のまま残し WARNING で可視化する。
+    log "WARNING: gh pr diff failed for bugfix PR #${PR_NUMBER} (bugfix_diff は null のまま)"
+  fi
   rm -f "$DIFF_TMP"
+  # 失敗もコスト (gh 1 コール) を消費しているため、成功失敗を問わず cap にカウントする。
   DIFF_FETCHED=$((DIFF_FETCHED + 1))
 done
 
