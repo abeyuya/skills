@@ -378,8 +378,9 @@ DIFF_CHAR_CAP=20000
 # bugfix PR 番号を一度だけ取得し、件数算出と diff 取得ループの双方で使い回す (jq の二重実行回避)。
 # gh pr list --search は検索 API 経由のため並び順 (既定 best-match) が merged_at 降順とは限らない。
 # 「新しい順に MAX_BUGFIX_DIFFS 件」の打ち切り保証は merged_at 降順の明示ソートで担保する。
-BUGFIX_NUMBERS=$(jq -r '[.prs[] | select(.pr_kind == "bugfix")] | sort_by(.merged_at) | reverse | .[].number' "$PRS_FILE")
-BUGFIX_PR_COUNT=$(($(wc -w <<< "$BUGFIX_NUMBERS")))
+# mapfile + 配列で受けることで wc / ヒアストリングのサブシェル起動を避ける。
+mapfile -t BUGFIX_PR_ARRAY < <(jq -r '[.prs[] | select(.pr_kind == "bugfix")] | sort_by(.merged_at) | reverse | .[].number' "$PRS_FILE")
+BUGFIX_PR_COUNT=${#BUGFIX_PR_ARRAY[@]}
 BUGFIX_DIFFS_TRUNCATED=false
 log "bugfix PR count: ${BUGFIX_PR_COUNT} (diff fetch cap: ${MAX_BUGFIX_DIFFS})"
 
@@ -387,7 +388,7 @@ DIFF_MAP_FILE="${OUTPUT_DIR}/_bugfix_diffs.jsonl"
 : > "$DIFF_MAP_FILE"
 
 DIFF_FETCHED=0
-for PR_NUMBER in $BUGFIX_NUMBERS; do
+for PR_NUMBER in "${BUGFIX_PR_ARRAY[@]}"; do
   if [[ "$DIFF_FETCHED" -ge "$MAX_BUGFIX_DIFFS" ]]; then
     BUGFIX_DIFFS_TRUNCATED=true
     log "WARNING: bugfix diff fetch capped at MAX_BUGFIX_DIFFS=${MAX_BUGFIX_DIFFS} (残りの bugfix PR の diff は未取得)"
