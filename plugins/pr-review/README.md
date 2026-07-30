@@ -26,7 +26,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
 4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
 
-`compose-review` は 5-2 の結末を **機械可読フィールド `external_review`** (`{"skill": "scan-diff-findings"|"code-review"|…|"none", "mode": "agent"|"partial"|"inline"|"external"|null, "finders": N, "finders_expected": N, "findings": N, "reason": "…"}`) としてハンドオフ JSON に必ず含める。人間向けの開示文 (総括 `body`) と機械向けの `external_review` の両方を必須にしているのは、開示が prose だけだと 1 文の書き漏らしで「黙って退化していた」状態に戻るため。`run-pr-review` は Step 6 の報告に、`run-local-review` は markdown ヘッダと報告にこの値を必ず載せる。
+`compose-review` は 5-2 の結末を **機械可読フィールド `external_review`** (8 キー固定: `{"skill": "scan-diff-findings"|"code-review"|…|"none", "mode": "agent"|"partial"|"inline"|"empty"|"external"|null, "verify_degraded": true|false|null, "finders": N|null, "finders_expected": N|null, "findings": N, "omitted": N, "reason": "…"|null}`。正典は [`skills/compose-review/SKILL.md`](skills/compose-review/SKILL.md) Step 6) としてハンドオフ JSON に必ず含める。人間向けの開示文 (総括 `body`) と機械向けの `external_review` の両方を必須にしているのは、開示が prose だけだと 1 文の書き漏らしで「黙って退化していた」状態に戻るため。`run-pr-review` は Step 6 の報告に、`run-local-review` は markdown ヘッダと報告にこの値を必ず載せる。
 
 - `skill == "none"` → 外部レビュー未併用。
 - `mode == "inline"` → 外部スキルが Agent ツール不可で同一コンテキストの逐次自己適用にフォールバックした (自前レビューとの独立性が限定的)。
@@ -35,7 +35,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
 - 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
 
-PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
+PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
 外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は `code-review` / ホスト標準スキルには渡さない (scope 引数専用で free-text 非対応) が、`scan-diff-findings` は `EXTRA_FOCUS` で観点を free text で受け取れる。いずれの経路でも最終的なラベル付け・正規化は `compose-review` 側の責務。
 
@@ -106,7 +106,7 @@ Payload (caller が渡す JSON 相当) の概要:
 - caller が `EXTERNAL_REVIEW` を渡した場合、サマリ行の直後に **外部レビュー行** も 1 行埋め込まれる。こちらは「レビュー体制が健全だったか (外部レビューを併用できたか / 縮退したか)」を機械判定するための行で、`run-pr-review` 経路では常に付く。
 
   ```
-  <!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 -->
+  <!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 omitted=0 -->
   ```
 
   `skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はレビュー体制の縮退シグナル (前述「外部レビュースキルの併用」参照)。パース時は `AI-REVIEW-RESULT` と同様に係留キーを前置する。

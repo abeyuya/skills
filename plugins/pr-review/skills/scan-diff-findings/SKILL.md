@@ -158,7 +158,7 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 - **path の正規化**: すべての `path` を Step 1 のリポジトリルート相対に揃える (絶対パスは root prefix を除去、`./` 始まりは除去)。`compose-review` の重複排除と `post-pr-review` の投稿が `path` の表記一貫性に依存するため必須。
 - **範囲外除外**: Step 1 の `--name-only` に含まれないファイルへの finding は除外する。行が差分に含まれない (未変更行への係留) findings も除外する。
 - **重複排除**: 同一 `path` かつ行が重なり同主旨の findings は 1 件に集約し、`severity` は高い方 (`high` > `medium` > `low`)、`confidence` は低い方 (`unverified` を残す) を採る。`category` が異なっても論点が同じなら集約し、位置が同じでも論点が別なら両方残す。
-- **並び順**: `severity` 降順 → 同 severity 内は `path` / `line` 昇順。`compose-review` が上位から扱えるようにする。
+- **並び順**: `severity` 降順 → 同 severity 内は `confidence` (`confirmed` を `unverified` より先) → `path` / `line` 昇順。`compose-review` が上位から扱えるようにする。`confidence` を tie-break に挟むのは、12 件超で一部しか verify できなかった回に `MAX_FINDINGS` の絞り込みが **verify を通った指摘を落として未検証の指摘を残す** のを防ぐため。
 - **件数上限**: `MAX_FINDINGS` が正の整数なら上位 N 件に絞り、落とした件数を `omitted_count` に入れる (`unlimited` / 省略時は `omitted_count: 0`)。
 
 ### Step 5. findings JSON を FINDINGS_PATH に書き出し、継続指示を返す
@@ -198,7 +198,7 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 - `target`: Step 1 で確定した対象表現 (ref range / ブランチ名 / uncommitted モードなら `""`)。
 - `diff_mode`: `"ref_range"` / `"branch"` / `"staged"` / `"worktree"` / `"none"` (差分なし)。
 - `fanout.mode`: `"agent"` (起動した全 finder の結果が揃った) / `"partial"` (fan-out したが一部の finder の結果しか得られなかった) / `"inline"` (現在コンテキストで逐次自己適用した) / `null` (差分なしで Step 2 を実施していない)。`finders` は **結果が得られた** finder 数、`finders_expected` は **規模判定で選んだ観点数** (`inline` フォールバック時も同じ意味で埋める)、`findings_raw` は verify 前の総件数、`verified` / `refuted` / `unverified` は Step 3 の集計。`finders < finders_expected` かつ `mode != "inline"` なら `mode` は必ず `"partial"` (`inline` 時は `mode` を `"inline"` のままにし、観点欠落は `finders` / `finders_expected` の差で表す)。
-- `findings` は空配列可 (指摘なし / 差分なし)。全 finding が **`path` / `line` / `severity` / `summary` / `introduced_by_diff` / `confidence` の 6 フィールドを必ず持つ** (`compose-review` 5-2 のラベル付与が依存する。`severity` だけでなく `introduced_by_diff` は `[pre_existing]` 判定に、`confidence` は 1 段下げ判定に使われるため、欠落すると consumer 側でラベルが決まらず `label_counts` が実行ごとに揺れる)。finder が `introduced_by_diff` を返さなかった場合は Step 4 で **`true` を既定** として補完し、verify を通していない finding には必ず `confidence: "unverified"` を付ける。
+- `findings` は空配列可 (指摘なし / 差分なし)。全 finding が **`path` / `line` / `severity` / `summary` / `failure_scenario` / `introduced_by_diff` / `confidence` の 7 フィールドを必ず持つ** (`compose-review` 5-2 のラベル付与が依存する。`severity` だけでなく `introduced_by_diff` は `[pre_existing]` 判定に、`confidence` は 1 段下げ判定に、**`failure_scenario` は `confidence: "unverified"` / `verify_degraded` の回に consumer 側が指摘を自分で追認するための材料**に使われる。欠落すると consumer 側でラベルが決まらず `label_counts` が実行ごとに揺れる。特に `failure_scenario` が無いと追認材料が無く全件「追認できない」に倒れて 1 段下げが機械発動し、`high` の指摘が `[should]` に落ちて `label_counts.must` が 0 になる)。finder が `introduced_by_diff` を返さなかった場合は Step 4 で **`true` を既定** として補完し、verify を通していない finding には必ず `confidence: "unverified"` を付ける。
 - `omitted_count`: `MAX_FINDINGS` で落とした件数 (既定 `0`)。
 
 ### 失敗時

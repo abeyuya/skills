@@ -49,6 +49,7 @@ type ReviewPayload = {
     finders?: number | null;
     finders_expected?: number | null;
     findings?: number;
+    omitted?: number;          // 外部スキル側で件数上限により落とされた指摘数。
   };
 };
 
@@ -134,11 +135,13 @@ caller (人 / 外部システム) は Payload を渡すだけで、投稿の実�
 caller から `external_review` (prompt 経由では `EXTERNAL_REVIEW`。1 行の JSON) が渡された場合のみ、`AI-REVIEW-RESULT` の **直後の行** (空行を挟まない) に 1 行出力する。渡されなければ行ごと省略する (本 skill が値を捏造しない)。
 
 ```
-<!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 -->
+<!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 omitted=0 -->
 ```
 
+- **異常系 (`LABEL_COUNTS` と同じ扱い)**: `EXTERNAL_REVIEW` が渡されたが **JSON として parse できない / 必須キー (`skill` / `mode`) を欠く / `mode` が enum 外** の場合は、**行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない (CI 側のパースが壊れた値を読むため)。`reason` は日本語自由文で空白・記号を含みうるため `LABEL_COUNTS` より壊れやすい前提で扱う。なお `reason` は本行には出力しない (人間向けの理由は総括本文の開示文が担う)。
+
 - 目的: レビュー生成側 (`compose-review`) が **外部レビュースキルを併用できたか / 縮退したか** を、Review body の日本語本文を読まずに CI から判定できるようにする。`AI-REVIEW-RESULT` が「指摘の件数」を機械可読にするのと同じ役割を「レビュー体制の健全性」について果たす。
-- キーと値: `skill` (未併用は `none`) / `mode` (`agent` / `partial` / `inline` / `empty` / `external` / `null`) / `verify_degraded` (`true` / `false` / `null`) / `finders` (`<finders>/<finders_expected>`。どちらかが `null` なら `finders=n/a`) / `findings` (整数)。値に半角スペースを含めない (含む場合は `_` に置換する)。`external_review` に無いキーは出力しない。
+- キーと値: `skill` (未併用は `none`) / `mode` (`agent` / `partial` / `inline` / `empty` / `external` / `null`) / `verify_degraded` (`true` / `false` / `null`) / `finders` (`<finders>/<finders_expected>`。どちらかが `null` なら `finders=n/a`) / `findings` (整数) / `omitted` (整数。外部スキル側で件数上限により落とされた指摘数。`> 0` はこの経路だけで起きる縮退なので必ず出力する)。値に半角スペースを含めない (含む場合は `_` に置換する)。`external_review` に無いキーは出力しない。
 - CI 側は係留キー `AI-REVIEW-EXTERNAL` を前置してパースする (例: `AI-REVIEW-EXTERNAL:.*?skill=(\S+).*?mode=(\S+)`)。`skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はいずれも「レビュー体制が縮退している」シグナルで、必要なら再レビューを促す判断材料にできる。
 - **1 つの Review body にこの行も 1 行だけ**。`AI-REVIEW-RESULT` と同様、caller 由来の総括本文には入れない。
 
@@ -199,7 +202,7 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 > **[AI 自動投稿]** このレビューは AI エージェントによって自動生成されました。レビュー内容の判断は AI が行っています。
 
 <!-- AI-REVIEW-RESULT: must=0 should=1 nit=2 question=0 pre_existing=0 other=0 -->
-<!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 -->
+<!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 omitted=0 -->
 
 ---
 
