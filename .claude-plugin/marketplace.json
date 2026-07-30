@@ -12,7 +12,7 @@
       "name": "pr-review",
       "source": "./plugins/pr-review",
       "description": "PR レビューの投稿 / 過去スレッドの resolve / ローカルブランチ向け AI レビューの skill と、スタイル参考ガイドコマンド (/pr-review-style-reference) を提供する",
-      "version": "0.2.0"
+      "version": "0.3.0"
     }
   ]
 }

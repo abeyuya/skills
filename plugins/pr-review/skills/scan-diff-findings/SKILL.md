@@ -1,0 +1,198 @@
+---
+name: scan-diff-findings
+description: 差分 (ref range / ブランチ / staged / worktree) を対象に「観点別 finder の fan-out → 各 finding の adversarial verify → マージ」を行い、`path` / `line` / 要約 / 重大度に正規化した findings JSON を `FINDINGS_PATH` にファイル書き出しする read-only レビュースキル。`compose-review` Step 5-2 が併用する外部レビュースキルの 1 つで、Claude Code 組み込みの `code-review` が `disable-model-invocation` によりモデルから Skill ツール経由で呼べない環境でも成立する正規経路として用意している。Agent ツールが使える環境では観点別 sub-agent を fan-out し、使えない環境では同じ観点リストを現在コンテキストで逐次自己適用してフォールバックする。ファイル編集 / GitHub 投稿 / working tree を変える git 操作は行わない (`FINDINGS_PATH` への Write のみ)。`disable-model-invocation` は付けない (モデルから Skill ツール経由で呼べることが本 skill の存在意義)。
+---
+
+# scan-diff-findings skill
+
+差分 → findings (指摘候補) を返す read-only レビュースキル。**観点別 finder の fan-out → 各 finding の adversarial verify → マージ** の 3 段構成で、`compose-review` Step 5-2 の「正規化」がそのまま流せる形 (`path` / `line` / 要約 / 重大度) の JSON を **`FINDINGS_PATH` にファイル書き出し** し、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示を返す** (Step 5 参照)。
+
+## なぜ本 skill があるか
+
+`compose-review` Step 5-2 は「自前レビュー (5-1) に加えてもう 1 系統の指摘を得る」ために外部レビュースキルを 1 つ併用する設計だが、その第 1 候補である Claude Code 組み込みの `code-review` は **skill 定義の frontmatter に `disable-model-invocation: true` を持つため、モデルから Skill ツール経由で呼び出せない** (CLI の Skill ツール検証段階で `cannot be used with Skill tool due to disable-model-invocation` として拒否され、モデルに提示される available-skills 一覧からも除外される)。これは CLI 側の設定 / 権限設定でオプトインできる類の制約ではないため、`code-review` に依存した解決順だけでは 5-2 が常に不成立になり、外部レビュー併用が黙って無効化される。
+
+本 skill は **リポジトリ / ユーザー管理下にあり、`disable-model-invocation` を持たない** ため、モデルから Skill ツール経由で確実に呼べる。`code-review` が呼べない環境でも 5-2 を成立させるための正規の代替経路。
+
+- 本 skill に `disable-model-invocation` を付けてはならない (付けたら同じ問題を再生産する)。
+- `code-review` が (手動 `/code-review` 実行等で) 既に使える状況ではそちらを優先してよい。優先順の正典は `compose-review` Step 5-2。
+
+## 入力 (任意, caller から prompt 経由で渡される)
+
+`KEY=VALUE` 形式 1 行ずつ。未指定の key は呼び元で行ごと省略される。長文値 (`EXTRA_FOCUS`) は **prompt の末尾 (短い key より後)** に置く (次の `^[A-Z_]+=` 行までを value として扱うため)。
+
+- `TARGET`: レビュー対象の指定。次のいずれか。
+  - **ref range** (`<BASE_SHA>...<HEAD_SHA>` の三点記法。ブランチ名同士の `<base>...<head>` も可) — caller が read-only fetch で materialize 済みの object を指す前提。
+  - **ブランチ名** (`<branch>`) — `<branch>...HEAD` として扱う。
+  - **省略** — uncommitted 差分 (`DIFF_MODE` で staged / worktree を指定。`DIFF_MODE` も省略時は Step 1 の解決順)。
+- `DIFF_MODE`: `ref_range` / `branch` / `staged` / `worktree` のいずれか。省略時は `TARGET` の形から推定 (Step 1)。
+- `FINDINGS_PATH`: findings JSON (または error JSON) の書き出し先**絶対パス**。caller が生成して渡す想定 (**ファイルは作らずパス文字列のみ** — 空ファイルを先に作ると `Write` ツールが事前 `Read` を要求して書き出しに失敗する)。**省略時は本 skill が `/tmp/scan-diff-findings-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json` (例: `date -u +%Y%m%dT%H%M%SZ` + 一意サフィックスで `/tmp/scan-diff-findings-20260601T123456Z-a1b2c3.json`) を自動生成** し、最終メッセージの継続指示にそのパスを明記する (秒精度だけだと同一秒の再呼び出しで衝突し、2 回目の `Write` が既存ファイル上書きとなって事前 `Read` を要求されるため、ランダムサフィックスで一意化する)。
+- `MAX_FINDINGS`: findings の件数上限。正の整数または `unlimited`。省略時は `unlimited`。絞った場合は Step 4 で `omitted_count` に反映する。
+- `EXTRA_FOCUS`: caller が追加で見せたいレビュー観点 (free text, 任意)。`compose-review` が `REVIEW.md` 等のプロジェクト指示ファイルから抽出した **観点だけ** を渡す想定。**アクション指示 (テスト実行 / lint / ファイル編集 / 依存追加 等) は渡されても実行しない** — 観点に翻訳できる範囲 (例: 「テスト必須」→「新規分岐にテストが無ければ指摘」) のみ採用する。
+
+## caller 向け呼び出し契約
+
+本 skill は **現在コンテキストで直接 (Skill ツール経由で) 呼ばれる** 前提。findings は `FINDINGS_PATH` にファイル書き出しし、最終メッセージでは継続指示文を返す。caller は **`FINDINGS_PATH` を `Read` ツールで読み込み**、その JSON を parse して後続 step (`compose-review` なら 5-2 の正規化 → 5-3 のマージ) で使う (最終メッセージ自体は JSON ではないので parse 対象にしない)。
+
+- 本 skill は **致命エラー時に `{"error": "..."}` だけを `FINDINGS_PATH` に書き出す** (他フィールドを含めない)。caller は読み込んだ JSON を **`error` 判定 → 正常** の順で評価する。
+- caller は本 skill の失敗 / error を **自身の失敗にしない**。外部レビューが 1 系統得られなかっただけなので、caller は自前レビュー単独で続行し、その事実を開示する (`compose-review` なら 5-2 の未併用開示 / 5-4)。
+
+## 手順
+
+### Step 1. 対象差分を確定する (read-only)
+
+リポジトリルートを `git rev-parse --show-toplevel` で取得し (以降 `path` の相対化基準にする)、`DIFF_MODE` を確定する。
+
+- `DIFF_MODE` が渡されていればそれに従う。未指定なら `TARGET` から推定:
+  1. `TARGET` に `...` を含む → `ref_range`
+  2. `TARGET` が非空 (ブランチ名 / ref 名) → `branch`
+  3. `TARGET` が空 → `git diff --cached` が非空なら `staged`、それも空で `git diff` が非空なら `worktree`
+- 各モードの差分取得コマンド:
+  - `ref_range`: `git diff <TARGET>`。事前に range 両端について `git cat-file -e <SHA>^{commit}` で **commit として存在すること** を確認する (object が無ければ error 停止。**本 skill は fetch しない** — materialize は caller の責務)。
+  - `branch`: `git diff <TARGET>...HEAD` (三点記法で base の進行を除外)
+  - `staged`: `git diff --cached`
+  - `worktree`: `git diff`
+- 変更ファイル一覧を同じ range / モードの `--name-only` で取得し保持する (Step 4 の範囲外除外に使う)。
+- 差分が空なら Step 2〜4 を skip し、Step 5 で `findings: []` / `diff_mode: "none"` として書き出す (error にはしない)。
+
+差分が大きい場合は `--stat` でファイル一覧を取り、finder には「自分で必要なファイルの差分を読む」よう指示する (Step 2)。差分本文を prompt に丸ごと詰めない。
+
+### Step 2. 観点別 finder を fan-out する
+
+#### 観点リスト
+
+差分規模に応じて下記から選ぶ (小: 1・2・4 の 3 観点 / 中: + 5・6 / 大: 全 6)。「小」の目安は変更 3 ファイル以下かつ 100 行以下、「大」は 15 ファイル超または 800 行超。
+
+1. **correctness / regression** — ロジック誤り、条件の反転、off-by-one、早期 return の漏れ、既存呼び出し側の破壊。
+2. **境界値・異常系** — null / undefined / 空配列 / 0 件 / 最大値、例外とエラーハンドリング、部分失敗時の後始末。
+3. **状態・並行性・リソース** — race、実行順依存、lifecycle 誤り、リーク (handle / listener / timer)、キャッシュ不整合、冪等性。
+4. **セキュリティ・入力検証** — 認証認可の抜け、外部入力の信頼、injection、秘密情報のログ / レスポンス露出、権限スコープ。
+5. **契約・互換性** — API / スキーマ / 型 / 永続データの後方互換、呼び出し側の追随漏れ、設定のデフォルト変更。
+6. **テスト・観測性** — 新規分岐のテスト欠落、失敗しても気づけないログ / メトリクスの欠落。
+
+`EXTRA_FOCUS` が渡されていれば、その内容を **全 finder の prompt に追記** する (観点として。アクション指示は実行しない)。
+
+#### fan-out (Agent ツールが使える場合)
+
+観点 1 つにつき sub-agent 1 つを **同一応答内で並列に** 起動する (1 応答で複数 Agent 呼び出しを同時に出す)。
+
+- **`model` を必ず明示指定する** (未指定で起動しない)。既定は finder / verifier ともホストで利用可能な中位モデル (例: `sonnet`)、差分が大きい / 難度が高い観点のみ上位モデル (例: `opus`) に上げる。
+- **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とするため background 実行にしない。
+- **background 化された agent の完了をターンを yield して待たない**: ホスト側の都合で一部が background に回った場合は、`Monitor` / 完了通知待ち / sleep ループで応答を終了せず、**同期的に得られた finder 結果だけで Step 3 以降へ進む** (取りこぼしは caller 側の自前レビューが担保する。ここで応答を打ち切ると caller が「何も出力しないまま停止」する既知の停止バグになる)。
+- 各 finder に渡す prompt に必ず含める:
+  - リポジトリルートの絶対パスと、**差分を取得する git コマンド** (Step 1 で確定したもの。差分本文は貼らず agent 自身に読ませる)
+  - 担当観点 (上記 1 つ) と `EXTRA_FOCUS`
+  - **read-only 制約**: ファイル編集 (`Write` / `Edit`) をしない、GitHub 投稿系ツール (`gh pr review` / `gh pr comment` / `gh api .../reviews` / `mcp__github__*` の投稿系) を使わない、working tree / ローカル ref を変える git 操作 (`checkout` / `reset` / `commit` / `push` / `pull` / `fetch`) をしない。使うのは `Read` / `Grep` / `Glob` と read-only な git (`diff` / `show` / `log` / `blame` / `rev-parse` / `cat-file`) のみ。
+  - **ノイズ抑制**: フォーマッタ / Linter が直すレベル、単なる好み、差分と無関係な一般論は出さない。同一事象が複数箇所なら代表 1 箇所に集約する。
+  - **出力形式**: 最終メッセージに下記 JSON 配列 **だけ** を返す (前置き文 / fenced ブロックなし)。findings が無ければ `[]`。
+
+```json
+[
+  {
+    "path": "src/example.ts",
+    "line": 42,
+    "start_line": 40,
+    "severity": "high",
+    "category": "correctness",
+    "summary": "指摘の要約 1 文 (日本語)",
+    "failure_scenario": "どの入力 / 状態で何が壊れるか (日本語 1〜2 文)",
+    "introduced_by_diff": true
+  }
+]
+```
+
+- `path`: **リポジトリルートからの相対パス** (絶対パス / `./` 始まりで返さない)。
+- `line`: 指摘を係留する行 (差分後 = RIGHT 側の行番号)。範囲指摘のみ `start_line` を併記 (`start_line` < `line`)。単一行なら `start_line` は省略または `null`。
+- `severity`: `high` (不具合・脆弱性に直結) / `medium` (設計・保守性で強く推奨) / `low` (軽微・好み寄り) の 3 値。
+- `category`: 観点名 (`correctness` / `boundary` / `concurrency` / `security` / `contract` / `test` / その他短い英小文字スラッグ)。
+- `introduced_by_diff`: 本差分で持ち込まれた問題か (`false` なら既存バグ)。
+
+#### フォールバック (Agent ツールが使えない場合)
+
+Agent ツールが当コンテキストで使えない、または fan-out がすべて失敗した場合は **skill 全体を失敗させず**、同じ観点リストを **現在コンテキストで 1 観点ずつ順に自己適用** して findings を作る (出力形式は上と同一)。Step 3 の verify も同様に自己適用に切り替える。Step 5 の `fanout.mode` を `"inline"` として記録する。
+
+本 skill が Agent ツール非依存で成立することは意図した設計であり、「Agent が使えないから外部レビューを諦める」判断はしない (それは `code-review` が抱えていた制約をそのまま持ち込むことになる)。
+
+### Step 3. 各 finding を adversarial verify する
+
+finder が出した findings を **そのまま採用しない**。1 finding につき verifier 1 つを立て、**指摘を反証させる**。
+
+- Agent ツールが使えるなら finding ごとに sub-agent を並列起動する (Step 2 と同じく `model` 明示 / `run_in_background: false` / background 待ちでターンを yield しない / read-only 制約を prompt に明記)。使えなければ現在コンテキストで 1 件ずつ自己適用する。
+- verifier の prompt に含める: 対象 finding の全フィールド、差分取得コマンド、そして次の指示。
+  - **この指摘を反証せよ**。差分と周辺コード (呼び出し側 / 既存のガード / 型 / テスト) を読み、指摘が成立しないなら `refuted: true`。
+  - **確信が持てない場合は `refuted: true` に倒す** (誤指摘のコストを取りこぼしのコストより重く扱う)。
+  - 成立するが係留行 / 重大度が誤っている場合は `corrected_line` / `corrected_severity` を返す。
+- verifier の出力形式 (最終メッセージに JSON だけ):
+
+```json
+{"refuted": false, "reason": "反証できなかった理由 / 成立する条件 (日本語 1〜2 文)", "corrected_line": null, "corrected_severity": null}
+```
+
+- `refuted: true` の finding は **破棄** し、件数だけ Step 5 の `fanout.refuted` に記録する (破棄した内容は出力に含めない)。
+- `corrected_line` / `corrected_severity` が返っていれば finding 側を上書きする。
+- **findings が 12 件を超える場合**は `severity` 降順で 12 件までを verify し、残りは破棄せず `confidence: "unverified"` を付けて残す (取りこぼし回避)。verify 済みは `confidence: "confirmed"`。
+- verifier の起動自体が失敗した finding も破棄せず `confidence: "unverified"` を付けて残す。
+
+### Step 4. マージと正規化
+
+- **path の正規化**: すべての `path` を Step 1 のリポジトリルート相対に揃える (絶対パスは root prefix を除去、`./` 始まりは除去)。`compose-review` の重複排除と `post-pr-review` の投稿が `path` の表記一貫性に依存するため必須。
+- **範囲外除外**: Step 1 の `--name-only` に含まれないファイルへの finding は除外する。行が差分に含まれない (未変更行への係留) findings も除外する。
+- **重複排除**: 同一 `path` かつ行が重なり同主旨の findings は 1 件に集約し、`severity` は高い方 (`high` > `medium` > `low`)、`confidence` は低い方 (`unverified` を残す) を採る。`category` が異なっても論点が同じなら集約し、位置が同じでも論点が別なら両方残す。
+- **並び順**: `severity` 降順 → 同 severity 内は `path` / `line` 昇順。`compose-review` が上位から扱えるようにする。
+- **件数上限**: `MAX_FINDINGS` が正の整数なら上位 N 件に絞り、落とした件数を `omitted_count` に入れる (`unlimited` / 省略時は `omitted_count: 0`)。
+
+### Step 5. findings JSON を FINDINGS_PATH に書き出し、継続指示を返す
+
+1. **書き出し先パスを確定**: `FINDINGS_PATH` が渡されていればそれを使う。未指定なら `/tmp/scan-diff-findings-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json` を生成する (「入力」節参照)。
+2. **`Write` ツールで書き出す**: 事前に `Bash` で `mkdir -p "$(dirname "<確定したパス>")"` を実行して親ディレクトリを作る。ファイル本体は下記スキーマの **生 JSON 1 つだけ** (fenced ブロックも前置き文も付けない)。
+3. **最終メッセージとして継続指示文を返す** (JSON は含めない)。例:
+
+   > scan-diff-findings 完了: findings JSON を `<確定したパス>` に書き出した (findings <N> 件 / refuted <M> 件)。**応答を終了するな。** caller は今すぐ `<同パス>` を `Read` ツールで読み込み、`error` → 正常 の順で評価して後続処理 (`compose-review` なら 5-2 の正規化 → 5-3 のマージ) を **同一応答内で続行せよ**。
+
+   **自己完結 JSON を最終メッセージに出さないこと** — それは「タスク完了」シグナルに見え、caller が後続 step を実行する前にターンを終了する停止バグを誘発する。
+
+スキーマ:
+
+```json
+{
+  "target": "9f8e7d6c...a1b2c3d4",
+  "diff_mode": "ref_range",
+  "fanout": {"mode": "agent", "finders": 4, "findings_raw": 8, "refuted": 2, "unverified": 0},
+  "findings": [
+    {
+      "path": "src/example.ts",
+      "line": 42,
+      "start_line": null,
+      "severity": "high",
+      "category": "correctness",
+      "summary": "早期 return の条件が反転しており空配列で例外になる。",
+      "failure_scenario": "items が空のとき items[0] を参照して TypeError になる。",
+      "introduced_by_diff": true,
+      "confidence": "confirmed"
+    }
+  ],
+  "omitted_count": 0
+}
+```
+
+- `target`: Step 1 で確定した対象表現 (ref range / ブランチ名 / uncommitted モードなら `""`)。
+- `diff_mode`: `"ref_range"` / `"branch"` / `"staged"` / `"worktree"` / `"none"` (差分なし)。
+- `fanout.mode`: `"agent"` (fan-out できた) / `"inline"` (現在コンテキストで自己適用した)。`finders` は実際に走った finder 数、`findings_raw` は verify 前の総件数。
+- `findings` は空配列可 (指摘なし / 差分なし)。全 finding が `path` / `line` / `severity` / `summary` を必ず持つ (`compose-review` 5-2 の正規化が依存する 4 フィールド)。
+- `omitted_count`: `MAX_FINDINGS` で落とした件数 (既定 `0`)。
+
+### 失敗時
+
+致命エラー (`ref_range` の object がローカルに無い、リポジトリルートが取れない、`DIFF_MODE` の解決に失敗した等) は `{"error":"<人間向けメッセージ>"}` を Step 5 と同じ手順で `FINDINGS_PATH` に書き出し、最終メッセージでは「`<パス>` を `Read` して error 分岐に従え」という継続指示を返す。**error 時は他フィールド (`target` / `diff_mode` / `fanout` / `findings` / `omitted_count`) を含めない**。
+
+差分が空 / 指摘 0 件は error ではない (`findings: []` で正常終了する)。
+
+## 守ること
+
+- **read-only**: ファイル編集 (`Write` / `Edit`) は **`FINDINGS_PATH` への findings JSON / error JSON 書き出しのみ許可**。レビュー対象コードの修正・markdown 出力等は一切行わない。
+- **GitHub 投稿をしない**: 経路を問わず投稿系ツールを使わない (`gh pr review` / `gh pr comment` / `gh api .../reviews` も、`mcp__github__pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `add_issue_comment` 等の MCP 投稿ツールも)。投稿は `post-pr-review` の責務。
+- **working tree / ローカル ref を変える git 操作をしない**: `checkout` / `reset` / `commit` / `push` / `pull` / `merge` / `rebase` は使わない。read-only の `diff` / `show` / `log` / `blame` / `rev-parse` / `cat-file` / `remote get-url` / `ls-files` のみ。**`fetch` も行わない** — ref range の object の materialize は caller (`compose-review` Step 1) の責務であり、本 skill は無ければ error にする。
+- **sub-agent にも同じ制約を課す**: finder / verifier の prompt に read-only 制約 (編集禁止 / GitHub 投稿禁止 / working tree 改変禁止) を明記する。`model` は必ず明示指定し、`run_in_background: false` で起動する。
+- **background agent 待ちでターンを yield しない**: 一部の sub-agent が harness により background 化しても、その完了を待って応答を終了せず、同期的に得られた結果で Step 3 以降を完了する (caller の停止バグを誘発しないため)。
+- **他 skill を呼ばない**: `compose-review` / `post-pr-review` / `resolve-pr-threads` / `run-pr-review` / `run-local-review` を呼ばない (再帰防止。本 skill は findings を返すところまでが責務)。
+- **最終メッセージに自己完結 JSON を出さない**: 常に「`FINDINGS_PATH` を `Read` して続行せよ」という継続指示文にする (停止バグ防止)。
+- **`disable-model-invocation` を frontmatter に追加しない**: モデルから Skill ツール経由で呼べることが本 skill の存在意義であり、付けた時点で `code-review` と同じ失敗モードを再生産する。

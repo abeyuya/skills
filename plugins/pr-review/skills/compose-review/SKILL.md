@@ -1,6 +1,6 @@
 ---
 name: compose-review
-description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (省略時は既定 temp パス) にファイル書き出しし、最終メッセージでは「そのファイルを Read して続行せよ」という継続指示を返す** (停止防止のため自己完結 JSON は最終メッセージに出さない)。レビュー指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。出力 JSON には `post-pr-review` が機械可読サマリ行 (`AI-REVIEW-RESULT`) を組み立てるための `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (省略時は既定 temp パス) にファイル書き出しし、最終メッセージでは「そのファイルを Read して続行せよ」という継続指示を返す** (停止防止のため自己完結 JSON は最終メッセージに出さない)。レビュー指摘は自前レビューを必ず行い、加えて外部レビュースキル (優先順: `code-review` (Claude Code 組み込み。`disable-model-invocation` で Skill ツールから呼べない環境では不成立) → `scan-diff-findings` (本 plugin 同梱のモデル呼び出し可能なレビュースキル) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。1 つも使えなかったときだけ自前単独で、その場合は理由を総括 `body` に 1 文開示する)。出力 JSON には `post-pr-review` が機械可読サマリ行 (`AI-REVIEW-RESULT`) を組み立てるための `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
 ---
 
 # compose-review skill
@@ -121,35 +121,73 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 #### 5-2. 外部レビュースキルの併用 (通常は常に実施)
 
-ホストの外部レビュースキルを **優先順で 1 つだけ** 解決し、使えるなら 5-1 に加えてもう 1 系統の指摘を得る (5-1 → 外部スキル呼び出し → 5-3 マージの逐次実行。本 skill 自身は sub-agent を spawn しない)。利用可否は実行中の model が available-skills / コマンド一覧から判断する (本 skill はホスト非依存に書く)。
+外部レビュースキルを **優先順で 1 つだけ** 解決し、5-1 に加えてもう 1 系統の指摘を得る (5-1 → 外部スキル呼び出し → 5-3 マージの逐次実行。本 skill 自身は sub-agent を spawn しない)。利用可否は実行中の model が available-skills / コマンド一覧から判断する (本 skill はホスト非依存に書く)。
 
-本 skill は `run-pr-review` / `run-local-review` から **現在コンテキストで直接呼ばれる前提** に統一されているため、5-2 は **通常は常に実施する** (見出しの条件は「現在コンテキスト = Agent ツールが使える」異常時ガードであり、dead condition ではない)。自身の実行コンテキストを判断しかねた場合に 5-2 全体を勝手にスキップして 5-1 単独へ退化しない (それは本 skill の主目的=外部レビュー併用を黙って無効化する)。外部レビューを省くのは、下の解決順で **外部スキルが 1 つも利用できない / Agent ツールが使えない** と確認できたときだけ。
+本 skill は `run-pr-review` / `run-local-review` から **現在コンテキストで直接呼ばれる前提** に統一されているため、5-2 は **通常は常に実施する**。自身の実行コンテキストを判断しかねた場合に 5-2 全体を勝手にスキップして 5-1 単独へ退化しない (それは本 skill の主目的=外部レビュー併用を黙って無効化する)。外部レビューを省くのは、下の解決順で **どの候補も利用できない** と確認できたときだけで、その場合は 5-4 の **未併用開示が必須** になる。
 
-- **退化条件の厳格化 (重要)**: 自前単独 (5-1 のみ) へ退化してよいのは、**(a) 差分取得が git 経路 (Step 1 の read-only fetch → `git diff <BASE_SHA>...<HEAD_SHA>`) でも失敗し**、**かつ (b) code-review が ref range target でローカル (`branch`) review に入れないと確認できたとき** だけ。**`gh` 1 経路の失敗だけでは退化しない**: PR モードの差分取得は git を主経路にしており (Step 4)、`gh` が 403 等で落ちていても Step 1 で fetch 済みの SHA から差分を組めるし、その ref range を code-review の target に渡せば `branch` モードでローカル review できる (下の「PR モード」「リカバリ」参照)。`gh` の失敗を「GitHub アクセス全不能」と一般化して code-review をスキップするのは既知の誤判断であり、してはならない。
+- **退化条件の厳格化 (重要)**: 自前単独 (5-1 のみ) へ退化してよいのは、**解決順 1〜3 のすべてが利用不能と確認できたとき** だけ。特に以下は退化理由にならない:
+  - **`code-review` が `disable-model-invocation` で呼べないこと** — これは 1 が不成立になるだけで、2 (`scan-diff-findings`) は影響を受けない。詳細は下記「`code-review` の呼び出し可能性判定」。
+  - **`gh` 1 経路の失敗** — PR モードの差分取得は git を主経路にしており (Step 4)、`gh` が 403 等で落ちていても Step 1 で fetch 済みの SHA から差分を組める。その ref range はそのまま 2 の `TARGET` に渡せるし、1 が使える環境なら code-review の target にも渡せる (`branch` モードでローカル review。下の「PR モード」「リカバリ」参照)。`gh` の失敗を「GitHub アクセス全不能」と一般化して外部レビューをスキップするのは既知の誤判断であり、してはならない。
+  - **Agent / Task ツールが使えないこと** — 1 は Agent ツールに依存するので不成立になりうるが、2 (`scan-diff-findings`) は Agent が無い場合に現在コンテキストでの逐次自己適用へフォールバックする契約なので影響を受けない。
+  - **ローカル作業ツリーが PR ブランチと異なる / checkout していないこと** — 1 も 2 も ref range を target に取れるので作業ツリーの状態に依存しない。
 
 - **解決順**:
-  1. `code-review` (Claude Code 組み込み) が当セッションで利用可能、**かつ** Agent/Task ツールが当コンテキストで利用可能なら → これを使う。`code-review` は内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが利用できない環境では使えない。
-  2. ↑が無い/不可なら、ホスト coding agent の標準レビュースキル (例: **Codex の `/review`**) が当セッションで利用可能ならそれを使う。
-  3. いずれも無ければ外部レビューは行わず、5-1 の自前レビュー単独で 5-3 へ進む。
-- **実行 (read-only)**: 解決したスキルを **read-only モードで** 呼ぶ。**投稿 / 自動修正フラグは付けない** (`code-review` なら `--comment` / `--fix` を付けない。他ホストでも投稿・working tree 改変モードは使わない。投稿は `post-pr-review` の責務、working tree 改変は本 skill の禁止事項)。特に PR モードで `--comment` を付けると、`code-review` 由来の生 inline コメント (AI 自動投稿マーカーなし) が `post-pr-review` の 1 Review と **二重投稿** されるため厳禁。
-- **scope (target) 引数** (レビュー対象の diff 範囲を伝える): `code-review` の target 引数は **PR番号 / PR URL / branch名 / ref range (`<base>...HEAD` の三点記法) / file path** を受け取る (argumentHint は `[level] [--fix] [--comment] [<target>]`)。**target の種別で内部の diff 取得経路が変わる点が最重要**:
+  1. `code-review` (Claude Code 組み込み) が当セッションで **Skill ツールから実際に呼び出せて**、**かつ** Agent/Task ツールが当コンテキストで利用可能なら → これを使う (`code-review` は内部で Agent ツールによる finder/verifier の fan-out を行うため Agent ツールが必要)。呼び出し可能性の判定は下記「`code-review` の呼び出し可能性判定」に従う。
+  2. ↑が不可なら → **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキルを使う**。本 plugin は同梱の **`scan-diff-findings`** をこの枠の既定として提供している (観点別 finder の fan-out → adversarial verify → マージ、read-only、`disable-model-invocation` なし)。caller のリポジトリ / ユーザー設定に同等のレビュースキル (frontmatter に `disable-model-invocation` を持たず、read-only で findings を返すもの) があればそれを使ってもよい。呼び出し手順は下記「`scan-diff-findings` の呼び出し」。
+  3. ↑も無ければ、ホスト coding agent の標準レビュースキル (例: **Codex の `/review`**) が当セッションで利用可能ならそれを使う (環境依存で存在しないことが多く、当てにはしない)。
+  4. いずれも無ければ外部レビューは行わず、5-1 の自前レビュー単独で 5-3 へ進む。**この場合 5-4 の「外部レビュー未併用の開示」を `body` に必ず 1 文入れる** (黙って退化しない)。
+
+- **`code-review` の呼び出し可能性判定**: `code-review` は skill 定義の frontmatter に `disable-model-invocation: true` を持つため、**多くの Claude Code 環境ではモデルから Skill ツール経由で呼び出せない**。CLI の Skill ツール検証段階で `Skill code-review cannot be used with Skill tool due to disable-model-invocation` として拒否され、モデルに提示される available-skills 一覧からも除外される。この制約は settings.json のオプトインや `permissions.allow` では解除できない (検証が権限判定より前段のため)。判定と分岐:
+  - available-skills 一覧に `code-review` が **現れていなければ 1 は不成立** → 何も呼ばずに 2 へ進む。
+  - 呼び出して上記メッセージで拒否された場合も **1 は不成立** → **リトライせず** 2 へ進む (CLI レベルの構造的な拒否であり、引数や呼び方を変えても通らない)。
+  - どちらのケースでも **5-1 単独へ退化してはならない**。「`code-review` が使えない」は「外部レビューが使えない」ではない。
+  - **例外 (手動併用)**: ユーザーが同一セッションで先に `/code-review` を手動実行していれば、その findings は既に現在コンテキストに残っている。その場合は改めて呼ばず、**コンテキスト上の findings を 1 の結果として採用** して下記「正規化」に流す (この運用は plugin README の「外部レビューの手動併用」に記載)。
+- **`scan-diff-findings` の呼び出し**: Skill ツール (`skill: "scan-diff-findings"`) を **現在コンテキストで直接** 呼ぶ (sub-agent は立てない。fan-out は呼び先の責務)。引数は `KEY=VALUE` 1 行ずつ、長文 value (`EXTRA_FOCUS`) は末尾に置く:
+
+  ```
+  TARGET=<下表参照>
+  DIFF_MODE=<下表参照>
+  MAX_FINDINGS=<MAX_INLINE_COMMENTS が正の整数ならその値、それ以外は行ごと省略>
+  FINDINGS_PATH=<本 step で生成する未作成の絶対パス。例 /tmp/scan-diff-findings-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json。ファイルは作らずパス文字列のみ>
+  EXTRA_FOCUS=<Step 3 のプロジェクト指示ファイルから抽出した「観点」だけを数行で。アクション指示は渡さない。無ければ行ごと省略>
+  ```
+
+  | 本 skill のモード | `TARGET` | `DIFF_MODE` |
+  |---|---|---|
+  | PR モード | `<BASE_SHA>...<HEAD_SHA>` (Step 1 で退避した SHA) | `ref_range` |
+  | ローカル `commit` | `<base>` (Step 1 で解決したベースブランチ名) | `branch` |
+  | ローカル `staged` | (省略) | `staged` |
+  | ローカル `worktree` | (省略) | `worktree` |
+
+  戻り後は **`FINDINGS_PATH` を `Read` ツールで読み込み**、JSON を `error` → 正常 の順で評価する (最終メッセージは継続指示文なので parse 対象にしない)。**ここで応答を終了しない** — 読み込んだ findings を正規化して 5-3 → 5-4 → Step 6 まで同一応答内で続行する。`error` だった / `Read` が失敗した / parse できない / `findings` を欠く場合は、その回の外部レビューは得られなかったものとして扱い、**5-4 の未併用開示を入れた上で** 5-1 単独で 5-3 へ進む (本 skill 全体をエラーにはしない)。
+
+  `scan-diff-findings` の findings は既に `path` (リポジトリルート相対) / `line` / `summary` / `severity` に正規化済みなので、下記「正規化」のうち **重要度ラベル付与だけ** を行えばよい。`severity` → ラベルの既定対応:
+
+  - `high` かつ `introduced_by_diff: true` → `[must]` / `high` かつ `introduced_by_diff: false` → `[pre_existing]`
+  - `medium` → `[should]`
+  - `low` → `[nit]`
+  - `confidence: "unverified"` (adversarial verify を通っていない) の finding は、`failure_scenario` を差分から自分で追認できなければ 1 段下げる (`[must]` → `[should]`、`[should]` → `[nit]`)。追認できればそのまま。
+  - Step 3 のプロジェクト指示ファイルが必須化している観点に該当する指摘は上記より昇格させてよい。
+- **実行 (read-only)**: 解決したスキルを **read-only モードで** 呼ぶ。**投稿 / 自動修正フラグは付けない** (`code-review` なら `--comment` / `--fix` を付けない。他ホストでも投稿・working tree 改変モードは使わない。投稿は `post-pr-review` の責務、working tree 改変は本 skill の禁止事項)。特に PR モードで `--comment` を付けると、`code-review` 由来の生 inline コメント (AI 自動投稿マーカーなし) が `post-pr-review` の 1 Review と **二重投稿** されるため厳禁。`scan-diff-findings` は read-only 契約が skill 側に内在しているため追加フラグは不要。
+- **scope (target) 引数** (解決順 1 の `code-review` を使う場合。レビュー対象の diff 範囲を伝える): `code-review` の target 引数は **PR番号 / PR URL / branch名 / ref range (`<base>...HEAD` の三点記法) / file path** を受け取る (argumentHint は `[level] [--fix] [--comment] [<target>]`)。**target の種別で内部の diff 取得経路が変わる点が最重要**:
   - **PR番号 / PR URL → `pr` モード**: 内部で `gh pr diff` を実行。**`gh` に依存**するため 403 だと空振りする (→「リカバリ」)。
   - **branch名 / ref range → `branch` モード**: **ローカル `git diff` で review (`gh` 不要)**。Step 1 で read-only fetch 済みなら `<BASE_SHA>...<HEAD_SHA>` をそのまま target に渡せる。「範囲は渡せない」は誤りで、**ref range は正規の target 形式**。
   以下を目安にしつつ、**自前レビュー (5-1) が見ている diff 範囲と外部スキルが見る範囲が一致しているか実行時に確認する** (一致しないなら不一致を前提に扱い、取りこぼしは 5-1 の自前レビューが拾う):
   - PR モード: **主経路は Step 1 の ref range `<BASE_SHA>...<HEAD_SHA>` を target に渡す** → code-review が `branch` モードに入り、fetch 済み object に対するローカル `git diff` で review する (`gh` 不要・checkout/worktree 不要)。`gh` が使える環境では PR URL `https://github.com/<OWNER>/<REPO>/pull/<PR_NUMBER>` (または cwd remote と PR が同一リポジトリだと確実なときは `<PR_NUMBER>` 単体) を渡して `pr` モードで取得させてもよい (URL は host/owner/repo/番号を自己完結で含み cross-repo でも解決できる。`<OWNER>/<REPO>#<PR_NUMBER>` の結合形式は `gh pr diff` が単一引数として受け付けないため使わない)。いずれの target でも code-review は **現在の作業ツリーがどのブランチであっても (PR ブランチが checkout されていなくても)** その対象をレビューする。したがって **「ローカル作業ツリーが PR ブランチと異なる」「fetch/checkout が禁止されている」ことを理由に code-review をスキップしてはならない** — これは 5-2 を 5-1 単独へ黙って退化させる既知の誤判断であり、PR モードでは ref range (または PR URL) を target に渡せば作業ツリーの状態に依存せず常に code-review を併用できる (本 skill の fetch/checkout 禁止は作業ツリーに対するものであり、ref range を渡す `branch` モードは read-only fetch 済み object を見るだけで作業ツリーを変えない)。
   - ローカル `commit` モード: branch 名を渡して `<base>...HEAD` 相当を見させる。ただし `BASE_BRANCH` が default branch 以外に上書きされている場合、外部スキルが別の merge-base 基準で diff を取り 5-1 と範囲がズレうる点に注意。範囲を正しく表現できなければ、自前レビュー (5-1) を主、外部スキルを補助として扱う。
-  - ローカル `staged` / `worktree` モード: 外部スキルの既定 scope (uncommitted 差分) に委ねる。`code-review` は既定で `git diff HEAD` 相当も見るため staged 差分も拾えるが、**staged のみ (worktree クリーン) のケースで外部スキルが空 diff を返したら、その回は外部レビューを「指摘なし」として扱い 5-1 のみで続行する** (silent skip ではなく自前レビューで担保)。
+  - ローカル `staged` / `worktree` モード: 外部スキルの既定 scope (uncommitted 差分) に委ねる。`code-review` は既定で `git diff HEAD` 相当も見るため staged 差分も拾えるが、**staged のみ (worktree クリーン) のケースで外部スキルが空 diff を返したら scope 不一致の可能性が高い**ため、解決順 2 (`scan-diff-findings` に `DIFF_MODE=staged` を明示して呼ぶ) に切り替える。それも不可なら外部レビューを「指摘なし」として扱い 5-1 のみで続行し、5-4 の未併用開示を入れる (silent skip はしない)。
 - **リカバリ: `gh` 経路が落ちて code-review が `pr` モードで取得できない場合**: PR URL / PR番号を渡すと code-review は内部で `gh pr diff` を使うため、`gh` が 403 等で落ちていると外部レビューが空振りする (web/remote では GitHub が `mcp__github__*` 経由のみになり `gh` が恒常 403 になりうる)。この場合は PR URL の代わりに **Step 1 で read-only fetch 済みの ref range `<BASE_SHA>...<HEAD_SHA>` を target に渡す**。code-review は `branch` モードに入り、ローカル `git diff` で review する (`gh` 不要・checkout/worktree 不要、fetch 済み object だけで完結)。手順:
   1. Step 1 で退避した `BASE_SHA` / `HEAD_SHA` をそのまま使う (このリカバリのために追加の fetch は不要)。
   2. `git cat-file -e <BASE_SHA>^{commit}` と `git cat-file -e <HEAD_SHA>^{commit}` で両 object が commit として存在することを確認し (ref range diff は commit 前提。Step 1 の存在確認と peel を揃える)、`git diff <BASE_SHA>...<HEAD_SHA> --name-only` の件数を 5-1 の自前レビュー対象と突合する (範囲一致の確認)。
   3. code-review を `<BASE_SHA>...<HEAD_SHA>` を target にして起動し、「Reviewing … against …」等の出力でローカル (`branch`) モードに入ったことを確認する。
-  4. ref range target を受け付けずローカル review に入れないと確認できた場合のみ、その回の外部レビューは「指摘なし」扱いとし 5-1 の自前レビュー単独で 5-3 へ進む。
-  なお 5-1 自前レビューも同じ ref range 差分 (Step 4 の `git diff <BASE_SHA>...<HEAD_SHA>`) を基盤にできるので、**まず 5-1 の品質を担保する**。**`gh` と git 経路 (read-only fetch → ref range) の両方が失敗して初めて外部レビューを諦める** (退化条件は上記「退化条件の厳格化」参照。`gh` 1 経路の失敗では諦めない)。
+  4. ref range target を受け付けずローカル review に入れないと確認できた場合は **1 が不成立**というだけなので、解決順 2 (`scan-diff-findings` に `TARGET=<BASE_SHA>...<HEAD_SHA>` / `DIFF_MODE=ref_range`) へ進む。5-1 単独へ退化するのは 2 と 3 も不可と確認できた場合のみ。
+  なお 5-1 自前レビューも同じ ref range 差分 (Step 4 の `git diff <BASE_SHA>...<HEAD_SHA>`) を基盤にできるので、**まず 5-1 の品質を担保する**。`gh` 1 経路の失敗では外部レビューを諦めない (退化条件は上記「退化条件の厳格化」参照)。
 - **正規化** (外部スキルの findings → 本 skill の指摘形式):
-  - 各 finding の対象ファイル / 行を `path` / `line`、`side="RIGHT"` (単一行) に正規化する。`path` は **リポジトリルートからの相対パスに揃える** (外部スキルが絶対パスや `./` 始まりで返す場合があり、`post-pr-review` の投稿や 5-3 の重複排除が `path` の表記一貫性に依存するため)。
+  - 各 finding の対象ファイル / 行を `path` / `line`、`side="RIGHT"` (単一行) に正規化する。`path` は **リポジトリルートからの相対パスに揃える** (外部スキルが絶対パスや `./` 始まりで返す場合があり、`post-pr-review` の投稿や 5-3 の重複排除が `path` の表記一貫性に依存するため)。`scan-diff-findings` は `path` / `line` / `summary` / `severity` を正規化済みで返すのでこの整形は不要 (ラベル付与のみ。対応表は上記「`scan-diff-findings` の呼び出し」)。
   - 外部スキルの出力に本 skill 互換の重要度ラベルが無い場合 (例: `code-review` の出力は `[{file,line,summary,failure_scenario}]` の配列で、配列順=重大度のみでラベル無し) は、Step 2 のスタイル参考ガイド + Step 3 の `REVIEW.md` 方針で `[must]` / `[should]` / `[nit]` / `[question]` を付与する (correctness 上位は `[must]` / `[should]`、cleanup / altitude 下位は `[nit]` を基準にし、`REVIEW.md` が必須化する観点は昇格)。
   - 指摘本文は `[label] <要約>。<根拠 / 再現>` をスタイル参考ガイドの日本語トーンで整形する。
-  - `code-review` 以外 (Codex `/review` 等) の出力形式は環境依存で未確定なため、得られた構造から `path` / `line` / 要約 / 重大度を抽出して同様に正規化する。形式が読み取れない部分は安全側 (取りこぼし回避) で残す。
+  - `code-review` / `scan-diff-findings` 以外 (Codex `/review` 等) の出力形式は環境依存で未確定なため、得られた構造から `path` / `line` / 要約 / 重大度を抽出して同様に正規化する。形式が読み取れない部分は安全側 (取りこぼし回避) で残す。
+- **外部レビュー未併用の記録**: 解決順 1〜3 のすべてが不可だった場合、または解決したスキルの結果が取得できなかった (error / `Read` 失敗 / parse 失敗) 場合は、**どの候補がなぜ使えなかったかを 1 行で保持** し 5-4 の開示文に使う (例: 「`code-review` は `disable-model-invocation` で Skill ツールから呼べず、`scan-diff-findings` も未インストール」)。開示は 5-4 で **必須**。
 
 #### 5-3. マージと後処理
 
@@ -171,6 +209,8 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - `event` は **常に `"COMMENT"`** (`post-pr-review` の規約)。
 - 指摘が無くても Step 6 で「特に指摘なし」相当の JSON を返す (skip しない)。
 - 機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: ... -->`) は **`body` に書かない** (`post-pr-review` が `label_counts` から組み立てて prepend する。本 skill が書くと 1 Review body に 1 行という契約が二重出力で崩れる)。
+- **外部レビュー未併用の開示 (必須)**: 5-2 で外部レビュースキルを 1 つも併用できなかった場合 (解決順 1〜3 すべて不可、または解決したスキルの結果が取得できなかった場合) は、**その事実と理由を `## 総合判断` の末尾に 1 文記載する**。文例: `外部レビュー未併用: code-review が disable-model-invocation により Skill ツールから呼べず、scan-diff-findings も利用できなかったため、本レビューは自前レビュー単独で作成した。` 併用できた場合は本文を入れない (どのスキルを併用したかの記載は任意)。
+  - この開示は **省略不可**。外部レビュー併用は本 skill の主目的なので、退化したまま黙って完了すると利用者が「併用されている前提」でレビュー品質を誤認する。差分なし (`comments` が空 / `diff_mode="none"`) で 5-2 自体を skip したケースは開示対象外 (そもそも外部レビューの対象が無い)。
 - `body` は最低限 `## 総合判断` / `## 指摘内訳` / `## 良かった点` (1〜2 件) の 3 サブ見出しで構成する (caller の markdown 出力テンプレート / grep スクリプトとの互換のため)。`## 指摘内訳` には `comments[]` に実際に出したインライン指摘の **ラベル別件数を優先度順 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で件数>0 のものだけ** 列挙する (例: `[must] 1 件 / [should] 2 件 / [nit] 1 件`)。件数はマージ後の最終 `comments[]` を反映する。インライン指摘が 0 件なら `指摘なし` と書く。指摘なし / 差分なしの場合も 3 見出しを残し、`## 指摘内訳` は `指摘なし`、他 2 見出しは「該当なし」相当で埋める。
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が prepend する)。`body` は生本文。
 
@@ -230,7 +270,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 ## 守ること
 
-- Task ツール / Agent ツールで **本 skill 自身が直接 sub-agent を spawn しない**。ただし Step 5-2 の外部レビュースキル併用 (`code-review` / Codex `/review` 等) を許容し、**その外部スキルが内部で Agent ツール等を使うことは妨げない** (本 skill が直接 spawn するのではなく、Skill 経由で呼んだ外部スキルが行う)。`/run-pr-review` / `/run-local-review` を再帰的に呼ぶこともしない (orchestrator が parent 側の責務)。
+- Task ツール / Agent ツールで **本 skill 自身が直接 sub-agent を spawn しない**。ただし Step 5-2 の外部レビュースキル併用 (`code-review` / `scan-diff-findings` / Codex `/review` 等) を許容し、**その外部スキルが内部で Agent ツール等を使うことは妨げない** (本 skill が直接 spawn するのではなく、Skill 経由で呼んだ外部スキルが行う)。`/run-pr-review` / `/run-local-review` を再帰的に呼ぶこともしない (orchestrator が parent 側の責務)。
 - `post-pr-review` / `resolve-pr-threads` は呼ばない (orchestrator の責務)。
 - レビュー投稿は本 skill の責務外。**経路を問わず** GitHub 投稿系ツールを直接叩かない (`gh pr review` / `gh pr comment` / `gh api .../reviews` も、`mcp__github__pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `add_issue_comment` 等の MCP 投稿ツールも。web/remote では MCP が唯一の GitHub 経路になるため gh のみの禁止では read-only 保証が漏れる)。
 - 作業ツリー / ローカルブランチを書き換える git 操作 (`git checkout` / `git reset` / `git commit` / `git push` / `git pull` 等) は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git show` / `git cat-file` / `git ls-remote` / `git symbolic-ref` / `git remote get-url`) のみ。**この禁止は本 skill 自身の作業ツリー / ローカル ref に対するもの**であり、Step 5-2 で ref range (または PR URL) を target として渡した `code-review` が自身の責務でレビュー対象を取得することは妨げない。「fetch/checkout 禁止だから PR モードで code-review を使えない」は誤読であり、PR モードでは作業ツリーの状態に関係なく code-review を併用する (Step 5-2 PR モード参照)。ref range を渡す `branch` モードは read-only fetch 済み object に対するローカル `git diff` で review するだけで checkout を伴わないため、この禁止に抵触しない。
@@ -239,3 +279,4 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - AI 自動投稿マーカーと機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: ... -->`) は `body` に付けない (どちらも `post-pr-review` が prepend する。本 skill の責務は `label_counts` を算出して渡すところまで)。
 - `Write` ツールでのファイル出力は **`HANDOFF_PATH` への完成 JSON / error JSON 書き出しのみ許可** (Step 6 / 失敗時)。markdown 等それ以外の Write は行わない。
 - **最終メッセージに自己完結 JSON を出さない**。最終メッセージは常に「`HANDOFF_PATH` を `Read` して続行せよ」という継続指示文にする (停止バグ防止。詳細は Step 6 / 冒頭概要)。
+- **外部レビュー併用 (5-2) を黙って落とさない**。`code-review` が `disable-model-invocation` で呼べないこと・Agent ツールが無いこと・`gh` が 403 であることは **いずれも 5-1 単独へ退化する理由にならない** (解決順 2 の `scan-diff-findings` はこれらに依存しない)。それでも 1 系統も併用できなかった場合は、5-4 の開示文を `body` に **必ず** 入れる (未併用のまま無言で完了しない)。
