@@ -1,6 +1,6 @@
 ---
 name: post-pr-review
-description: PR レビュー結果を1つの Review として GitHub に投稿する。複数のインライン指摘や総括コメントを含むレビューを投稿する場合は必ずこの skill を使うこと。`gh pr comment` / `gh pr review` / MCP の個別コメント投稿ツールを使った個別投稿は禁止。gh CLI / GitHub MCP ツールのどちらのチャネル (`CHANNEL=gh|mcp`) でも投稿できる。
+description: PR レビュー結果を1つの Review として GitHub に投稿する。複数のインライン指摘や総括コメントを含むレビューを投稿する場合は必ずこの skill を使うこと。`gh pr comment` / `gh pr review` / MCP の個別コメント投稿ツールを使った個別投稿は禁止。gh CLI / GitHub MCP ツールのどちらのチャネル (`CHANNEL=gh|mcp`) でも投稿できる。Review body には AI 自動投稿マーカーと、CI が required status check で機械判定するための機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=0 should=1 ... -->`、指摘 0 件でも必ず出力) を自動で付与する。ラベル別件数は任意入力 `LABEL_COUNTS` があればそれを正典とし、無ければ `comments[]` の先頭ラベルから集計する。
 ---
 
 # post-pr-review skill
@@ -63,7 +63,7 @@ type ReviewComment =
 
 `commit_id` は caller 側で PR の head SHA (`headRefOid`) を取得して渡すと、force-push / rebase で行ズレが起きた際の誤コメントを防げる (`run-pr-review` Step 2 が CHANNEL に応じて `gh pr view --json headRefOid` または `mcp__github__pull_request_read` method=`get` で取得済みの値を流用する想定)。加えて **CI が「現在の head SHA に対するレビューか」を review の `commit_id` で判定する** 運用では、`commit_id` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため照合が不確実になる。機械判定を前提にするなら caller は常に `COMMIT_ID` を渡すこと (詳細は「機械可読サマリ行」節の「CI 側の使い方」)。
 
-`label_counts` は **`MAX_INLINE_COMMENTS` による省略分やラベル体系の独自定義を正しくサマリ行へ反映したい caller 向けの任意入力**。prompt 経由では 1 行の JSON (`LABEL_COUNTS={"must":1,"should":2,"nit":0,"question":0,"pre_existing":0,"other":0}`) として渡す (KEY=VALUE parse を壊さないため改行を含めない)。渡されなければ本 skill が `comments[]` から集計する (集計ルールと精度上の注意は「機械可読サマリ行」節)。
+`label_counts` は **`MAX_INLINE_COMMENTS` による省略分やラベル体系の独自定義を正しくサマリ行へ反映したい caller 向けの任意入力**。prompt 経由では 1 行の JSON (`LABEL_COUNTS: {"must":1,"should":2,"nit":0,"question":0,"pre_existing":0,"other":0}`) として渡す (key と値の区切りは `:` / `=` のどちらでもよく、同一 prompt 内の他キーの書き方に揃えればよい。ただし **値に改行を含めない** — 複数行に折り返すと後続行が別 key として解釈され parse が壊れる)。渡されなければ本 skill が `comments[]` から集計する (集計ルールと精度上の注意は「機械可読サマリ行」節)。
 
 ### 契約の前提 (Payload 設計上の制約)
 
@@ -126,6 +126,7 @@ caller (人 / 外部システム) は Payload を渡すだけで、投稿の実�
 1. caller から `LABEL_COUNTS` (Payload の `label_counts`) が渡されていれば **それを正典として採用する**。`MAX_INLINE_COMMENTS` による省略分を含む正確な件数を持つのは caller (レビュー生成側) だけなので、渡された値を本 skill 側で再計算・上書きしない。
    - 標準 5 ラベル (`must` / `should` / `nit` / `question` / `pre_existing`) 以外のキーは `other` に合算する。標準ラベルのうち渡されなかったキーは `0` とみなす。
    - JSON として parse できない / 値が非負整数でない場合は `LABEL_COUNTS` を無視して下記 2 の `comments[]` 集計にフォールバックし、その旨を caller への報告に 1 行残す (投稿自体は継続する)。
+   - **下限チェック (一方向の整合性検証)**: `label_counts` は `MAX_INLINE_COMMENTS` の省略分を含む集合の件数なので、**合計 ≧ `comments[]` の件数** が不変条件として成立する (省略は件数を増やす方向にしか働かない)。合計が `comments[]` 件数を**下回る**場合は caller 側の組み立て不整合 (例: `comments[]` に `[must]` 3 件を渡しつつ `label_counts` が `{}` や `{"must":0,...}`) と判断し、`LABEL_COUNTS` を無視して下記 2 の `comments[]` 集計にフォールバックし、その旨を caller への報告に 1 行残す。**合計が `comments[]` 件数以上なら正典採用のまま**再計算しない (省略分を保護するルール 1 の規定と両立する)。この検証が無いと、caller の不整合がそのまま `must=0` のサマリ行になり、must 指摘付きの PR が required check を通ってしまう。
 2. `LABEL_COUNTS` が無ければ **`comments[]` の各 `body` 先頭の重要度ラベルを本 skill 側で集計する**。
    - 判定は `body` の **先頭**に対して正規表現 `^\[([A-Za-z_]+)\]` をマッチさせ (本文中に現れる `[must]` 等は数えない)、**捕捉したラベルを小文字化してから**標準ラベルと突合する (`[MUST]` のような大文字表記も `must` として数える。regex を小文字クラスに絞ると大文字表記が捕捉されず `other` に落ち、CI が `must=0` と誤判定しうる)。
    - 標準 5 ラベル (`must` / `should` / `nit` / `question` / `pre_existing`) はそれぞれのキーへ加算する。
@@ -134,11 +135,13 @@ caller (人 / 外部システム) は Payload を渡すだけで、投稿の実�
 
 ### CI 側の使い方 (参考)
 
-- **パース例** (`must` / `should` だけ見る最小形):
+- **パース例** (`must` / `should` だけ見る最小形。**係留キー `AI-REVIEW-RESULT` を必ず前置する**):
 
   ```
-  must=(\d+) should=(\d+)
+  AI-REVIEW-RESULT:.*?must=(\d+)\s+should=(\d+)
   ```
+
+  係留キーを省いた `must=(\d+) should=(\d+)` だけでは、body 中のどこかにあるプレーンな `must=0 should=0` (本改修より前の版で投稿された review や、この plugin の仕様を議論した人間のレビュー本文など) にもマッチし、**サマリ行が無い review を「レビュー済み・ブロッキングなし」と誤判定する** (後述の「サマリ行が 1 つも無ければ未実施扱い」と噛み合わなくなる。「最初のマッチを採用する」ルールもサマリ行が実在する前提でのみ安全側に働く)。
 
   全キーを取る場合 (空白の揺れに耐える形):
 

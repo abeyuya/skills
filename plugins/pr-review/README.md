@@ -66,9 +66,9 @@ Payload (caller が渡す JSON 相当) の概要:
 <!-- AI-REVIEW-RESULT: must=0 should=1 nit=2 question=0 pre_existing=0 other=0 -->
 ```
 
-- **HTML コメント**なので人間向け表示は汚さないが、REST API (`GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews`) が返す review の `body` には残るので正規表現でパースできる (例: `must=(\d+) should=(\d+)`)。
+- **HTML コメント**なので人間向け表示は汚さないが、REST API (`GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews`) が返す review の `body` には残るので正規表現でパースできる (例: `AI-REVIEW-RESULT:.*?must=(\d+)\s+should=(\d+)`。**係留キー `AI-REVIEW-RESULT` を必ず前置する** — 省くと body 中のプレーンな `must=0 should=0` にもマッチし、サマリ行が無い review を「レビュー済み」と誤判定する)。
 - 挿入位置は AI 自動投稿マーカーの直後 (区切り線 `---` の前) に固定。キーは 6 つを固定順で常に全出力し、値は 0 以上の整数。
-- 件数の正典は caller から渡される `label_counts`。`run-pr-review` 経路では `compose-review` が **`MAX_INLINE_COMMENTS` で省略した指摘も含めた** 件数を算出して引き回すため常に正確。`label_counts` が無い場合は `post-pr-review` が `comments[]` の先頭ラベルから集計する (省略分は数えられないが、省略は優先度順に低い方から行われるため `must` / `should` が 0 か否かの判定は安全側に倒れる)。
+- 件数の正典は caller から渡される `label_counts`。`run-pr-review` 経路では `compose-review` が **`MAX_INLINE_COMMENTS` で省略した指摘も含めた** 件数を算出して引き回すため常に正確。`label_counts` が無い場合は `post-pr-review` が `comments[]` の先頭ラベルから集計する (省略分は数えられないため個々の件数は実際より小さくなりうる。安全側に倒れるのは **「`must=0` かつ `should=0`」という複合条件**のみで、`should` 単独では倒れない — 例えば `MAX_INLINE_COMMENTS=1` で `[must]` 1 件 + `[should]` 2 件なら結果は `must=1 should=0` になるため、`should` 単独の条件を組むと実在する should 指摘を「なし」と扱ってしまう)。
 - 標準 5 ラベル以外 / ラベル無しの指摘は `other` に合算する。ラベル体系を独自定義している caller は、`label_counts` で標準ラベルへマッピングして渡す (でなければ CI 側の合格条件に `other=0` も加える)。
 - CI が「PR の現在の head SHA に対するレビューか」を判定する場合は review の `commit_id` を head SHA と比較する。`post-pr-review` は `COMMIT_ID` が渡されたときだけ `commit_id` を送るため (未指定時は GitHub が投稿時点の最新 commit を採用)、`run-pr-review` は取得済みの `headRefOid` を常時転送する。
 
