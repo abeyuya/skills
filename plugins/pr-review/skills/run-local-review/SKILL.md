@@ -76,7 +76,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 - 差分モード: <commit / staged / worktree / none>
 - 対象コミット: <ここは `diff_mode="commit"` のとき `<commit_count> 件 (<base_branch>..HEAD)` (例: `3 件 (main..HEAD)`)、それ以外 (`staged` / `worktree` / `none`) のとき `0 件 (コミット未作成)` と固定文字列で書き込む。機械的な置換ではなく `diff_mode` で分岐する>
 - インライン指摘: <count> 件
-- 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / findings <findings> 件)`、`mode="inline"` なら末尾に ` ※独立性は限定的` を付ける。`skill == "none"` なら `未併用 (<reason>)`。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
+- 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`、`mode="inline"` なら末尾に ` ※独立性は限定的`、`mode="partial"` なら ` ※観点欠落あり` を付ける。`skill == "none"` なら `未併用 (<reason>)`。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
 
 ## 総括
 
@@ -118,7 +118,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 
 - レビュー対象のブランチ / `base_branch` / `diff_mode`
 - インライン指摘件数
-- 外部レビュー併用の有無 (`external_review` の `skill` / `mode`。未併用 / `mode="inline"` なら理由も 1 行)
+- 外部レビュー併用の有無 (`external_review` の `skill` / `mode`。未併用 / `mode="inline"` / `mode="partial"` なら理由も 1 行)
 - 出力先 markdown ファイルパス
 
 ## 守ること

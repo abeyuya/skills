@@ -160,13 +160,19 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   | ローカル `staged` | (省略) | `staged` |
   | ローカル `worktree` | (省略) | `worktree` |
 
-  戻り後は **`FINDINGS_PATH` を `Read` ツールで読み込み**、JSON を `error` → 正常 の順で評価する (最終メッセージは継続指示文なので parse 対象にしない)。**ここで応答を終了しない** — 読み込んだ findings を正規化して 5-3 → 5-4 → Step 6 まで同一応答内で続行する。`error` だった / `Read` が失敗した / parse できない / `findings` を欠く場合は、その回の外部レビューは得られなかったものとして扱い、**5-4 の未併用開示を入れた上で** 5-1 単独で 5-3 へ進む (本 skill 全体をエラーにはしない)。
+  戻り後は **`FINDINGS_PATH` を `Read` ツールで読み込み**、JSON を `error` → 正常 の順で評価する (最終メッセージは継続指示文なので parse 対象にしない)。**ここで応答を終了しない** — 読み込んだ findings を正規化して 5-3 → 5-4 → Step 6 まで同一応答内で続行する。`error` だった / `Read` が失敗した / parse できない / `findings` を欠く場合は、解決順 2 が不成立というだけなので **解決順 3 (ホスト標準レビュースキル) を試す**。3 も無ければそこで初めて外部レビューを諦め、**5-4 の未併用開示を入れた上で** 5-1 単独で 5-3 へ進む (本 skill 全体をエラーにはしない)。1 つの候補の失敗で残りを飛ばさないのは、上記「退化条件の厳格化」および解決順 1 失敗時の扱いと対称にするため。
 
-  読み込んだ JSON の **`fanout.mode` を必ず確認する**。`"inline"` (Agent ツールが使えず現在コンテキストでの逐次自己適用にフォールバックした) の場合、得られた findings は「独立した第 2 系統」ではなく **同一モデル・同一コンテキストでの自己レビュー** であり 5-1 との独立性が縮退している。findings は通常どおりマージしてよいが、**5-4 で「独立性が縮退した」旨の開示を行う** (未併用とは区別する)。`fanout.mode` / `fanout.finders` / `findings` 件数は Step 6 の `external_review` に記録する。
+  読み込んだ JSON の **`fanout.mode` を必ず確認する**。findings は下記いずれの場合も通常どおりマージしてよいが、**縮退した場合は 5-4 で開示する** (未併用とは区別する)。`fanout.mode` / `fanout.finders` / `fanout.finders_expected` / `findings` 件数は Step 6 の `external_review` に記録する。
+
+  - `"agent"`: 起動した全 finder の結果が揃った = 正常併用。開示不要。
+  - `"partial"`: fan-out したが一部の finder の結果しか得られなかった (background 化 / 起動失敗)。観点が欠けたまま「正常併用」として扱うと劣化が誰にも見えなくなるため、**5-4 で「観点が欠けた」旨を開示する**。
+  - `"inline"`: Agent ツールが使えず現在コンテキストでの逐次自己適用にフォールバックした。得られた findings は「独立した第 2 系統」ではなく **同一モデル・同一コンテキストでの自己レビュー** であり 5-1 との独立性が縮退しているため、**5-4 で開示する**。
+  - `fanout` 自体が欠落していた場合は `"partial"` と同等に扱う (縮退していないことを確認できないため、安全側に倒して開示する)。
 
   `scan-diff-findings` の findings は既に `path` (リポジトリルート相対) / `line` / `summary` / `severity` に正規化済みなので、下記「正規化」のうち **重要度ラベル付与だけ** を行えばよい。`severity` → ラベルの既定対応:
 
-  - `high` かつ `introduced_by_diff: true` → `[must]` / `high` かつ `introduced_by_diff: false` → `[pre_existing]`
+  - **`introduced_by_diff: false` (本差分で持ち込まれていない既存問題) は severity に関係なく `[pre_existing]`**。重大度は指摘本文側で伝える。severity 別に `[must]` / `[should]` / `[nit]` を振ると、本 PR で導入していない指摘が `label_counts.must` / `.should` に計上され、`AI-REVIEW-RESULT` の `must=0 && should=0` を required check にしている運用で **無関係な既存バグがマージをブロックする** (スタイル参考ガイドの `[pre_existing]` = マージ判断に影響させない、という定義とも食い違う)。
+  - `introduced_by_diff: true` の場合: `high` → `[must]`
   - `medium` → `[should]`
   - `low` → `[nit]`
   - `confidence: "unverified"` (adversarial verify を通っていない) の finding は、`failure_scenario` を差分から自分で追認できなければ 1 段下げる (`[must]` → `[should]`、`[should]` → `[nit]`)。追認できればそのまま。
@@ -216,8 +222,9 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - **外部レビュー未併用 / 独立性縮退の開示 (必須)**: 5-2 の結末に応じて `## 総合判断` の末尾に 1 文を記載する。
   - **未併用** (解決順 1〜3 すべて不可、または解決したスキルの結果が取得できなかった) → 文例: `外部レビュー未併用: code-review が disable-model-invocation により Skill ツールから呼べず、scan-diff-findings も利用できなかったため、本レビューは自前レビュー単独で作成した。`
   - **併用したが独立性が縮退** (`fanout.mode="inline"`。外部スキルが Agent ツール不可で同一コンテキストの逐次自己適用にフォールバックした) → 文例: `外部レビューは scan-diff-findings を併用したが、Agent ツールが使えず同一コンテキストでの逐次自己適用にフォールバックしたため、自前レビューとの独立性は限定的。`
-  - **正常に併用できた** → 開示文は不要 (どのスキルを併用したかの記載は任意。機械可読な記録は `external_review` が担う)。
-  - この開示は **省略不可**。外部レビュー併用は本 skill の主目的なので、退化したまま黙って完了すると利用者が「併用されている前提」でレビュー品質を誤認する。差分なし (`comments` が空 / `diff_mode="none"`) で 5-2 自体を skip したケースは開示対象外 (そもそも外部レビューの対象が無い)。
+  - **併用したが観点が欠けた** (`fanout.mode="partial"`、または `fanout` 欠落) → 文例: `外部レビューは scan-diff-findings を併用したが、起動した 5 観点のうち 2 観点分の結果しか得られなかったため、外部レビューの網羅性は限定的。`
+  - **正常に併用できた** (`fanout.mode="agent"`) → 開示文は不要 (どのスキルを併用したかの記載は任意。機械可読な記録は `external_review` が担う)。
+  - この開示は **省略不可**。外部レビュー併用は本 skill の主目的なので、退化したまま黙って完了すると利用者が「併用されている前提」でレビュー品質を誤認する。**差分が空** (PR モードで `git diff <BASE_SHA>...<HEAD_SHA>` が空 / ローカルモードで `diff_mode="none"`) で 5-2 自体を実施していないケースだけが開示対象外 (そもそも外部レビューの対象が無い)。**「指摘 0 件」は免除条件ではない** — 差分があり 5-2 を実施したが併用できず、自前レビューでも指摘が出なかった回 (`comments` が空になる) も開示は必須。
 - `body` は最低限 `## 総合判断` / `## 指摘内訳` / `## 良かった点` (1〜2 件) の 3 サブ見出しで構成する (caller の markdown 出力テンプレート / grep スクリプトとの互換のため)。`## 指摘内訳` には `comments[]` に実際に出したインライン指摘の **ラベル別件数を優先度順 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で件数>0 のものだけ** 列挙する (例: `[must] 1 件 / [should] 2 件 / [nit] 1 件`)。件数はマージ後の最終 `comments[]` を反映する。インライン指摘が 0 件なら `指摘なし` と書く。指摘なし / 差分なしの場合も 3 見出しを残し、`## 指摘内訳` は `指摘なし`、他 2 見出しは「該当なし」相当で埋める。
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が prepend する)。`body` は生本文。
 
@@ -245,7 +252,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
     {"path": "src/example.ts", "start_line": 50, "start_side": "RIGHT", "line": 55, "side": "RIGHT", "body": "[must] ..."}
   ],
   "label_counts": {"must": 1, "should": 1, "nit": 0, "question": 0, "pre_existing": 0, "other": 0},
-  "external_review": {"skill": "scan-diff-findings", "mode": "agent", "findings": 6, "reason": null},
+  "external_review": {"skill": "scan-diff-findings", "mode": "agent", "finders": 4, "finders_expected": 4, "findings": 6, "reason": null},
   "commit_id": "9f8e7d6c..."
 }
 ```
@@ -262,20 +269,21 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   "event": "COMMENT",
   "comments": [],
   "label_counts": {"must": 0, "should": 0, "nit": 0, "question": 0, "pre_existing": 0, "other": 0},
-  "external_review": {"skill": "none", "mode": null, "findings": 0, "reason": "code-review は disable-model-invocation で Skill ツールから呼べず、scan-diff-findings も利用不可"}
+  "external_review": {"skill": "none", "mode": null, "finders": 0, "finders_expected": 0, "findings": 0, "reason": "code-review は disable-model-invocation で Skill ツールから呼べず、scan-diff-findings も利用不可"}
 }
 ```
 
 - `commit_id` は **PR モードのみ** 含める。差分なし (Step 4 の `git diff <BASE_SHA>...<HEAD_SHA>` が空) の場合も Step 1 で確定した `HEAD_SHA` を必ず含める (force-push 行ズレ防止のため optional ではなく必須)。
 - `label_counts` は **両モードで必ず含める** (6 キー全出力、件数 0 も明示。算出規則は Step 5-3)。PR モードでは `run-pr-review` が `post-pr-review` の `LABEL_COUNTS` に転送し、Review body の機械可読サマリ行 (`AI-REVIEW-RESULT`) の正典値になる。ローカルモードでは投稿が無いため必須の消費者はいないが、出力形式を両モードで揃えるため同じく含める (caller は無視してよい)。
   - `label_counts` は **`MAX_INLINE_COMMENTS` で省略した指摘も含む** 全指摘の件数であり、`comments[]` の件数や `body` の `## 指摘内訳` (実際に出したインライン指摘の内訳) とは省略発生時に一致しない。これは意図した差 (CI は「指摘が存在したか」を知る必要があるため) であり、不一致を理由に `label_counts` を `comments[]` 由来へ書き換えない。
-- `external_review` は **両モードで必ず含める** (5-2 の結末の機械可読な記録。算出規則は 5-2 の「外部レビュー結果の記録」)。キーは 4 つ固定:
+- `external_review` は **両モードで必ず含める** (5-2 の結末の機械可読な記録。算出規則は 5-2 の「外部レビュー結果の記録」)。キーは 6 つ固定:
   - `skill`: 実際に併用した外部レビュースキル名 (`"scan-diff-findings"` / `"code-review"` / ホスト標準スキル名)。1 つも併用できなかった場合は `"none"`。
-  - `mode`: 外部スキルが返した `fanout.mode` (`"agent"` / `"inline"`)。取得できない外部スキル (`code-review` / Codex `/review` 等) は `"external"`、未併用なら `null`。
-  - `findings`: 外部スキルから得られた findings の件数 (正規化前・マージ前の生件数)。未併用なら `0`。
-  - `reason`: 未併用 / 独立性縮退の理由 1 行 (5-4 の開示文と同旨)。正常に併用できた場合は `null`。
-  - 差分なしで 5-2 自体を skip した場合は `{"skill": "none", "mode": null, "findings": 0, "reason": "対象差分なしのため 5-2 を実施せず"}` とする。
-  - caller は本フィールドを **本文を読まずに退化を検知する手段** として使える (`skill == "none"` なら外部レビュー未併用、`mode == "inline"` なら独立性縮退)。未知のフィールドとして無視する caller があっても構わないが、欠落を理由に処理を止めてはならない。
+  - `mode`: 外部スキルが返した `fanout.mode` (`"agent"` / `"partial"` / `"inline"`)。`fanout` を返さない外部スキル (`code-review` / Codex `/review` 等) は `"external"`、未併用なら `null`。`fanout` を返す契約の外部スキルが `fanout` を欠落させた場合は `"partial"` (安全側)。
+  - `finders` / `finders_expected`: 外部スキルの `fanout.finders` / `fanout.finders_expected` をそのまま転記 (結果が得られた観点数 / 起動しようとした観点数)。値が取れない場合は両方 `null`。**`finders < finders_expected` は部分劣化を意味し、`mode` は `"partial"` になる**。
+  - `findings`: 外部スキルから受け取った **`findings[]` 配列の長さ** (= 本 skill の正規化・マージ前に届いた件数)。外部スキル内部の verify 前生件数 (`fanout.findings_raw`) ではない — 2 つの値が混在すると report 間で比較できなくなるため、**必ず `len(findings[])` を使う**。未併用なら `0`。
+  - `reason`: 未併用 / 縮退 (`inline` / `partial`) の理由 1 行 (5-4 の開示文と同旨)。正常に併用できた場合は `null`。
+  - 差分なしで 5-2 自体を skip した場合は `{"skill": "none", "mode": null, "finders": 0, "finders_expected": 0, "findings": 0, "reason": "対象差分なしのため 5-2 を実施せず"}` とする。
+  - caller は本フィールドを **本文を読まずに退化を検知する手段** として使える (`skill == "none"` なら未併用、`mode == "inline"` なら独立性縮退、`mode == "partial"` なら観点欠落)。未知のフィールドとして無視する caller があっても構わないが、欠落を理由に処理を止めてはならない。
 - `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` の取得手順は Step 4 ローカルモードに集約 (`git rev-list --count <base>..HEAD`、`staged` / `worktree` / `none` 時は `0` 固定)。
 - 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
 - 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`、`label_counts` は全キー `0`。空文字列は不可。

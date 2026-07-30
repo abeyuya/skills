@@ -54,7 +54,7 @@ description: 差分 (ref range / ブランチ / staged / worktree) を対象に�
   - `staged`: `git diff --cached`
   - `worktree`: `git diff`
 - 変更ファイル一覧を同じ range / モードの `--name-only` で取得し保持する (Step 4 の範囲外除外に使う)。
-- 差分が空なら Step 2〜4 を skip し、Step 5 で `findings: []` / `diff_mode: "none"` として書き出す (error にはしない)。
+- 差分が空なら Step 2〜4 を skip し、Step 5 で `findings: []` / `diff_mode: "none"` / **`fanout: {"mode": null, "finders": 0, "finders_expected": 0, "findings_raw": 0, "refuted": 0, "unverified": 0}`** として書き出す (error にはしない)。`fanout` 自体を省略しないのは、caller が `fanout.mode` を機械判定に使う契約になっており、欠落すると「未併用」との区別が caller ごとに揺れるため。
 
 差分が大きい場合は `--stat` でファイル一覧を取り、finder には「自分で必要なファイルの差分を読む」よう指示する (Step 2)。差分本文を prompt に丸ごと詰めない。
 
@@ -62,7 +62,7 @@ description: 差分 (ref range / ブランチ / staged / worktree) を対象に�
 
 #### 観点リスト
 
-差分規模に応じて下記から選ぶ (小: 1・2・4 の 3 観点 / 中: + 5・6 / 大: 全 6)。「小」の目安は変更 3 ファイル以下かつ 100 行以下、「大」は 15 ファイル超または 800 行超。
+差分規模に応じて下記から選ぶ (小: 1・2・4 の 3 観点 / 中: + 3・5 / 大: 全 6)。「小」の目安は変更 3 ファイル以下かつ 100 行以下、「大」は 15 ファイル超または 800 行超。中規模でも並行性 (3) を落とさないのは、race / リーク / 冪等性の実バグが契約 (5) やテスト (6) より重い結果になりやすいため。差分の性質上明らかに空振りする観点 (例: ドキュメントのみの差分に対する 3) は別の観点へ差し替えてよいが、**起動した観点数は `fanout.finders_expected` に正しく反映する**。
 
 1. **correctness / regression** — ロジック誤り、条件の反転、off-by-one、早期 return の漏れ、既存呼び出し側の破壊。
 2. **境界値・異常系** — null / undefined / 空配列 / 0 件 / 最大値、例外とエラーハンドリング、部分失敗時の後始末。
@@ -85,7 +85,8 @@ description: 差分 (ref range / ブランチ / staged / worktree) を対象に�
 - **`model` を必ず明示指定する** (未指定で起動しない)。既定は finder / verifier ともホストで利用可能な中位モデル (例: `sonnet`)、差分が大きい / 難度が高い観点のみ上位モデル (例: `opus`) に上げる。
 - **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とするため background 実行にしない。ただし **ホストがこの指定を無視して background 実行に回すことがある** (リモート実行環境で実測あり)。下 2 つのルールはその前提で書かれている。
 - **background 化された agent の完了をターンを yield して待たない**: ホスト側の都合で一部が background に回った場合は、`Monitor` / 完了通知待ち / sleep ループで応答を終了せず、**同期的に得られた finder 結果だけで Step 3 以降へ進む** (取りこぼしは caller 側の自前レビューが担保する。ここで応答を打ち切ると caller が「何も出力しないまま停止」する既知の停止バグになる)。
-- **同期的に得られた finder 結果が 1 件も無い場合は fan-out 失敗と見なす**: 全 finder が background 化された等で結果が 0 件のときは、`findings: []` (= 指摘なし) として先へ進めてはならない。「指摘が無かった」と「結果を取得できなかった」は区別が必要なため、**下記フォールバック (現在コンテキストでの逐次自己適用) に切り替え**、`fanout.mode` を `"inline"` として記録する。fan-out した finder のうち一部だけ結果が得られた場合は、得られた分で続行してよい (`fanout.mode` は `"agent"`、`fanout.finders` には **結果が得られた数** を入れる)。
+- **同期的に得られた finder 結果が 1 件も無い場合は fan-out 失敗と見なす**: 全 finder が background 化された等で結果が 0 件のときは、`findings: []` (= 指摘なし) として先へ進めてはならない。「指摘が無かった」と「結果を取得できなかった」は区別が必要なため、**下記フォールバック (現在コンテキストでの逐次自己適用) に切り替え**、`fanout.mode` を `"inline"` として記録する。
+- **一部の finder だけ結果が得られた場合 (部分 fan-out) は劣化として記録する**: 得られた分で続行してよいが、`fanout.finders` に **結果が得られた数**、`fanout.finders_expected` に **本 step で起動しようとした観点数** を入れ、`finders < finders_expected` なら `fanout.mode` を **`"partial"`** にする (全 finder 分そろったときだけ `"agent"`)。caller (`compose-review`) はこれを見て「外部レビューは併用したが観点が欠けた」ことを開示できる。**部分 fan-out を `"agent"` (= 正常併用) として記録してはならない** — 6 観点中 1 観点しか返っていない状態が「正常に併用できた」と下流に伝わり、劣化が誰にも見えなくなる。
 - 各 finder に渡す prompt に必ず含める:
   - リポジトリルートの絶対パスと、**差分を取得する git コマンド** (Step 1 で確定したもの。差分本文は貼らず agent 自身に読ませる)
   - 担当観点 (上記 1 つ) と `EXTRA_FOCUS`
@@ -164,7 +165,7 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 {
   "target": "9f8e7d6c...a1b2c3d4",
   "diff_mode": "ref_range",
-  "fanout": {"mode": "agent", "finders": 4, "findings_raw": 8, "refuted": 2, "unverified": 0},
+  "fanout": {"mode": "agent", "finders": 4, "finders_expected": 4, "findings_raw": 8, "refuted": 2, "unverified": 0},
   "findings": [
     {
       "path": "src/example.ts",
@@ -184,7 +185,7 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 
 - `target`: Step 1 で確定した対象表現 (ref range / ブランチ名 / uncommitted モードなら `""`)。
 - `diff_mode`: `"ref_range"` / `"branch"` / `"staged"` / `"worktree"` / `"none"` (差分なし)。
-- `fanout.mode`: `"agent"` (fan-out できた) / `"inline"` (現在コンテキストで自己適用した)。`finders` は実際に走った finder 数、`findings_raw` は verify 前の総件数。
+- `fanout.mode`: `"agent"` (起動した全 finder の結果が揃った) / `"partial"` (fan-out したが一部の finder の結果しか得られなかった) / `"inline"` (現在コンテキストで逐次自己適用した) / `null` (差分なしで Step 2 を実施していない)。`finders` は **結果が得られた** finder 数、`finders_expected` は Step 2 で起動しようとした観点数 (`inline` 時は自己適用した観点数を両方に入れる)、`findings_raw` は verify 前の総件数。`finders < finders_expected` なら `mode` は必ず `"partial"`。
 - `findings` は空配列可 (指摘なし / 差分なし)。全 finding が `path` / `line` / `severity` / `summary` を必ず持つ (`compose-review` 5-2 の正規化が依存する 4 フィールド)。
 - `omitted_count`: `MAX_FINDINGS` で落とした件数 (既定 `0`)。
 

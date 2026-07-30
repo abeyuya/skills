@@ -215,7 +215,7 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 - 単一行コメントは `path` / `line` / `side` を指定する。
 - 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。
 - `commit_id` は caller から `COMMIT_ID` が渡された場合のみ含める (詳細は「Public Payload Interface」セクションの「Payload スキーマ」参照)。
-- **`label_counts` / `LABEL_COUNTS` は GitHub へ送る最終 Payload に含めない** (本 skill 内でサマリ行を組み立てるためだけに使う入力。GitHub の Review API が受け付けないキーであり `--input` に混ぜると 422 になる)。
+- **`label_counts` / `LABEL_COUNTS` は GitHub へ送る最終 Payload に含めない** (本 skill 内でサマリ行を組み立てるためだけに使う入力。GitHub の Review API が受け付けないキーであり `--input` に混ぜると 422 になる)。`compose-review` が出力する `mode` / `external_review` 等、本 skill の Payload スキーマに無いキーも同様に **受け取っても最終 Payload には含めない** (`external_review` は caller 側 orchestrator が報告に使う値で、本 skill の入力ではない)。
 - 指摘がない場合: `body` はマーカー + 全キー `0` のサマリ行 (`<!-- AI-REVIEW-RESULT: must=0 should=0 nit=0 question=0 pre_existing=0 other=0 -->`) + 区切り線 + 「特に指摘なし」相当の文言、`comments` は `[]`、`event` は `COMMENT` で投稿する。指摘 0 件でもサマリ行を省略しない (CI が「レビュー実施済みで指摘ゼロ」を判別するための必須要件)。
 - インラインコメント (`comments[].body`) には個別マーカーを付けない (Review 本文側のマーカーで帰属は十分であり、`[must]` 等の重要度ラベルとの衝突や冗長さも避けるため)。
 
