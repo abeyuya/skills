@@ -26,6 +26,10 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 Skill ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す。**Task / Agent ツールで sub-agent を spawn しない** — sub-agent 起動のオーバーヘッドを避けサクッとレビューを回すため、かつ `compose-review` が Step 5-2 で `code-review` 等の外部レビュースキルを併用する際その fan-out (Agent ツール) が現在コンテキストでないと動かないため。レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。
 
+#### 外部レビューの手動併用 (任意, ユーザー向け運用)
+
+`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
+
 #### 渡す引数
 
 `compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-local-<branch>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。`<branch>` は `OUTPUT_PATH` の `{branch}` 規則と同様に **現在ブランチ名の英数記号以外 (`/` 等) を `-` に置換** してから埋め込む (本リポジトリの `claude/...` のようなスラッシュ入りブランチで `/tmp/.../` のネストパスになり親ディレクトリ不在で `Write` 失敗するのを防ぐ)。これは markdown 出力先 `OUTPUT_PATH` とは **別物** (compose-review からの JSON 受け渡し用 temp ファイル) であり、**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため):
@@ -43,9 +47,11 @@ HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-<branch (/ 等�
 
 > ⚠️ **外部レビュー fan-out の待ちでターンを yield しない (上記停止バグの変種)**: `compose-review` の Step 5-2 は `code-review` 等の外部レビュースキルを現在コンテキストで呼び、その内部で **Agent ツールによる finder/verifier の fan-out** が走る。リモート実行環境では並列起動した Agent の一部が **harness によって自動で background 実行に回される** ことがあるが、その完了を **`Monitor` / `run_in_background` の完了通知 / sleep ループ等で待って応答 (ターン) を終了してはならない**。background agent の完了を待つために応答を打ち切った時点で「何も出力しないまま停止」に見え、上の停止バグと同じ結末になる。**同期的に得られた finder 結果だけで先へ進む** — recall は `compose-review` の 5-1 自前レビューが必ず担保しており、background 化した一部 finder を取りこぼしても致命ではない。Step 2 (markdown 出力) → Step 3 (報告) を **同一応答内で完了させることを最優先** する。background agent の結果がどうしても要るなら、ターンを yield せず現在の応答内で待ち合わせる手段だけを使う (`compose-review` 側も sub-agent を直接 spawn せず外部スキルに委ねる契約のため、本 skill が背後の Agent を background 化して待つ必要は本来無い)。
 
-`Read` で取得した `HANDOFF_PATH` の中身はローカルモードの JSON (`mode` / `base_branch` / `diff_mode` / `commit_count` / `body` / `event` / `comments[]` / `label_counts`) または error JSON。これを parse して各フィールドを読み取り、得られた `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` をそのまま Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
+`Read` で取得した `HANDOFF_PATH` の中身はローカルモードの JSON (`mode` / `base_branch` / `diff_mode` / `commit_count` / `body` / `event` / `comments[]` / `label_counts` / `external_review`) または error JSON。これを parse して各フィールドを読み取り、得られた `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` をそのまま Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
 
 `label_counts` は `post-pr-review` が Review body の機械可読サマリ行 (`AI-REVIEW-RESULT`) を組み立てるための値で、GitHub 投稿を行わない本 skill では **使わない** (markdown 出力の「インライン指摘」件数は従来どおり `comments[]` から数える)。欠落していてもエラー扱いにしない (必須フィールド判定の対象外)。
+
+`external_review` (5-2 の結末の機械可読な記録。キーは `skill` / `mode` / `verify_degraded` / `finders` / `finders_expected` / `findings` / `omitted` / `reason` の 8 つ固定。正典は `compose-review` Step 6) は **markdown ヘッダと Step 3 の報告に必ず載せる** (Step 2-1 のスキーマ参照)。外部レビューが未併用 / 独立性縮退のまま完了したことを、利用者が総括本文を読まずに判別できるようにするため。欠落していてもエラー扱いにはしないが、その場合は `不明` と明記する (黙って省略しない)。
 
 ただし `HANDOFF_PATH` の中身が致命エラーの `{"error": ...}` だけだった場合 (例: `HEAD` detached、ベースブランチ解決失敗)、**`HANDOFF_PATH` の `Read` が file-not-found 等で失敗した場合** (compose-review が JSON を書き出す前に停止した可能性)、**または読み込んだ内容が JSON として parse できない / `mode` が `"local"` でない / 必須フィールド (`base_branch` / `diff_mode` / `body` / `comments`) を欠く場合** は、擬似結果 (`comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` / `body="compose-review エラー: <error message / ハンドオフ JSON 取得・parse 失敗>"`) を組み立てて Step 2 (markdown 出力) を **必ず実行** し、Step 3 で同旨を報告する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。なお正常時も、同一コンテキスト実行だからと parse を省かず、必ず読み込んだ JSON を parse して各フィールドを抽出する (前段落参照)。
 
@@ -70,6 +76,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 - 差分モード: <commit / staged / worktree / none>
 - 対象コミット: <ここは `diff_mode="commit"` のとき `<commit_count> 件 (<base_branch>..HEAD)` (例: `3 件 (main..HEAD)`)、それ以外 (`staged` / `worktree` / `none`) のとき `0 件 (コミット未作成)` と固定文字列で書き込む。機械的な置換ではなく `diff_mode` で分岐する>
 - インライン指摘: <count> 件
+- 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` / `finders_expected` のいずれかが `null` なら `finder …` を省く** (`mode="external"` では必ず `null` になり、`null/null` では取得不能なのか 0 観点なのか判別できないため)。`mode="inline"` なら末尾に ` ※独立性は限定的`、`mode="partial"` なら ` ※観点欠落あり`、`mode="empty"` なら ` ※外部は対象差分なしと判定`、`verify_degraded=true` なら ` ※外部由来の指摘は未検証` を付ける。`skill == "none"` なら `未併用 (<reason>)`。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
 
 ## 総括
 
@@ -111,6 +118,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 
 - レビュー対象のブランチ / `base_branch` / `diff_mode`
 - インライン指摘件数
+- 外部レビュー併用の有無 (`external_review` の `skill` / `mode`。未併用 / `mode="inline"` / `mode="partial"` なら理由も 1 行)
 - 出力先 markdown ファイルパス
 
 ## 守ること

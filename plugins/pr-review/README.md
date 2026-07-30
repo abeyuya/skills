@@ -5,7 +5,8 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 ## 提供 skill / command
 
 - `skills/run-pr-review`: PR レビュー一式 (PR 取得 → `compose-review` でレビュー本文生成 → 投稿 → 過去スレッド resolve) を 1 コマンドで実行する thin orchestrator skill。caller はこれを呼ぶだけで済む。
-- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (caller が渡す書き出し先パス。省略時は `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`。ランダムサフィックスは同一秒の再呼び出しでの衝突回避用) にファイル書き出し**し、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示** を返す (caller はそのファイルを `Read` して JSON を使う)。自己完結 JSON を最終メッセージに出さないのは、それが「タスク完了」シグナルに見え、caller (orchestrator) が投稿 step を実行する前にターンを終了する停止バグを誘発するため。書き出す JSON には `body` / `event` / `comments[]` に加え、機械可読サマリ行の正典値になる `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` のいずれからも現在コンテキストで直接 (Skill ツール経由) 呼ばれる。
+- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (caller が渡す書き出し先パス。省略時は `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`。ランダムサフィックスは同一秒の再呼び出しでの衝突回避用) にファイル書き出し**し、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示** を返す (caller はそのファイルを `Read` して JSON を使う)。自己完結 JSON を最終メッセージに出さないのは、それが「タスク完了」シグナルに見え、caller (orchestrator) が投稿 step を実行する前にターンを終了する停止バグを誘発するため。書き出す JSON には `body` / `event` / `comments[]` に加え、機械可読サマリ行の正典値になる `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。指摘は自前レビューを必ず行い、加えて外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → `scan-diff-findings` (本 plugin 同梱) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。1 つも使えなかったときだけ自前単独で、その場合は理由を総括 `body` に 1 文開示する)。`run-pr-review` / `run-local-review` のいずれからも現在コンテキストで直接 (Skill ツール経由) 呼ばれる。
+- `skills/scan-diff-findings`: 差分 (ref range / ブランチ / staged / worktree) を対象に **観点別 finder の fan-out → 各 finding の adversarial verify → マージ** を行い、`path` / `line` / 要約 / 重大度 (`high` / `medium` / `low`) に正規化した findings JSON を `FINDINGS_PATH` にファイル書き出しする read-only レビュースキル。`compose-review` Step 5-2 が併用する外部レビュースキルの 1 つで、Claude Code 組み込みの `code-review` が `disable-model-invocation` によりモデルから呼べない環境でも外部レビュー併用を成立させるために用意している (後述「外部レビュースキルの併用」)。Agent ツールが使えない環境では観点リストを現在コンテキストで逐次自己適用するフォールバックを持つ。ファイル編集 / GitHub 投稿 / working tree を変える git 操作は行わない。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として投稿する。投稿経路は 2 チャネル対応 (`CHANNEL=gh`: `gh api .../reviews` の 1 コール / `CHANNEL=mcp`: GitHub MCP ツールで pending review を組み立てて submit。詳細は後述「GitHub アクセスチャネル」)。Review body には AI 自動投稿マーカーと **機械可読サマリ行** (`<!-- AI-REVIEW-RESULT: must=0 should=1 ... -->`) を自動で付与する (後述「機械可読サマリ行 (CI からの機械判定)」)。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称で、両者とも sub-agent を立てず現在コンテキストで `compose-review` を直接呼ぶ。
@@ -20,11 +21,42 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 優先順位:
 
-1. `code-review` (Claude Code 組み込み) — 内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが利用可能な現在コンテキストでのみ使える (sub-agent コンテキストでは不可)。`run-pr-review` / `run-local-review` が `compose-review` を現在コンテキストで直接呼ぶのはこのため。
-2. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — `code-review` が使えない環境での代替。
-3. いずれも無ければ自前レビュー単独。
+1. `code-review` (Claude Code 組み込み) — 内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが利用可能な現在コンテキストでのみ使える (sub-agent コンテキストでは不可)。`run-pr-review` / `run-local-review` が `compose-review` を現在コンテキストで直接呼ぶのはこのため。**ただし多くの環境ではモデルから呼び出せない** (後述「`code-review` が呼べない問題」)。
+2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、`code-review` と同じ「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい。
+3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
+4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
 
-外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は外部スキルには渡さず (scope 引数専用で free-text 非対応)、`compose-review` 側が外部スキルの findings を正規化・ラベル付けする際に適用する。
+`compose-review` は 5-2 の結末を **機械可読フィールド `external_review`** (8 キー固定: `{"skill": "scan-diff-findings"|"code-review"|…|"none", "mode": "agent"|"partial"|"inline"|"empty"|"external"|null, "verify_degraded": true|false|null, "finders": N|null, "finders_expected": N|null, "findings": N, "omitted": N, "reason": "…"|null}`。正典は [`skills/compose-review/SKILL.md`](skills/compose-review/SKILL.md) Step 6) としてハンドオフ JSON に必ず含める。人間向けの開示文 (総括 `body`) と機械向けの `external_review` の両方を必須にしているのは、開示が prose だけだと 1 文の書き漏らしで「黙って退化していた」状態に戻るため。`run-pr-review` は Step 6 の報告に、`run-local-review` は markdown ヘッダと報告にこの値を必ず載せる。
+
+- `skill == "none"` → 外部レビュー未併用。
+- `mode == "inline"` → 外部スキルが Agent ツール不可で同一コンテキストの逐次自己適用にフォールバックした (自前レビューとの独立性が限定的)。
+- `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
+- `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
+- `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
+- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
+
+PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
+
+外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は `code-review` / ホスト標準スキルには渡さない (scope 引数専用で free-text 非対応) が、`scan-diff-findings` は `EXTRA_FOCUS` で観点を free text で受け取れる。いずれの経路でも最終的なラベル付け・正規化は `compose-review` 側の責務。
+
+### `code-review` が呼べない問題 (`disable-model-invocation`)
+
+Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `disable-model-invocation: true` を持つため、**モデルから Skill ツール経由で呼び出せない**。
+
+- Skill ツールの検証段階で `Skill code-review cannot be used with Skill tool due to disable-model-invocation` として拒否される。
+- モデルに提示される available-skills 一覧からも除外されるため、そもそも候補として見えない。
+- この挙動は skill 定義の frontmatter が唯一の入力源で、settings.json のオプトインや `permissions.allow` では解除できない (検証が権限判定より前段のため)。
+
+つまり `code-review` を第 1 候補に置いた解決順だけでは、外部レビュー併用は多くの環境で構造的に不成立になる。`scan-diff-findings` (優先順 2) はこの枠を埋めるために用意されており、**`disable-model-invocation` を持たない** ことが要件そのもの。同種の自前レビュースキルを追加する場合も同様に付けてはならない。
+
+### 外部レビューの手動併用 (`/code-review` を先に実行する運用)
+
+`code-review` は **ユーザーがスラッシュコマンドとして手で叩く分には制約を受けない**。そこで、`code-review` の findings をどうしても併用したい場合は次の順で実行する:
+
+1. `/code-review` を手動で実行する (レビュー対象を引数で指定。`--fix` / `--comment` は付けない)。
+2. **同じセッションのまま** `/run-pr-review` (または `/run-local-review`) を実行する。
+
+1 の findings はセッションのコンテキストに残っているため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用でき、実質的に「自前レビュー + `code-review`」の併用になる。この運用を取らない場合は優先順 2 の `scan-diff-findings` が自動で使われる。
 
 ## caller プロジェクトのレビュー方針の置き方
 
@@ -71,6 +103,13 @@ Payload (caller が渡す JSON 相当) の概要:
 - 件数の正典は caller から渡される `label_counts`。`run-pr-review` 経路では `compose-review` が **`MAX_INLINE_COMMENTS` で省略した指摘も含めた** 件数を算出して引き回すため常に正確。`label_counts` が無い場合は `post-pr-review` が `comments[]` の先頭ラベルから集計する (省略分は数えられないため個々の件数は実際より小さくなりうる。安全側に倒れるのは **「`must=0` かつ `should=0`」という複合条件**のみで、`should` 単独では倒れない — 例えば `MAX_INLINE_COMMENTS=1` で `[must]` 1 件 + `[should]` 2 件なら結果は `must=1 should=0` になるため、`should` 単独の条件を組むと実在する should 指摘を「なし」と扱ってしまう)。
 - 標準 5 ラベル以外 / ラベル無しの指摘は `other` に合算する。ラベル体系を独自定義している caller は、`label_counts` で標準ラベルへマッピングして渡す (でなければ CI 側の合格条件に `other=0` も加える)。
 - CI が「PR の現在の head SHA に対するレビューか」を判定する場合は review の `commit_id` を head SHA と比較する。`post-pr-review` は `COMMIT_ID` が渡されたときだけ `commit_id` を送るため (未指定時は GitHub が投稿時点の最新 commit を採用)、`run-pr-review` は取得済みの `headRefOid` を常時転送する。
+- caller が `EXTERNAL_REVIEW` を渡した場合、サマリ行の直後に **外部レビュー行** も 1 行埋め込まれる。こちらは「レビュー体制が健全だったか (外部レビューを併用できたか / 縮退したか)」を機械判定するための行で、`run-pr-review` 経路では常に付く。
+
+  ```
+  <!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 omitted=0 -->
+  ```
+
+  `skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はレビュー体制の縮退シグナル (前述「外部レビュースキルの併用」参照)。パース時は `AI-REVIEW-RESULT` と同様に係留キーを前置する。
 
 ## 重要度ラベル
 

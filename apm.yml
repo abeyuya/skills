@@ -9,7 +9,7 @@
 #
 # 利用方法は README.md の「利用方法 (apm 経由)」を参照。
 name: abeyuya-skills
-version: 0.2.0
+version: 0.3.0
 description: abeyuya 個人が利用する Claude Code 向け skill / plugin 群
 author: abeyuya
 includes: auto

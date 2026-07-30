@@ -42,6 +42,15 @@ type ReviewPayload = {
   comments: ReviewComment[];   // 必須。空配列 ([]) 可。
   commit_id?: string;          // 任意。head commit の SHA。force-push / rebase での行ズレ防止に推奨。省略時は GitHub 側で最新 commit を採用。
   label_counts?: Record<string, number>; // 任意。ラベル別指摘件数の正典値 (prompt 経由では `LABEL_COUNTS`)。渡されれば機械可読サマリ行の集計に優先採用される。詳細は「機械可読サマリ行」節。
+  external_review?: {          // 任意。レビュー生成側が外部レビュースキルを併用したかの記録 (prompt 経由では `EXTERNAL_REVIEW`、1 行の JSON)。渡されれば `AI-REVIEW-EXTERNAL` 行として body に埋め込む。詳細は「機械可読サマリ行」節。
+    skill: string;             // 併用した外部レビュースキル名。未併用は "none"。
+    mode: string | null;       // "agent" / "partial" / "inline" / "empty" / "external" / null。
+    verify_degraded?: boolean | null;
+    finders?: number | null;
+    finders_expected?: number | null;
+    findings?: number;
+    omitted?: number;          // 外部スキル側で件数上限により落とされた指摘数。
+  };
 };
 
 type ReviewComment =
@@ -121,6 +130,21 @@ caller (人 / 外部システム) は Payload を渡すだけで、投稿の実�
 - 挿入位置は **AI 自動投稿マーカーの直後 (区切り線 `---` より前)** に固定する (手順 1 参照)。caller 由来の総括本文の中には入れない (本文中の任意位置に散らすと 1 行契約が崩れる)。
 - **指摘 0 件 (`comments: []`) でも必ず出力する**。この場合は全キーが `0` の行になる。
 
+### 外部レビュー行 (`AI-REVIEW-EXTERNAL`)
+
+caller から `external_review` (prompt 経由では `EXTERNAL_REVIEW`。1 行の JSON) が渡された場合のみ、`AI-REVIEW-RESULT` の **直後の行** (空行を挟まない) に 1 行出力する。渡されなければ行ごと省略する (本 skill が値を捏造しない)。
+
+```
+<!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 omitted=0 -->
+```
+
+- **異常系 (`LABEL_COUNTS` と同じ扱い)**: `EXTERNAL_REVIEW` が渡されたが **JSON として parse できない / 必須キー (`skill` / `mode`) を欠く / `mode` が enum 外** の場合は、**行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない (CI 側のパースが壊れた値を読むため)。`reason` は日本語自由文で空白・記号を含みうるため `LABEL_COUNTS` より壊れやすい前提で扱う。なお `reason` は本行には出力しない (人間向けの理由は総括本文の開示文が担う)。
+
+- 目的: レビュー生成側 (`compose-review`) が **外部レビュースキルを併用できたか / 縮退したか** を、Review body の日本語本文を読まずに CI から判定できるようにする。`AI-REVIEW-RESULT` が「指摘の件数」を機械可読にするのと同じ役割を「レビュー体制の健全性」について果たす。
+- キーと値: `skill` (未併用は `none`) / `mode` (`agent` / `partial` / `inline` / `empty` / `external` / `null`) / `verify_degraded` (`true` / `false` / `null`) / `finders` (`<finders>/<finders_expected>`。どちらかが `null` なら `finders=n/a`) / `findings` (整数) / `omitted` (整数。外部スキル側で件数上限により落とされた指摘数。`> 0` はこの経路だけで起きる縮退なので必ず出力する)。値に半角スペースを含めない (含む場合は `_` に置換する)。`external_review` に無いキーは出力しない。
+- CI 側は係留キー `AI-REVIEW-EXTERNAL` を前置してパースする (例: `AI-REVIEW-EXTERNAL:.*?skill=(\S+).*?mode=(\S+)`)。`skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はいずれも「レビュー体制が縮退している」シグナルで、必要なら再レビューを促す判断材料にできる。
+- **1 つの Review body にこの行も 1 行だけ**。`AI-REVIEW-RESULT` と同様、caller 由来の総括本文には入れない。
+
 ### 集計ルール
 
 1. caller から `LABEL_COUNTS` (Payload の `label_counts`) が渡されていれば **それを正典として採用する**。`MAX_INLINE_COMMENTS` による省略分を含む正確な件数を持つのは caller (レビュー生成側) だけなので、渡された値を本 skill 側で再計算・上書きしない。
@@ -178,6 +202,7 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 > **[AI 自動投稿]** このレビューは AI エージェントによって自動生成されました。レビュー内容の判断は AI が行っています。
 
 <!-- AI-REVIEW-RESULT: must=0 should=1 nit=2 question=0 pre_existing=0 other=0 -->
+<!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 omitted=0 -->
 
 ---
 
@@ -185,6 +210,8 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 ```
 
 サマリ行はマーカー行との間に **空行を 1 行入れる** (マーカーは blockquote なので直後の行に置くと lazy continuation で blockquote に取り込まれ、行の構造が崩れうる)。サマリ行の前後をこの形に固定することで、CI 側は「マーカー直後の 1 行」を安定してパースできる。
+
+`AI-REVIEW-EXTERNAL` 行は **`external_review` / `EXTERNAL_REVIEW` が渡されたときだけ** `AI-REVIEW-RESULT` の直後 (間に空行を入れず) に出力する (渡されなければ行ごと省略する。詳細は「機械可読サマリ行」節)。
 
 確定した最終 Payload のスキーマは以下のとおり (`body` は上記マーカー + サマリ行込みの文字列)。`CHANNEL=gh` ではこれを `/tmp/review.json` に **`Write` ツールで** 書き出す (`heredoc` や `cat` リダイレクトは使わない)。`CHANNEL=mcp` ではファイルには書き出さず、手順 2 の各ツール引数として直接渡す:
 
@@ -215,7 +242,7 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 - 単一行コメントは `path` / `line` / `side` を指定する。
 - 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。
 - `commit_id` は caller から `COMMIT_ID` が渡された場合のみ含める (詳細は「Public Payload Interface」セクションの「Payload スキーマ」参照)。
-- **`label_counts` / `LABEL_COUNTS` は GitHub へ送る最終 Payload に含めない** (本 skill 内でサマリ行を組み立てるためだけに使う入力。GitHub の Review API が受け付けないキーであり `--input` に混ぜると 422 になる)。
+- **`label_counts` / `LABEL_COUNTS` / `external_review` / `EXTERNAL_REVIEW` は GitHub へ送る最終 Payload に含めない** (いずれも本 skill 内で `body` の機械可読行を組み立てるためだけに使う入力。GitHub の Review API が受け付けないキーであり `--input` に混ぜると 422 になる)。`compose-review` が出力する `mode` 等、本 skill の Payload スキーマに無いキーも同様に受け取っても最終 Payload には含めない。
 - 指摘がない場合: `body` はマーカー + 全キー `0` のサマリ行 (`<!-- AI-REVIEW-RESULT: must=0 should=0 nit=0 question=0 pre_existing=0 other=0 -->`) + 区切り線 + 「特に指摘なし」相当の文言、`comments` は `[]`、`event` は `COMMENT` で投稿する。指摘 0 件でもサマリ行を省略しない (CI が「レビュー実施済みで指摘ゼロ」を判別するための必須要件)。
 - インラインコメント (`comments[].body`) には個別マーカーを付けない (Review 本文側のマーカーで帰属は十分であり、`[must]` 等の重要度ラベルとの衝突や冗長さも避けるため)。
 

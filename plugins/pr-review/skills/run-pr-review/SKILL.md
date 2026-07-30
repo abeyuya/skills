@@ -70,6 +70,10 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 `Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す。**Task / Agent ツールで sub-agent を spawn しない** — `compose-review` が Step 5-2 で `code-review` 等の外部レビュースキルを併用する際、その fan-out (Agent ツール) は sub-agent コンテキストでは動かず、現在コンテキストでのみ動くため。レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。
 
+#### 外部レビューの手動併用 (任意, ユーザー向け運用)
+
+`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
+
 #### 渡す引数
 
 `compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
@@ -91,11 +95,12 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 
 > ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、ここで応答を打ち切ると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この設計で最も起こりやすい失敗)。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 3 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行する**。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。
 
-`Read` で取得した `HANDOFF_PATH` の中身は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `label_counts` / `commit_id`) または error JSON。これを parse して各フィールドを読み取り、後続 step に渡す:
+`Read` で取得した `HANDOFF_PATH` の中身は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `label_counts` / `external_review` / `commit_id`) または error JSON。これを parse して各フィールドを読み取り、後続 step に渡す:
 
 - **`{"error": ...}` だけだった場合** → Step 4 / 5 は実行せず停止し、Step 6 の caller 報告でそのメッセージを転送する。
 - **`HANDOFF_PATH` の `Read` が失敗した (file-not-found 等。compose-review が JSON を書き出す前に停止した場合に起こりうる)、`mode` が `"pr"` でない、または JSON として読めない (壊れている / 必須フィールド `body`・`event`・`comments` の欠落) 場合** → 整合性エラーとして Step 4 / 5 は実行せず停止し、Step 6 で「compose-review のハンドオフ JSON が取得できなかった / 想定形式でなかった」旨を caller に報告する (壊れた / 欠落した入力のまま post-pr-review へ進めない)。
-- **正常時** → `body` / `event` / `comments` / `label_counts` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
+- **正常時** → `body` / `event` / `comments` / `label_counts` / `external_review` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
+  - `external_review` も compose-review 側で必須 (契約上) だが、**欠落 / 壊れていても投稿は止めない**: `EXTERNAL_REVIEW` を渡さずに `post-pr-review` を呼び (`AI-REVIEW-EXTERNAL` 行が省略される)、Step 6 の報告では外部レビュー行を `不明 (compose-review が external_review を返さず)` と明記する。**黙って省略しない** — 「情報なし」と「正常併用」を取り違えさせないため。
   - `label_counts` も compose-review 側で必須 (契約上) だが、**欠落 / 壊れていても投稿は止めない**: `LABEL_COUNTS` を渡さず `post-pr-review` 側の `comments[]` 集計にフォールバックさせ、その旨を Step 6 の報告に 1 行添える (この場合 `MAX_INLINE_COMMENTS` 省略分が機械可読サマリ行の件数に反映されないが、**「`must=0` かつ `should=0`」という複合条件での判定は安全側に倒れる**。`should` 単独では倒れないため個々の件数を根拠にしないこと。詳細は `post-pr-review` の「機械可読サマリ行」節)。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
@@ -112,6 +117,7 @@ Step 1 の `OWNER` / `REPO` / `PR_NUMBER` / `CHANNEL` と Step 3 で得たレビ
 | `label_counts` | `LABEL_COUNTS` (1 行の JSON 文字列として渡す。例: `LABEL_COUNTS={"must":1,"should":2,"nit":0,"question":0,"pre_existing":0,"other":0}`) |
 | `commit_id` | `COMMIT_ID` |
 | `mode` | (転送しない / 本 skill が `"pr"` 整合性チェック後に破棄。post-pr-review は `mode` を受け付けないため `--input` に含めると 422 になる) |
+| `external_review` | `EXTERNAL_REVIEW` (1 行の JSON 文字列として渡す。例: `EXTERNAL_REVIEW={"skill":"scan-diff-findings","mode":"agent","verify_degraded":false,"finders":5,"finders_expected":5,"findings":9}`)。`post-pr-review` が Review body に `<!-- AI-REVIEW-EXTERNAL: ... -->` として埋め込むため、**GitHub 上にも外部レビュー併用の機械可読な痕跡が残る**。加えて本 skill 自身も Step 6 の報告に使う |
 
 `label_counts` の転送は **Review body の機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=… -->`) の件数を正確にするため**に必要 (`post-pr-review` は `LABEL_COUNTS` が無ければ `comments[]` から集計するが、それでは `MAX_INLINE_COMMENTS` で省略された指摘が件数から落ちる)。サマリ行は CI (required status check 等) がパースする契約なので、`compose-review` が返した値をそのまま転送し、本 skill 側で再集計・加工しない。`COMMIT_ID` も CI が「head SHA に対するレビューか」を review の `commit_id` で判定する前提のため、Step 2 で取得した `headRefOid` を従来どおり常時転送する (本 skill の `COMMIT_ID` 挙動は変更なし)。
 
@@ -129,6 +135,7 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
 - インライン指摘件数 / ラベル別件数内訳 (優先度順、`[must]` / `[should]` 等、件数>0 のもの)
+- **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`mode="external"` の手動 `/code-review` 併用では必ず `null` になるため、`null/null` と描画すると取得不能なのか 0 観点なのか判別できない)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
 - resolve したスレッド件数 (Step 5 の戻り値)
 - `label_counts` が欠落 / 壊れていて `LABEL_COUNTS` を渡せなかった場合はその旨 1 行 (機械可読サマリ行が `comments[]` 集計にフォールバックしたことの申告)
 

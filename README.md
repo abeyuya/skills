@@ -57,10 +57,16 @@ plugins/
     skills/
       run-pr-review/
         SKILL.md
+      compose-review/
+        SKILL.md
+      scan-diff-findings/
+        SKILL.md
       post-pr-review/
         SKILL.md
       resolve-pr-threads/
         SKILL.md
       run-local-review/
+        SKILL.md
+      distill-pr-reviews/
         SKILL.md
 ```
