@@ -31,7 +31,11 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `skill == "none"` → 外部レビュー未併用。
 - `mode == "inline"` → 外部スキルが Agent ツール不可で同一コンテキストの逐次自己適用にフォールバックした (自前レビューとの独立性が限定的)。
 - `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
-- いずれの縮退も総括 `body` の開示対象。`mode == "agent"` のときだけ開示不要。
+- `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
+- `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
+- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
+
+PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
 外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は `code-review` / ホスト標準スキルには渡さない (scope 引数専用で free-text 非対応) が、`scan-diff-findings` は `EXTRA_FOCUS` で観点を free text で受け取れる。いずれの経路でも最終的なラベル付け・正規化は `compose-review` 側の責務。
 
@@ -99,6 +103,13 @@ Payload (caller が渡す JSON 相当) の概要:
 - 件数の正典は caller から渡される `label_counts`。`run-pr-review` 経路では `compose-review` が **`MAX_INLINE_COMMENTS` で省略した指摘も含めた** 件数を算出して引き回すため常に正確。`label_counts` が無い場合は `post-pr-review` が `comments[]` の先頭ラベルから集計する (省略分は数えられないため個々の件数は実際より小さくなりうる。安全側に倒れるのは **「`must=0` かつ `should=0`」という複合条件**のみで、`should` 単独では倒れない — 例えば `MAX_INLINE_COMMENTS=1` で `[must]` 1 件 + `[should]` 2 件なら結果は `must=1 should=0` になるため、`should` 単独の条件を組むと実在する should 指摘を「なし」と扱ってしまう)。
 - 標準 5 ラベル以外 / ラベル無しの指摘は `other` に合算する。ラベル体系を独自定義している caller は、`label_counts` で標準ラベルへマッピングして渡す (でなければ CI 側の合格条件に `other=0` も加える)。
 - CI が「PR の現在の head SHA に対するレビューか」を判定する場合は review の `commit_id` を head SHA と比較する。`post-pr-review` は `COMMIT_ID` が渡されたときだけ `commit_id` を送るため (未指定時は GitHub が投稿時点の最新 commit を採用)、`run-pr-review` は取得済みの `headRefOid` を常時転送する。
+- caller が `EXTERNAL_REVIEW` を渡した場合、サマリ行の直後に **外部レビュー行** も 1 行埋め込まれる。こちらは「レビュー体制が健全だったか (外部レビューを併用できたか / 縮退したか)」を機械判定するための行で、`run-pr-review` 経路では常に付く。
+
+  ```
+  <!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 -->
+  ```
+
+  `skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はレビュー体制の縮退シグナル (前述「外部レビュースキルの併用」参照)。パース時は `AI-REVIEW-RESULT` と同様に係留キーを前置する。
 
 ## 重要度ラベル
 
