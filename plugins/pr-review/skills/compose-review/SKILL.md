@@ -1,6 +1,6 @@
 ---
 name: compose-review
-description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (省略時は既定 temp パス) にファイル書き出しし、最終メッセージでは「そのファイルを Read して続行せよ」という継続指示を返す** (停止防止のため自己完結 JSON は最終メッセージに出さない)。レビュー指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (省略時は既定 temp パス) にファイル書き出しし、最終メッセージでは「そのファイルを Read して続行せよ」という継続指示を返す** (停止防止のため自己完結 JSON は最終メッセージに出さない)。レビュー指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。出力 JSON には `post-pr-review` が機械可読サマリ行 (`AI-REVIEW-RESULT`) を組み立てるための `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
 ---
 
 # compose-review skill
@@ -71,7 +71,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   1. `git diff <base>...HEAD` が非空 → `diff_mode = "commit"`
   2. `commit` モード空 + `git diff --cached` が非空 → `diff_mode = "staged"`
   3. `staged` モード空 + `git diff` が非空 → `diff_mode = "worktree"`
-  4. すべて空 → `diff_mode = "none"`。Step 2〜4 と Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]` にして返す。
+  4. すべて空 → `diff_mode = "none"`。Step 2〜4 と Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]`、`label_counts` を全キー `0` にして返す (5-3 を skip しても `label_counts` は省略しない。省略すると `post-pr-review` のサマリ行が `comments[]` 集計フォールバックに落ちる)。
 
 ### Step 2. スタイル参考ガイドを読み込む
 
@@ -103,7 +103,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 - **PR モード**: **git 主経路** — Step 1 で退避した SHA を使い `git diff <BASE_SHA>...<HEAD_SHA>` (三点記法 = merge-base 基準で base 進行を除外。GitHub の "Files changed" と一致) を差分ソースにする。head/base の object は Step 1 で read-only fetch 済みなので `gh` は不要。ローカルの作業ツリー・ローカルブランチは一切変えない (「守ること」の read-only fetch 例外)。git 経路では出力打ち切りが起きないため truncation 検知 / ファイル単位の追い読みは不要。
   - **任意の補助 (使える環境のみ)**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>`。この場合 **truncation 検知** (`gh pr diff --name-only` の件数と patch hunk header (`diff --git a/...`) の出現件数の突合、末尾 `... (truncated)` の有無) を行い、疑わしければ `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) で追い読みする (`--paginate` 必須。`per_page=30` デフォルトで 30 ファイル超が落ちる事故防止)。ただし git 経路が使えるなら上記主経路を優先する。
   - git 経路でも SHA を確定できず差分を取れないときに限り差分取得不能として扱う (Step 1 で既に `HEAD_SHA` を確定しているのが前提)。
-  - 差分が空なら Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]` で返す。
+  - 差分が空なら Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]`、`label_counts` を全キー `0` で返す (ローカルモードの `diff_mode="none"` と同様、5-3 を skip しても `label_counts` は省略しない)。
 - **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` でファイル一覧を取りファイル単位で追い読み。`commit` モードでは差分本体とは別に **`commit_count = git rev-list --count <base>..HEAD` で件数を取得** し Step 6 出力に含める (`--oneline | wc -l` ではなく `rev-list --count` を使う。コミットメッセージ改行等で値ズレしない正準コマンド)。`staged` / `worktree` / `none` モードでは `commit_count = 0` 固定。
   - `commit`: `git diff <base>...HEAD` (三点記法でベース進行を除外)
   - `staged`: `git diff --cached`
@@ -161,11 +161,16 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - `EXISTING_THREADS_CONTEXT` が渡されている場合、同主旨の指摘は再掲しない (位置が同じでも論点が別なら新規指摘してよい)。重要度が既存より高い場合は別主旨として残す ([must]/[should] を dedupe で抑制すると実害大のため判定に迷えば残す方向)。
 - `CI_FAILURE_CONTEXT` が渡されている場合は **`[must]` 指摘の根拠として扱う**: 失敗ジョブが存在する以上「修正必須」であり `[nit]` や `[question]` で扱わない (詳細はスタイル参考ガイドの「CI の扱い」を参考)。
 - `MAX_INLINE_COMMENTS` が正の整数なら `comments[]` を N 件以下に絞る (優先度: `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。N 超過で省略があれば `body` 末尾に「省略件数 + ラベル別内訳」を 1 文添える。
+- **`label_counts` の確定**: 上記の絞り込みを行う **前** の最終指摘全体 (= マージ・重複排除・範囲外除外まで済ませ、`MAX_INLINE_COMMENTS` による省略だけを適用していない集合) について、ラベル別件数を集計して `label_counts` として保持し Step 6 の出力に含める。これは `post-pr-review` が Review body に埋め込む機械可読サマリ行 (`AI-REVIEW-RESULT`) の正典値になるため、**省略された指摘も件数に含める** (`comments[]` からの再集計では省略分が落ち、CI 側の判定件数が実際より小さくなるため本 skill から引き回す)。
+  - キーは `must` / `should` / `nit` / `question` / `pre_existing` / `other` の 6 つで、件数 0 のキーも `0` を明示して必ず全て出す。
+  - 標準 5 ラベル以外のラベル (プロジェクト指示ファイルで独自定義されたラベル等) やラベル無しの指摘は `other` に加算する。ただし独自ラベルが標準ラベルと同義なら (例: `[blocker]` = 修正必須) **対応する標準キーに寄せて集計する** — CI は `must` / `should` を見るため、`other` に落とすとブロッキング指摘が 0 件と誤判定されるリスクがある (詳細は `post-pr-review` の「機械可読サマリ行」節)。
+  - 差分なし / 指摘なしの場合は全キー `0` の `label_counts` を出す (省略しない)。
 
 #### 5-4. body 構成
 
 - `event` は **常に `"COMMENT"`** (`post-pr-review` の規約)。
 - 指摘が無くても Step 6 で「特に指摘なし」相当の JSON を返す (skip しない)。
+- 機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: ... -->`) は **`body` に書かない** (`post-pr-review` が `label_counts` から組み立てて prepend する。本 skill が書くと 1 Review body に 1 行という契約が二重出力で崩れる)。
 - `body` は最低限 `## 総合判断` / `## 指摘内訳` / `## 良かった点` (1〜2 件) の 3 サブ見出しで構成する (caller の markdown 出力テンプレート / grep スクリプトとの互換のため)。`## 指摘内訳` には `comments[]` に実際に出したインライン指摘の **ラベル別件数を優先度順 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で件数>0 のものだけ** 列挙する (例: `[must] 1 件 / [should] 2 件 / [nit] 1 件`)。件数はマージ後の最終 `comments[]` を反映する。インライン指摘が 0 件なら `指摘なし` と書く。指摘なし / 差分なしの場合も 3 見出しを残し、`## 指摘内訳` は `指摘なし`、他 2 見出しは「該当なし」相当で埋める。
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が prepend する)。`body` は生本文。
 
@@ -192,6 +197,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
     {"path": "src/example.ts", "line": 42, "side": "RIGHT", "body": "[should] ..."},
     {"path": "src/example.ts", "start_line": 50, "start_side": "RIGHT", "line": 55, "side": "RIGHT", "body": "[must] ..."}
   ],
+  "label_counts": {"must": 1, "should": 1, "nit": 0, "question": 0, "pre_existing": 0, "other": 0},
   "commit_id": "9f8e7d6c..."
 }
 ```
@@ -206,18 +212,21 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   "commit_count": 3,
   "body": "総括コメント本文",
   "event": "COMMENT",
-  "comments": []
+  "comments": [],
+  "label_counts": {"must": 0, "should": 0, "nit": 0, "question": 0, "pre_existing": 0, "other": 0}
 }
 ```
 
 - `commit_id` は **PR モードのみ** 含める。差分なし (Step 4 の `git diff <BASE_SHA>...<HEAD_SHA>` が空) の場合も Step 1 で確定した `HEAD_SHA` を必ず含める (force-push 行ズレ防止のため optional ではなく必須)。
+- `label_counts` は **両モードで必ず含める** (6 キー全出力、件数 0 も明示。算出規則は Step 5-3)。PR モードでは `run-pr-review` が `post-pr-review` の `LABEL_COUNTS` に転送し、Review body の機械可読サマリ行 (`AI-REVIEW-RESULT`) の正典値になる。ローカルモードでは投稿が無いため必須の消費者はいないが、出力形式を両モードで揃えるため同じく含める (caller は無視してよい)。
+  - `label_counts` は **`MAX_INLINE_COMMENTS` で省略した指摘も含む** 全指摘の件数であり、`comments[]` の件数や `body` の `## 指摘内訳` (実際に出したインライン指摘の内訳) とは省略発生時に一致しない。これは意図した差 (CI は「指摘が存在したか」を知る必要があるため) であり、不一致を理由に `label_counts` を `comments[]` 由来へ書き換えない。
 - `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` の取得手順は Step 4 ローカルモードに集約 (`git rev-list --count <base>..HEAD`、`staged` / `worktree` / `none` 時は `0` 固定)。
 - 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
-- 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`。空文字列は不可。
+- 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`、`label_counts` は全キー `0`。空文字列は不可。
 
 ### 失敗時
 
-致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空など) は `{"error":"<人間向けメッセージ>"}` を Step 6 と同じ手順で `HANDOFF_PATH` に書き出し、最終メッセージでは「`<書き出し先パス>` を `Read` して error 分岐に従え」という継続指示を返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は読み込んだ JSON に `error` フィールドがあれば caller に転送して停止する。
+致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空など) は `{"error":"<人間向けメッセージ>"}` を Step 6 と同じ手順で `HANDOFF_PATH` に書き出し、最終メッセージでは「`<書き出し先パス>` を `Read` して error 分岐に従え」という継続指示を返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `label_counts` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は読み込んだ JSON に `error` フィールドがあれば caller に転送して停止する。
 
 ## 守ること
 
@@ -227,6 +236,6 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - 作業ツリー / ローカルブランチを書き換える git 操作 (`git checkout` / `git reset` / `git commit` / `git push` / `git pull` 等) は使わない。read-only の git コマンド (`git rev-parse` / `git log` / `git diff` / `git show` / `git cat-file` / `git ls-remote` / `git symbolic-ref` / `git remote get-url`) のみ。**この禁止は本 skill 自身の作業ツリー / ローカル ref に対するもの**であり、Step 5-2 で ref range (または PR URL) を target として渡した `code-review` が自身の責務でレビュー対象を取得することは妨げない。「fetch/checkout 禁止だから PR モードで code-review を使えない」は誤読であり、PR モードでは作業ツリーの状態に関係なく code-review を併用する (Step 5-2 PR モード参照)。ref range を渡す `branch` モードは read-only fetch 済み object に対するローカル `git diff` で review するだけで checkout を伴わないため、この禁止に抵触しない。
   - **例外: PR ref / base ブランチ / default branch の read-only fetch は許可** — `git fetch origin refs/pull/<PR_NUMBER>/head` (フォーク PR でも可)、base/default ブランチの `git fetch origin <ref>`、cross-repo の `git fetch https://github.com/<OWNER>/<REPO>.git <refspec>`、および `git ls-remote --symref origin HEAD` (default branch 判定) は、いずれも `FETCH_HEAD` / remote-tracking ref のみを更新し現ブランチ・作業ツリー・ローカルブランチを一切変えない read-only 操作なので許容する (Step 1 の head/base SHA 解決、Step 4 の差分取得、Step 5-2 の ref range target で使う)。取得した SHA は `git diff <BASE_SHA>...<HEAD_SHA>` / `git show <SHA>:<path>` 等の参照にのみ使い、`checkout` 等でローカルに反映しない。`git pull` (= fetch + merge/rebase で作業ツリーを進める) は引き続き禁止。
 - CI failure log の **収集** や reviewThreads の **取得** は本 skill では行わない (caller が `CI_FAILURE_CONTEXT` / `EXISTING_THREADS_CONTEXT` 経由で渡す前提)。
-- AI 自動投稿マーカーは付けない (`post-pr-review` が prepend する)。
+- AI 自動投稿マーカーと機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: ... -->`) は `body` に付けない (どちらも `post-pr-review` が prepend する。本 skill の責務は `label_counts` を算出して渡すところまで)。
 - `Write` ツールでのファイル出力は **`HANDOFF_PATH` への完成 JSON / error JSON 書き出しのみ許可** (Step 6 / 失敗時)。markdown 等それ以外の Write は行わない。
 - **最終メッセージに自己完結 JSON を出さない**。最終メッセージは常に「`HANDOFF_PATH` を `Read` して続行せよ」という継続指示文にする (停止バグ防止。詳細は Step 6 / 冒頭概要)。
