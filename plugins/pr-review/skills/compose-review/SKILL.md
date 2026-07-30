@@ -1,6 +1,6 @@
 ---
 name: compose-review
-description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (省略時は既定 temp パス) にファイル書き出しし、最終メッセージでは「そのファイルを Read して続行せよ」という継続指示を返す** (停止防止のため自己完結 JSON は最終メッセージに出さない)。レビュー指摘は自前レビューを必ず行い、加えて外部レビュースキル (優先順: `code-review` (Claude Code 組み込み。`disable-model-invocation` で Skill ツールから呼べない環境では不成立) → `scan-diff-findings` (本 plugin 同梱のモデル呼び出し可能なレビュースキル) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。1 つも使えなかったときだけ自前単独で、その場合は理由を総括 `body` に 1 文開示する)。出力 JSON には `post-pr-review` が機械可読サマリ行 (`AI-REVIEW-RESULT`) を組み立てるための `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
+description: PR 差分 or ローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成する skill。`/pr-review-style-reference` slash command とプロジェクト指示ファイル (REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md) を読み込んでレビュー方針を決め、差分を読んで `post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (省略時は既定 temp パス) にファイル書き出しし、最終メッセージでは「そのファイルを Read して続行せよ」という継続指示を返す** (停止防止のため自己完結 JSON は最終メッセージに出さない)。レビュー指摘は自前レビューを必ず行い、加えて外部レビュースキル (優先順: `code-review` (Claude Code 組み込み。`disable-model-invocation` で Skill ツールから呼べない環境では不成立) → `scan-diff-findings` (本 plugin 同梱のモデル呼び出し可能なレビュースキル) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。1 つも使えなかったときだけ自前単独で、その場合は理由を総括 `body` に 1 文開示する)。出力 JSON には `post-pr-review` が機械可読サマリ行 (`AI-REVIEW-RESULT`) を組み立てるための `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) と、外部レビュー併用の結末を caller / CI が本文なしで判定できる `external_review` (使用スキル / fan-out mode / findings 件数 / 未併用理由) を含める。`run-pr-review` / `run-local-review` orchestrator や Codex 等他 caller から現在コンテキストで直接 Skill ツール経由で呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない (read-only)。
 ---
 
 # compose-review skill
@@ -147,10 +147,11 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   ```
   TARGET=<下表参照>
   DIFF_MODE=<下表参照>
-  MAX_FINDINGS=<MAX_INLINE_COMMENTS が正の整数ならその値、それ以外は行ごと省略>
   FINDINGS_PATH=<本 step で生成する未作成の絶対パス。例 /tmp/scan-diff-findings-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json。ファイルは作らずパス文字列のみ>
   EXTRA_FOCUS=<Step 3 のプロジェクト指示ファイルから抽出した「観点」だけを数行で。アクション指示は渡さない。無ければ行ごと省略>
   ```
+
+  **`MAX_INLINE_COMMENTS` を `MAX_FINDINGS` として転送してはならない** (絞り込みは 5-3 に一任する)。外部スキル側で先に上位 N 件へ間引かせると、超過分の指摘が内容も重大度も本 skill に届かず、5-3 の `label_counts` (= `MAX_INLINE_COMMENTS` による省略分も含む全指摘件数、`post-pr-review` の機械可読サマリ行の正典値) が過小になる。過小な `must` / `should` 件数は CI の required status check を誤って通過させるため、`MAX_FINDINGS` は原則渡さない (差分が極端に大きく外部スキルの出力が発散する場合に限り、`MAX_INLINE_COMMENTS` より十分大きい値を明示的に渡してよい)。
 
   | 本 skill のモード | `TARGET` | `DIFF_MODE` |
   |---|---|---|
@@ -160,6 +161,8 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   | ローカル `worktree` | (省略) | `worktree` |
 
   戻り後は **`FINDINGS_PATH` を `Read` ツールで読み込み**、JSON を `error` → 正常 の順で評価する (最終メッセージは継続指示文なので parse 対象にしない)。**ここで応答を終了しない** — 読み込んだ findings を正規化して 5-3 → 5-4 → Step 6 まで同一応答内で続行する。`error` だった / `Read` が失敗した / parse できない / `findings` を欠く場合は、その回の外部レビューは得られなかったものとして扱い、**5-4 の未併用開示を入れた上で** 5-1 単独で 5-3 へ進む (本 skill 全体をエラーにはしない)。
+
+  読み込んだ JSON の **`fanout.mode` を必ず確認する**。`"inline"` (Agent ツールが使えず現在コンテキストでの逐次自己適用にフォールバックした) の場合、得られた findings は「独立した第 2 系統」ではなく **同一モデル・同一コンテキストでの自己レビュー** であり 5-1 との独立性が縮退している。findings は通常どおりマージしてよいが、**5-4 で「独立性が縮退した」旨の開示を行う** (未併用とは区別する)。`fanout.mode` / `fanout.finders` / `findings` 件数は Step 6 の `external_review` に記録する。
 
   `scan-diff-findings` の findings は既に `path` (リポジトリルート相対) / `line` / `summary` / `severity` に正規化済みなので、下記「正規化」のうち **重要度ラベル付与だけ** を行えばよい。`severity` → ラベルの既定対応:
 
@@ -187,7 +190,8 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - 外部スキルの出力に本 skill 互換の重要度ラベルが無い場合 (例: `code-review` の出力は `[{file,line,summary,failure_scenario}]` の配列で、配列順=重大度のみでラベル無し) は、Step 2 のスタイル参考ガイド + Step 3 の `REVIEW.md` 方針で `[must]` / `[should]` / `[nit]` / `[question]` を付与する (correctness 上位は `[must]` / `[should]`、cleanup / altitude 下位は `[nit]` を基準にし、`REVIEW.md` が必須化する観点は昇格)。
   - 指摘本文は `[label] <要約>。<根拠 / 再現>` をスタイル参考ガイドの日本語トーンで整形する。
   - `code-review` / `scan-diff-findings` 以外 (Codex `/review` 等) の出力形式は環境依存で未確定なため、得られた構造から `path` / `line` / 要約 / 重大度を抽出して同様に正規化する。形式が読み取れない部分は安全側 (取りこぼし回避) で残す。
-- **外部レビュー未併用の記録**: 解決順 1〜3 のすべてが不可だった場合、または解決したスキルの結果が取得できなかった (error / `Read` 失敗 / parse 失敗) 場合は、**どの候補がなぜ使えなかったかを 1 行で保持** し 5-4 の開示文に使う (例: 「`code-review` は `disable-model-invocation` で Skill ツールから呼べず、`scan-diff-findings` も未インストール」)。開示は 5-4 で **必須**。
+- **外部レビュー結果の記録 (機械可読 + 開示)**: 5-2 の結末を **Step 6 の `external_review` フィールドとして必ず記録する** (併用できた場合も、できなかった場合も)。あわせて、未併用 / 独立性縮退の場合は **どの候補がなぜ使えなかったかを 1 行で保持** し 5-4 の開示文に使う (例: 「`code-review` は `disable-model-invocation` で Skill ツールから呼べず、`scan-diff-findings` も未インストール」)。
+  - `external_review` は「黙って退化していないか」を caller / CI が **本文を読まずに判定できる** ようにするためのフィールド。開示文 (5-4) は人間向け、`external_review` は機械向けで、**両方必須** (prose だけに頼ると 1 文の書き漏らしで検知不能に戻る)。算出規則は Step 6 参照。
 
 #### 5-3. マージと後処理
 
@@ -209,7 +213,10 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - `event` は **常に `"COMMENT"`** (`post-pr-review` の規約)。
 - 指摘が無くても Step 6 で「特に指摘なし」相当の JSON を返す (skip しない)。
 - 機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: ... -->`) は **`body` に書かない** (`post-pr-review` が `label_counts` から組み立てて prepend する。本 skill が書くと 1 Review body に 1 行という契約が二重出力で崩れる)。
-- **外部レビュー未併用の開示 (必須)**: 5-2 で外部レビュースキルを 1 つも併用できなかった場合 (解決順 1〜3 すべて不可、または解決したスキルの結果が取得できなかった場合) は、**その事実と理由を `## 総合判断` の末尾に 1 文記載する**。文例: `外部レビュー未併用: code-review が disable-model-invocation により Skill ツールから呼べず、scan-diff-findings も利用できなかったため、本レビューは自前レビュー単独で作成した。` 併用できた場合は本文を入れない (どのスキルを併用したかの記載は任意)。
+- **外部レビュー未併用 / 独立性縮退の開示 (必須)**: 5-2 の結末に応じて `## 総合判断` の末尾に 1 文を記載する。
+  - **未併用** (解決順 1〜3 すべて不可、または解決したスキルの結果が取得できなかった) → 文例: `外部レビュー未併用: code-review が disable-model-invocation により Skill ツールから呼べず、scan-diff-findings も利用できなかったため、本レビューは自前レビュー単独で作成した。`
+  - **併用したが独立性が縮退** (`fanout.mode="inline"`。外部スキルが Agent ツール不可で同一コンテキストの逐次自己適用にフォールバックした) → 文例: `外部レビューは scan-diff-findings を併用したが、Agent ツールが使えず同一コンテキストでの逐次自己適用にフォールバックしたため、自前レビューとの独立性は限定的。`
+  - **正常に併用できた** → 開示文は不要 (どのスキルを併用したかの記載は任意。機械可読な記録は `external_review` が担う)。
   - この開示は **省略不可**。外部レビュー併用は本 skill の主目的なので、退化したまま黙って完了すると利用者が「併用されている前提」でレビュー品質を誤認する。差分なし (`comments` が空 / `diff_mode="none"`) で 5-2 自体を skip したケースは開示対象外 (そもそも外部レビューの対象が無い)。
 - `body` は最低限 `## 総合判断` / `## 指摘内訳` / `## 良かった点` (1〜2 件) の 3 サブ見出しで構成する (caller の markdown 出力テンプレート / grep スクリプトとの互換のため)。`## 指摘内訳` には `comments[]` に実際に出したインライン指摘の **ラベル別件数を優先度順 (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`) で件数>0 のものだけ** 列挙する (例: `[must] 1 件 / [should] 2 件 / [nit] 1 件`)。件数はマージ後の最終 `comments[]` を反映する。インライン指摘が 0 件なら `指摘なし` と書く。指摘なし / 差分なしの場合も 3 見出しを残し、`## 指摘内訳` は `指摘なし`、他 2 見出しは「該当なし」相当で埋める。
 - AI 自動投稿マーカーは **付けない** (`post-pr-review` が prepend する)。`body` は生本文。
@@ -238,6 +245,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
     {"path": "src/example.ts", "start_line": 50, "start_side": "RIGHT", "line": 55, "side": "RIGHT", "body": "[must] ..."}
   ],
   "label_counts": {"must": 1, "should": 1, "nit": 0, "question": 0, "pre_existing": 0, "other": 0},
+  "external_review": {"skill": "scan-diff-findings", "mode": "agent", "findings": 6, "reason": null},
   "commit_id": "9f8e7d6c..."
 }
 ```
@@ -253,20 +261,28 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   "body": "総括コメント本文",
   "event": "COMMENT",
   "comments": [],
-  "label_counts": {"must": 0, "should": 0, "nit": 0, "question": 0, "pre_existing": 0, "other": 0}
+  "label_counts": {"must": 0, "should": 0, "nit": 0, "question": 0, "pre_existing": 0, "other": 0},
+  "external_review": {"skill": "none", "mode": null, "findings": 0, "reason": "code-review は disable-model-invocation で Skill ツールから呼べず、scan-diff-findings も利用不可"}
 }
 ```
 
 - `commit_id` は **PR モードのみ** 含める。差分なし (Step 4 の `git diff <BASE_SHA>...<HEAD_SHA>` が空) の場合も Step 1 で確定した `HEAD_SHA` を必ず含める (force-push 行ズレ防止のため optional ではなく必須)。
 - `label_counts` は **両モードで必ず含める** (6 キー全出力、件数 0 も明示。算出規則は Step 5-3)。PR モードでは `run-pr-review` が `post-pr-review` の `LABEL_COUNTS` に転送し、Review body の機械可読サマリ行 (`AI-REVIEW-RESULT`) の正典値になる。ローカルモードでは投稿が無いため必須の消費者はいないが、出力形式を両モードで揃えるため同じく含める (caller は無視してよい)。
   - `label_counts` は **`MAX_INLINE_COMMENTS` で省略した指摘も含む** 全指摘の件数であり、`comments[]` の件数や `body` の `## 指摘内訳` (実際に出したインライン指摘の内訳) とは省略発生時に一致しない。これは意図した差 (CI は「指摘が存在したか」を知る必要があるため) であり、不一致を理由に `label_counts` を `comments[]` 由来へ書き換えない。
+- `external_review` は **両モードで必ず含める** (5-2 の結末の機械可読な記録。算出規則は 5-2 の「外部レビュー結果の記録」)。キーは 4 つ固定:
+  - `skill`: 実際に併用した外部レビュースキル名 (`"scan-diff-findings"` / `"code-review"` / ホスト標準スキル名)。1 つも併用できなかった場合は `"none"`。
+  - `mode`: 外部スキルが返した `fanout.mode` (`"agent"` / `"inline"`)。取得できない外部スキル (`code-review` / Codex `/review` 等) は `"external"`、未併用なら `null`。
+  - `findings`: 外部スキルから得られた findings の件数 (正規化前・マージ前の生件数)。未併用なら `0`。
+  - `reason`: 未併用 / 独立性縮退の理由 1 行 (5-4 の開示文と同旨)。正常に併用できた場合は `null`。
+  - 差分なしで 5-2 自体を skip した場合は `{"skill": "none", "mode": null, "findings": 0, "reason": "対象差分なしのため 5-2 を実施せず"}` とする。
+  - caller は本フィールドを **本文を読まずに退化を検知する手段** として使える (`skill == "none"` なら外部レビュー未併用、`mode == "inline"` なら独立性縮退)。未知のフィールドとして無視する caller があっても構わないが、欠落を理由に処理を止めてはならない。
 - `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` の取得手順は Step 4 ローカルモードに集約 (`git rev-list --count <base>..HEAD`、`staged` / `worktree` / `none` 時は `0` 固定)。
 - 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
 - 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`、`label_counts` は全キー `0`。空文字列は不可。
 
 ### 失敗時
 
-致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空など) は `{"error":"<人間向けメッセージ>"}` を Step 6 と同じ手順で `HANDOFF_PATH` に書き出し、最終メッセージでは「`<書き出し先パス>` を `Read` して error 分岐に従え」という継続指示を返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `label_counts` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は読み込んだ JSON に `error` フィールドがあれば caller に転送して停止する。
+致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空など) は `{"error":"<人間向けメッセージ>"}` を Step 6 と同じ手順で `HANDOFF_PATH` に書き出し、最終メッセージでは「`<書き出し先パス>` を `Read` して error 分岐に従え」という継続指示を返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `label_counts` / `external_review` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は読み込んだ JSON に `error` フィールドがあれば caller に転送して停止する。
 
 ## 守ること
 

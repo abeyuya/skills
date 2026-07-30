@@ -26,6 +26,8 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
 4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
 
+`compose-review` は 5-2 の結末を **機械可読フィールド `external_review`** (`{"skill": "scan-diff-findings"|"code-review"|…|"none", "mode": "agent"|"inline"|"external"|null, "findings": N, "reason": "…"}`) としてハンドオフ JSON に必ず含める。人間向けの開示文 (総括 `body`) と機械向けの `external_review` の両方を必須にしているのは、開示が prose だけだと 1 文の書き漏らしで「黙って退化していた」状態に戻るため。`run-pr-review` は Step 6 の報告に、`run-local-review` は markdown ヘッダと報告にこの値を必ず載せる。`skill == "none"` は未併用、`mode == "inline"` は外部スキルが Agent ツール不可で同一コンテキストの逐次自己適用にフォールバックした (= 自前レビューとの独立性が限定的な) ケースを表す。
+
 外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は `code-review` / ホスト標準スキルには渡さない (scope 引数専用で free-text 非対応) が、`scan-diff-findings` は `EXTRA_FOCUS` で観点を free text で受け取れる。いずれの経路でも最終的なラベル付け・正規化は `compose-review` 側の責務。
 
 ### `code-review` が呼べない問題 (`disable-model-invocation`)

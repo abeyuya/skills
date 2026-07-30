@@ -51,6 +51,8 @@ HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-<branch (/ 等�
 
 `label_counts` は `post-pr-review` が Review body の機械可読サマリ行 (`AI-REVIEW-RESULT`) を組み立てるための値で、GitHub 投稿を行わない本 skill では **使わない** (markdown 出力の「インライン指摘」件数は従来どおり `comments[]` から数える)。欠落していてもエラー扱いにしない (必須フィールド判定の対象外)。
 
+`external_review` (5-2 の結末の機械可読な記録: `skill` / `mode` / `findings` / `reason`) は **markdown ヘッダと Step 3 の報告に必ず載せる** (Step 2-1 のスキーマ参照)。外部レビューが未併用 / 独立性縮退のまま完了したことを、利用者が総括本文を読まずに判別できるようにするため。欠落していてもエラー扱いにはしないが、その場合は `不明` と明記する (黙って省略しない)。
+
 ただし `HANDOFF_PATH` の中身が致命エラーの `{"error": ...}` だけだった場合 (例: `HEAD` detached、ベースブランチ解決失敗)、**`HANDOFF_PATH` の `Read` が file-not-found 等で失敗した場合** (compose-review が JSON を書き出す前に停止した可能性)、**または読み込んだ内容が JSON として parse できない / `mode` が `"local"` でない / 必須フィールド (`base_branch` / `diff_mode` / `body` / `comments`) を欠く場合** は、擬似結果 (`comments=[]` / `base_branch="<unknown>"` / `diff_mode="none"` / `commit_count=0` / `body="compose-review エラー: <error message / ハンドオフ JSON 取得・parse 失敗>"`) を組み立てて Step 2 (markdown 出力) を **必ず実行** し、Step 3 で同旨を報告する (markdown ファイルは差分が空でも必ず生成する、という本 skill「守ること」の不変条件と整合させる)。なお正常時も、同一コンテキスト実行だからと parse を省かず、必ず読み込んだ JSON を parse して各フィールドを抽出する (前段落参照)。
 
 ### Step 2. 結果を出力する (チャット + markdown ファイル)
@@ -74,6 +76,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 - 差分モード: <commit / staged / worktree / none>
 - 対象コミット: <ここは `diff_mode="commit"` のとき `<commit_count> 件 (<base_branch>..HEAD)` (例: `3 件 (main..HEAD)`)、それ以外 (`staged` / `worktree` / `none`) のとき `0 件 (コミット未作成)` と固定文字列で書き込む。機械的な置換ではなく `diff_mode` で分岐する>
 - インライン指摘: <count> 件
+- 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / findings <findings> 件)`、`mode="inline"` なら末尾に ` ※独立性は限定的` を付ける。`skill == "none"` なら `未併用 (<reason>)`。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
 
 ## 総括
 
@@ -115,6 +118,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 
 - レビュー対象のブランチ / `base_branch` / `diff_mode`
 - インライン指摘件数
+- 外部レビュー併用の有無 (`external_review` の `skill` / `mode`。未併用 / `mode="inline"` なら理由も 1 行)
 - 出力先 markdown ファイルパス
 
 ## 守ること
