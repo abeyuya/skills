@@ -5,8 +5,8 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 ## 提供 skill / command
 
 - `skills/run-pr-review`: PR レビュー一式 (PR 取得 → `compose-review` でレビュー本文生成 → 投稿 → 過去スレッド resolve) を 1 コマンドで実行する thin orchestrator skill。caller はこれを呼ぶだけで済む。
-- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (caller が渡す書き出し先パス。省略時は `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`。ランダムサフィックスは同一秒の再呼び出しでの衝突回避用) にファイル書き出し**し、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示** を返す (caller はそのファイルを `Read` して JSON を使う)。自己完結 JSON を最終メッセージに出さないのは、それが「タスク完了」シグナルに見え、caller (orchestrator) が投稿 step を実行する前にターンを終了する停止バグを誘発するため。指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` のいずれからも現在コンテキストで直接 (Skill ツール経由) 呼ばれる。
-- `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として投稿する。投稿経路は 2 チャネル対応 (`CHANNEL=gh`: `gh api .../reviews` の 1 コール / `CHANNEL=mcp`: GitHub MCP ツールで pending review を組み立てて submit。詳細は後述「GitHub アクセスチャネル」)。
+- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (caller が渡す書き出し先パス。省略時は `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`。ランダムサフィックスは同一秒の再呼び出しでの衝突回避用) にファイル書き出し**し、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示** を返す (caller はそのファイルを `Read` して JSON を使う)。自己完結 JSON を最終メッセージに出さないのは、それが「タスク完了」シグナルに見え、caller (orchestrator) が投稿 step を実行する前にターンを終了する停止バグを誘発するため。書き出す JSON には `body` / `event` / `comments[]` に加え、機械可読サマリ行の正典値になる `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。指摘は自前レビューを必ず行い、加えてホストの外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。外部スキルが 1 つも使えないときだけ自前単独)。`run-pr-review` / `run-local-review` のいずれからも現在コンテキストで直接 (Skill ツール経由) 呼ばれる。
+- `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として投稿する。投稿経路は 2 チャネル対応 (`CHANNEL=gh`: `gh api .../reviews` の 1 コール / `CHANNEL=mcp`: GitHub MCP ツールで pending review を組み立てて submit。詳細は後述「GitHub アクセスチャネル」)。Review body には AI 自動投稿マーカーと **機械可読サマリ行** (`<!-- AI-REVIEW-RESULT: must=0 should=1 ... -->`) を自動で付与する (後述「機械可読サマリ行 (CI からの機械判定)」)。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称で、両者とも sub-agent を立てず現在コンテキストで `compose-review` を直接呼ぶ。
 - `skills/distill-pr-reviews`: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を `proposals.md` として出力する skill。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する (`MAX_BUGFIX_DIFFS` で diff 取得上限を制御)。信号収集はスクリプト、最終的な採否分類 (`accept` / `hold` / `reject`) とクラスタリングは AI が行う。read-only で REVIEW.md 編集 / PR 作成は行わない。**収集スクリプトが `gh` CLI に依存するため gh チャネル専用** (gh が使えない環境では動かない。後述「GitHub アクセスチャネル」参照)。
@@ -50,12 +50,27 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 Payload (caller が渡す JSON 相当) の概要:
 
-- `body` (string, 必須): 総括コメント本文。AI 自動投稿マーカーは skill 側で自動 prepend するため caller は付けない。
+- `body` (string, 必須): 総括コメント本文。AI 自動投稿マーカーと機械可読サマリ行は skill 側で自動 prepend するため caller は付けない。
 - `event` (literal `"COMMENT"`, 必須): `APPROVE` / `REQUEST_CHANGES` は禁止。
 - `comments` (array, 必須・空配列可): インライン指摘の配列。各要素は単一行 (`path` / `line` / `side` / `body`) または複数行範囲 (上に加えて `start_line` / `start_side`)。
-- `commit_id` (string, 任意): head commit の SHA。force-push / rebase での行ズレ防止に推奨。
+- `commit_id` (string, 任意): head commit の SHA。force-push / rebase での行ズレ防止に推奨。CI が「head SHA に対するレビューか」を review の `commit_id` で判定する運用では常に渡す。
+- `label_counts` (object, 任意): ラベル別指摘件数 (`{"must":1,"should":2,...}`)。機械可読サマリ行の件数の正典値になる。省略時は `comments[]` の先頭ラベルから skill 側が集計する。
 
 詳細なスキーマ・呼び出し経路 (Skill ツール経由 / prompt 経由) は [`skills/post-pr-review/SKILL.md`](skills/post-pr-review/SKILL.md#public-payload-interface) を参照。インライン指摘本文の規約 (`[must]` / `[should]` 等の重要度ラベル) は本 skill では規定せず caller のレビュー方針に従う想定で、当 plugin 既定の体裁は `/pr-review-style-reference` を参考にできる。
+
+## 機械可読サマリ行 (CI からの機械判定)
+
+`post-pr-review` は投稿する Review の `body` に、ラベル別指摘件数の **機械可読サマリ行を必ず 1 行埋め込む** (指摘 0 件でも省略しない)。「AI レビュー済みかつブロッキング指摘なし」を CI の required status check で判定する用途を想定した **公開契約** で、正典は [`skills/post-pr-review/SKILL.md`](skills/post-pr-review/SKILL.md#機械可読サマリ行-ai-review-result) の「機械可読サマリ行」節。
+
+```
+<!-- AI-REVIEW-RESULT: must=0 should=1 nit=2 question=0 pre_existing=0 other=0 -->
+```
+
+- **HTML コメント**なので人間向け表示は汚さないが、REST API (`GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews`) が返す review の `body` には残るので正規表現でパースできる (例: `must=(\d+) should=(\d+)`)。
+- 挿入位置は AI 自動投稿マーカーの直後 (区切り線 `---` の前) に固定。キーは 6 つを固定順で常に全出力し、値は 0 以上の整数。
+- 件数の正典は caller から渡される `label_counts`。`run-pr-review` 経路では `compose-review` が **`MAX_INLINE_COMMENTS` で省略した指摘も含めた** 件数を算出して引き回すため常に正確。`label_counts` が無い場合は `post-pr-review` が `comments[]` の先頭ラベルから集計する (省略分は数えられないが、省略は優先度順に低い方から行われるため `must` / `should` が 0 か否かの判定は安全側に倒れる)。
+- 標準 5 ラベル以外 / ラベル無しの指摘は `other` に合算する。ラベル体系を独自定義している caller は、`label_counts` で標準ラベルへマッピングして渡す (でなければ CI 側の合格条件に `other=0` も加える)。
+- CI が「PR の現在の head SHA に対するレビューか」を判定する場合は review の `commit_id` を head SHA と比較する。`post-pr-review` は `COMMIT_ID` が渡されたときだけ `commit_id` を送るため (未指定時は GitHub が投稿時点の最新 commit を採用)、`run-pr-review` は取得済みの `headRefOid` を常時転送する。
 
 ## 重要度ラベル
 
