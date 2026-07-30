@@ -71,7 +71,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   1. `git diff <base>...HEAD` が非空 → `diff_mode = "commit"`
   2. `commit` モード空 + `git diff --cached` が非空 → `diff_mode = "staged"`
   3. `staged` モード空 + `git diff` が非空 → `diff_mode = "worktree"`
-  4. すべて空 → `diff_mode = "none"`。Step 2〜4 と Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]` にして返す。
+  4. すべて空 → `diff_mode = "none"`。Step 2〜4 と Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]`、`label_counts` を全キー `0` にして返す (5-3 を skip しても `label_counts` は省略しない。省略すると `post-pr-review` のサマリ行が `comments[]` 集計フォールバックに落ちる)。
 
 ### Step 2. スタイル参考ガイドを読み込む
 
@@ -103,7 +103,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 - **PR モード**: **git 主経路** — Step 1 で退避した SHA を使い `git diff <BASE_SHA>...<HEAD_SHA>` (三点記法 = merge-base 基準で base 進行を除外。GitHub の "Files changed" と一致) を差分ソースにする。head/base の object は Step 1 で read-only fetch 済みなので `gh` は不要。ローカルの作業ツリー・ローカルブランチは一切変えない (「守ること」の read-only fetch 例外)。git 経路では出力打ち切りが起きないため truncation 検知 / ファイル単位の追い読みは不要。
   - **任意の補助 (使える環境のみ)**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>`。この場合 **truncation 検知** (`gh pr diff --name-only` の件数と patch hunk header (`diff --git a/...`) の出現件数の突合、末尾 `... (truncated)` の有無) を行い、疑わしければ `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) で追い読みする (`--paginate` 必須。`per_page=30` デフォルトで 30 ファイル超が落ちる事故防止)。ただし git 経路が使えるなら上記主経路を優先する。
   - git 経路でも SHA を確定できず差分を取れないときに限り差分取得不能として扱う (Step 1 で既に `HEAD_SHA` を確定しているのが前提)。
-  - 差分が空なら Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]` で返す。
+  - 差分が空なら Step 5 のレビュー生成 (5-1〜5-3) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]`、`label_counts` を全キー `0` で返す (ローカルモードの `diff_mode="none"` と同様、5-3 を skip しても `label_counts` は省略しない)。
 - **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` でファイル一覧を取りファイル単位で追い読み。`commit` モードでは差分本体とは別に **`commit_count = git rev-list --count <base>..HEAD` で件数を取得** し Step 6 出力に含める (`--oneline | wc -l` ではなく `rev-list --count` を使う。コミットメッセージ改行等で値ズレしない正準コマンド)。`staged` / `worktree` / `none` モードでは `commit_count = 0` 固定。
   - `commit`: `git diff <base>...HEAD` (三点記法でベース進行を除外)
   - `staged`: `git diff --cached`
@@ -222,7 +222,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - `label_counts` は **`MAX_INLINE_COMMENTS` で省略した指摘も含む** 全指摘の件数であり、`comments[]` の件数や `body` の `## 指摘内訳` (実際に出したインライン指摘の内訳) とは省略発生時に一致しない。これは意図した差 (CI は「指摘が存在したか」を知る必要があるため) であり、不一致を理由に `label_counts` を `comments[]` 由来へ書き換えない。
 - `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` の取得手順は Step 4 ローカルモードに集約 (`git rev-list --count <base>..HEAD`、`staged` / `worktree` / `none` 時は `0` 固定)。
 - 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
-- 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`。空文字列は不可。
+- 指摘なしまたは差分なしの場合: `body` は最低 1 文 (例: `"特に指摘なし。"` / `"対象差分なし (評価対象なし)。"`)、`comments` は `[]`、`label_counts` は全キー `0`。空文字列は不可。
 
 ### 失敗時
 
