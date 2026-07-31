@@ -1,6 +1,6 @@
 {
   "name": "pr-review",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "PR レビュー本文生成 (compose-review) / 差分に対する観点別 fan-out + adversarial verify レビュー (scan-diff-findings) / PR レビュー投稿 (post-pr-review) / 過去スレッド resolve (resolve-pr-threads) / PR 作成前のローカルブランチ向け AI レビュー (run-local-review) / これらを束ねる thin orchestrator (run-pr-review) と、レビュースタイル参考ガイド (/pr-review-style-reference) を提供する。技術観点は caller 側に委ね、スタイル参考ガイドは採用・上書き・不使用いずれも可。",
   "author": {
     "name": "abeyuya",

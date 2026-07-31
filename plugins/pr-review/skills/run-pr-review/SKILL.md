@@ -95,12 +95,13 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 
 > ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、ここで応答を打ち切ると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この設計で最も起こりやすい失敗)。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 3 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行する**。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。
 
-`Read` で取得した `HANDOFF_PATH` の中身は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `label_counts` / `external_review` / `commit_id`) または error JSON。これを parse して各フィールドを読み取り、後続 step に渡す:
+`Read` で取得した `HANDOFF_PATH` の中身は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `label_counts` / `external_review` / `escalation` / `commit_id`) または error JSON。これを parse して各フィールドを読み取り、後続 step に渡す:
 
 - **`{"error": ...}` だけだった場合** → Step 4 / 5 は実行せず停止し、Step 6 の caller 報告でそのメッセージを転送する。
 - **`HANDOFF_PATH` の `Read` が失敗した (file-not-found 等。compose-review が JSON を書き出す前に停止した場合に起こりうる)、`mode` が `"pr"` でない、または JSON として読めない (壊れている / 必須フィールド `body`・`event`・`comments` の欠落) 場合** → 整合性エラーとして Step 4 / 5 は実行せず停止し、Step 6 で「compose-review のハンドオフ JSON が取得できなかった / 想定形式でなかった」旨を caller に報告する (壊れた / 欠落した入力のまま post-pr-review へ進めない)。
-- **正常時** → `body` / `event` / `comments` / `label_counts` / `external_review` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
+- **正常時** → `body` / `event` / `comments` / `label_counts` / `external_review` / `escalation` / `commit_id` を Step 4 に渡し、**Step 4 → Step 5 → Step 6 を順に必ず実行する**。`commit_id` は差分なし時も含めて compose-review 側で **必須** (契約上)。万一欠落しているなら整合性違反としてログに 1 行記録した上で、Step 2 で取得済の `headRefOid` を defensive fallback として使う (Review 投稿自体は継続する)。
   - `external_review` も compose-review 側で必須 (契約上) だが、**欠落 / 壊れていても投稿は止めない**: `EXTERNAL_REVIEW` を渡さずに `post-pr-review` を呼び (`AI-REVIEW-EXTERNAL` 行が省略される)、Step 6 の報告では外部レビュー行を `不明 (compose-review が external_review を返さず)` と明記する。**黙って省略しない** — 「情報なし」と「正常併用」を取り違えさせないため。
+  - `escalation` も compose-review 側で必須 (契約上) だが、**欠落 / 壊れていても投稿は止めない**: `ESCALATION` を渡さずに `post-pr-review` を呼び (`AI-REVIEW-ESCALATE` 行が省略される)、Step 6 の報告では「エスカレーション判定: 不明 (compose-review が escalation を返さず)」と 1 行明記する (`external_review` の欠落時と同じ方針)。**黙って省略しない** — 「判定なし」と「判定した結果エスカレーション不要」を取り違えさせないため。
   - `label_counts` も compose-review 側で必須 (契約上) だが、**欠落 / 壊れていても投稿は止めない**: `LABEL_COUNTS` を渡さず `post-pr-review` 側の `comments[]` 集計にフォールバックさせ、その旨を Step 6 の報告に 1 行添える (この場合 `MAX_INLINE_COMMENTS` 省略分が機械可読サマリ行の件数に反映されないが、**「`must=0` かつ `should=0`」という複合条件での判定は安全側に倒れる**。`should` 単独では倒れないため個々の件数を根拠にしないこと。詳細は `post-pr-review` の「機械可読サマリ行」節)。
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
@@ -118,6 +119,11 @@ Step 1 の `OWNER` / `REPO` / `PR_NUMBER` / `CHANNEL` と Step 3 で得たレビ
 | `commit_id` | `COMMIT_ID` |
 | `mode` | (転送しない / 本 skill が `"pr"` 整合性チェック後に破棄。post-pr-review は `mode` を受け付けないため `--input` に含めると 422 になる) |
 | `external_review` | `EXTERNAL_REVIEW` (1 行の JSON 文字列として渡す。例: `EXTERNAL_REVIEW={"skill":"scan-diff-findings","mode":"agent","verify_degraded":false,"finders":5,"finders_expected":5,"findings":9}`)。`post-pr-review` が Review body に `<!-- AI-REVIEW-EXTERNAL: ... -->` として埋め込むため、**GitHub 上にも外部レビュー併用の機械可読な痕跡が残る**。加えて本 skill 自身も Step 6 の報告に使う |
+| `escalation` | **`escalate` が `true` のときだけ** `ESCALATION` として渡す (1 行の JSON 文字列。例: `ESCALATION={"escalate":true,"reasons":["外部から見える挙動の変更: ...","共通部品の変更が複数画面へ波及: ..."]}`)。`post-pr-review` が Review body に `<!-- AI-REVIEW-ESCALATE: escalate=1 reasons=2 -->` として埋め込み、CI はこの行を読んで該当者をレビュアーに追加できる。**レビュアーの追加は caller (CI) の責務** で、本 skill も `post-pr-review` も行わない (誰をアサインするかはプロジェクト固有)。`escalate` が `false` のときは **`ESCALATION` を渡さない** (下記参照)。転送の有無に関わらず本 skill 自身は Step 6 で常に 1 行報告する |
+
+`ESCALATION` を転送するときは **必ず 1 行の JSON にシリアライズする** (`reasons[]` の各要素から改行を除去する)。`reasons` は自由文 (レビュー対象の差分内容に影響されうる) なので、改行が混ざると後続行が別 key として解釈され `post-pr-review` の `KEY=VALUE` parse が壊れる (`LABEL_COUNTS` / `EXTERNAL_REVIEW` と同じ制約。`reason` 自由文を含む `EXTERNAL_REVIEW` より更に壊れやすい前提で扱う)。1 行に収められない場合は **`reasons` を空配列にして `escalate` だけを転送する** (行は `reasons=0` で出る。理由本文は `body` の `## エスカレーション` セクションに残るので情報は失われない)。
+
+`escalation` を **`escalate: true` の回だけ転送する**のは、エスカレーション基準を持たない caller (プロジェクト指示ファイルに基準の記載が無い = 大多数) の出力を従来と完全に同一に保つため。`compose-review` は基準が無い回も `escalation` を `{"escalate": false, "reasons": []}` として **必ず返す** 契約 (フィールドを省略しない) なので、これを無条件に転送すると全 PR の Review body に `<!-- AI-REVIEW-ESCALATE: escalate=0 reasons=0 -->` が付き、この機能を使っていない caller の出力が変わってしまう。`escalate: false` は CI にとって何のアクションも生まない値 (レビュアー追加の信号は `escalate=1` のみ) なので、転送しないことで失われる情報は無い。**`escalate: false` だった回も Step 6 の報告では `エスカレーション: 不要` と 1 行出す** (黙って落とさない)。`escalation` の欠落 / 破損で転送しなかった回は「不要」ではなく `不明` と報告する (Step 3 の戻り値の扱い参照。両者を取り違えさせない)。
 
 `label_counts` の転送は **Review body の機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=… -->`) の件数を正確にするため**に必要 (`post-pr-review` は `LABEL_COUNTS` が無ければ `comments[]` から集計するが、それでは `MAX_INLINE_COMMENTS` で省略された指摘が件数から落ちる)。サマリ行は CI (required status check 等) がパースする契約なので、`compose-review` が返した値をそのまま転送し、本 skill 側で再集計・加工しない。`COMMIT_ID` も CI が「head SHA に対するレビューか」を review の `commit_id` で判定する前提のため、Step 2 で取得した `headRefOid` を従来どおり常時転送する (本 skill の `COMMIT_ID` 挙動は変更なし)。
 
@@ -136,8 +142,10 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
 - インライン指摘件数 / ラベル別件数内訳 (優先度順、`[must]` / `[should]` 等、件数>0 のもの)
 - **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`mode="external"` の手動 `/code-review` 併用では必ず `null` になるため、`null/null` と描画すると取得不能なのか 0 観点なのか判別できない)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
+- **エスカレーション判定の結果** (`compose-review` の `escalation` から 1 行。`escalate: true` なら `エスカレーション: 要 (理由 <reasons の件数> 件)`、`false` なら `エスカレーション: 不要`。フィールド欠落 / 壊れていた場合は `エスカレーション判定: 不明 (compose-review が escalation を返さず)` と明記する)。これは「その PR を人に見てもらうべきか」の信号なので、`escalate: true` の回を caller が見落とさないよう **常に 1 行報告する** (マージをブロックする判定ではない点も含意として変えない)
 - resolve したスレッド件数 (Step 5 の戻り値)
 - `label_counts` が欠落 / 壊れていて `LABEL_COUNTS` を渡せなかった場合はその旨 1 行 (機械可読サマリ行が `comments[]` 集計にフォールバックしたことの申告)
+- **`post-pr-review` が「渡された値を parse できず機械可読行を省略した」旨を報告してきた場合は、その申告を Step 6 に 1 行転記する** (`ESCALATION` / `EXTERNAL_REVIEW` / `LABEL_COUNTS` のいずれでも同様)。特に `ESCALATION` が落ちた回は、本 skill 側の報告が `エスカレーション: 要` でも **Review body に行が無く CI のレビュアー追加が発火していない**ため、転記しないと caller が気づけない (例: `エスカレーション: 要 (理由 2 件) — ただし post-pr-review が ESCALATION を parse できず AI-REVIEW-ESCALATE 行は投稿されていない`)
 
 ## 守ること
 
