@@ -336,7 +336,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - **PR 経路での到達範囲**: `run-pr-review` は本フィールドを `post-pr-review` に `EXTERNAL_REVIEW` として転送し、`post-pr-review` が Review body に機械可読行 `<!-- AI-REVIEW-EXTERNAL: ... -->` として埋め込む (詳細は `post-pr-review` の「機械可読サマリ行」節)。これにより GitHub 上にも機械判定できる痕跡が残り、CI は body の prose を読まずに退化を検知できる。
 - `escalation` は **両モードで必ず含める** (5-4 の判定結果。`label_counts` と同じ扱い)。キーは `escalate` (boolean) / `reasons` (文字列配列) の 2 つ固定:
   - `escalate: false` のとき `reasons` は **空配列**。`escalate: true` のとき `reasons` は 1 件以上。
-  - **基準が読み込めなかった / プロジェクト指示ファイルにエスカレーション基準の記載が無い場合も `{"escalate": false, "reasons": []}` を返す** (フィールド自体は省略しない)。差分なしの場合も同じ。
+  - **プロジェクト指示ファイルを読み込めなかった / `エスカレーション基準` 見出しが無い場合も `{"escalate": false, "reasons": []}` を返す** (フィールド自体は省略しない。opt-in の条件は見出しの存在で機械的に決まる。5-4 参照)。差分なしの場合も同じ。
   - PR モードでは `run-pr-review` が **`escalate: true` の回だけ** `post-pr-review` の `ESCALATION` に転送し、Review body の機械可読行 `<!-- AI-REVIEW-ESCALATE: escalate=1 reasons=2 -->` になる (`escalate: false` の回に転送すると、この機能を使っていない caller の Review body にも行が増えて出力が変わるため。詳細は `run-pr-review` Step 4 / `post-pr-review` の「機械可読サマリ行」節)。CI はこの行を読んで該当者をレビュアーに追加できる。**誰をレビュアーに追加するかは caller 側の責務** で、本 skill / `post-pr-review` はレビュアー追加を行わない。ローカルモードでは投稿が無いため必須の消費者はいないが、出力形式を両モードで揃えるため同じく含める (caller は無視してよい)。
   - `escalate` は **指摘件数と独立** (5-4)。`label_counts` が全キー `0` でも `escalate: true` はありうるので、caller は「指摘があるか」で `escalation` を上書き・再判定しない。
 - `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` の取得手順は Step 4 ローカルモードに集約 (`git rev-list --count <base>..HEAD`、`staged` / `worktree` / `none` 時は `0` 固定)。
