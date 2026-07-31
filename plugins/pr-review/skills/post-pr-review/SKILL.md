@@ -51,6 +51,10 @@ type ReviewPayload = {
     findings?: number;
     omitted?: number;          // 外部スキル側で件数上限により落とされた指摘数。
   };
+  escalation?: {               // 任意。レビュー生成側が「この PR は人にエスカレーションすべき」と判定したかの記録 (prompt 経由では `ESCALATION`、1 行の JSON)。渡されれば `AI-REVIEW-ESCALATE` 行として body に埋め込む。詳細は「機械可読サマリ行」節。
+    escalate: boolean;         // true / false。
+    reasons?: string[];        // 理由の配列 (人間向け本文)。本行には件数だけを載せ、本文は載せない。
+  };
 };
 
 type ReviewComment =
@@ -116,7 +120,7 @@ caller (人 / 外部システム) は Payload を渡すだけで、投稿の実�
 
 ## 機械可読サマリ行 (`AI-REVIEW-RESULT`)
 
-本 skill は投稿する Review の `body` に **ラベル別指摘件数の機械可読サマリ行を必ず 1 行埋め込む**。CI (GitHub Actions の required status check 等) が「AI レビュー済みか / ブロッキング指摘が残っているか」を機械判定するための **公開契約 (CI がパースする契約)** として扱い、後方互換に注意して変更する (キー追加は可、既存キーの削除 / 意味変更 / 順序変更は契約変更扱い)。
+本 skill は投稿する Review の `body` に **ラベル別指摘件数の機械可読サマリ行を必ず 1 行埋め込む**。CI (GitHub Actions の required status check 等) が「AI レビュー済みか / ブロッキング指摘が残っているか」を機械判定するための **公開契約 (CI がパースする契約)** として扱い、後方互換に注意して変更する (キー追加は可、既存キーの削除 / 意味変更 / 順序変更は契約変更扱い)。**この但し書きは本節が規定する 3 行すべて (`AI-REVIEW-RESULT` / `AI-REVIEW-EXTERNAL` / `AI-REVIEW-ESCALATE`) に適用される** — いずれも CI がパースする公開契約なので、フォーマット / キー / 挿入位置を変えるときは後方互換に注意する。
 
 ### フォーマット
 
@@ -143,6 +147,21 @@ caller から `external_review` (prompt 経由では `EXTERNAL_REVIEW`。1 行�
 - 目的: レビュー生成側 (`compose-review`) が **外部レビュースキルを併用できたか / 縮退したか** を、Review body の日本語本文を読まずに CI から判定できるようにする。`AI-REVIEW-RESULT` が「指摘の件数」を機械可読にするのと同じ役割を「レビュー体制の健全性」について果たす。
 - キーと値: `skill` (未併用は `none`) / `mode` (`agent` / `partial` / `inline` / `empty` / `external` / `null`) / `verify_degraded` (`true` / `false` / `null`) / `finders` (`<finders>/<finders_expected>`。どちらかが `null` なら `finders=n/a`) / `findings` (整数) / `omitted` (整数。外部スキル側で件数上限により落とされた指摘数。`> 0` はこの経路だけで起きる縮退なので必ず出力する)。値に半角スペースを含めない (含む場合は `_` に置換する)。`external_review` に無いキーは出力しない。
 - CI 側は係留キー `AI-REVIEW-EXTERNAL` を前置してパースする (例: `AI-REVIEW-EXTERNAL:.*?skill=(\S+).*?mode=(\S+)`)。`skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はいずれも「レビュー体制が縮退している」シグナルで、必要なら再レビューを促す判断材料にできる。
+- **1 つの Review body にこの行も 1 行だけ**。`AI-REVIEW-RESULT` と同様、caller 由来の総括本文には入れない。
+
+### エスカレーション行 (`AI-REVIEW-ESCALATE`)
+
+caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON) が渡された場合のみ、`AI-REVIEW-EXTERNAL` の **直後の行** (空行を挟まない。`AI-REVIEW-EXTERNAL` を出力しない場合は `AI-REVIEW-RESULT` の直後) に 1 行出力する。渡されなければ行ごと省略する (本 skill が値を捏造しない)。
+
+```
+<!-- AI-REVIEW-ESCALATE: escalate=1 reasons=2 -->
+```
+
+- 目的: レビュー生成側が「この PR は重要な判断を含むので人 (第三者) の確認が要る」と判定したかを、Review body の日本語本文を読まずに CI から判定できるようにする。**CI 側が該当者をレビュアーに追加するためのルーティング信号** であり、**マージをブロックするゲートではない** (本 skill の `event` は従来どおり常に `COMMENT`。`escalate=1` でも `REQUEST_CHANGES` にはしない)。required status check にするかどうかは caller 側の判断で、本 skill の既定にはしない。
+- キーと値: `escalate` (`1` / `0`。`escalation.escalate` が `true` なら `1`、`false` なら `0`) / `reasons` (`escalation.reasons` の **件数** (整数)。`reasons` が無い / 空配列なら `0`)。**理由の本文はこの行に載せない** — HTML コメントに長文 (改行や `-->` を含みうる自由文) を入れると 1 行契約が壊れるため。人間向けの理由はレビュー生成側が総括本文に `## エスカレーション` セクションとして出す。
+- `escalate=1` なのに `reasons=0` は「判定はしたが理由が渡っていない」状態を意味する (行としては有効。CI は `escalate` だけで分岐できる)。
+- **異常系 (`AI-REVIEW-EXTERNAL` と同じ扱い)**: `ESCALATION` が渡されたが **JSON として parse できない / `escalate` を欠く / `escalate` が boolean でない** 場合は、**行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない。`reasons` が配列でない場合は `reasons=0` として出力する (`escalate` が読めているなら行自体は出す)。
+- CI 側は係留キー `AI-REVIEW-ESCALATE` を前置してパースする (例: `AI-REVIEW-ESCALATE:.*?escalate=([01])`)。**行が無い状態は「エスカレーション判定なし」** を意味し、`escalate=0` (判定した結果エスカレーション不要) とは区別できる (判定基準を持たない caller ではこの行が出ない)。
 - **1 つの Review body にこの行も 1 行だけ**。`AI-REVIEW-RESULT` と同様、caller 由来の総括本文には入れない。
 
 ### 集計ルール
@@ -203,6 +222,7 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 
 <!-- AI-REVIEW-RESULT: must=0 should=1 nit=2 question=0 pre_existing=0 other=0 -->
 <!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 omitted=0 -->
+<!-- AI-REVIEW-ESCALATE: escalate=1 reasons=2 -->
 
 ---
 
@@ -212,6 +232,8 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 サマリ行はマーカー行との間に **空行を 1 行入れる** (マーカーは blockquote なので直後の行に置くと lazy continuation で blockquote に取り込まれ、行の構造が崩れうる)。サマリ行の前後をこの形に固定することで、CI 側は「マーカー直後の 1 行」を安定してパースできる。
 
 `AI-REVIEW-EXTERNAL` 行は **`external_review` / `EXTERNAL_REVIEW` が渡されたときだけ** `AI-REVIEW-RESULT` の直後 (間に空行を入れず) に出力する (渡されなければ行ごと省略する。詳細は「機械可読サマリ行」節)。
+
+`AI-REVIEW-ESCALATE` 行は **`escalation` / `ESCALATION` が渡されたときだけ** `AI-REVIEW-EXTERNAL` の直後 (間に空行を入れず。`AI-REVIEW-EXTERNAL` を出力しない場合は `AI-REVIEW-RESULT` の直後) に出力する (渡されなければ行ごと省略する。詳細は「機械可読サマリ行」節)。`escalate=1` でも `event` は `COMMENT` のままで、レビュアーの追加は行わない (caller / CI の責務)。
 
 確定した最終 Payload のスキーマは以下のとおり (`body` は上記マーカー + サマリ行込みの文字列)。`CHANNEL=gh` ではこれを `/tmp/review.json` に **`Write` ツールで** 書き出す (`heredoc` や `cat` リダイレクトは使わない)。`CHANNEL=mcp` ではファイルには書き出さず、手順 2 の各ツール引数として直接渡す:
 
@@ -242,7 +264,7 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 - 単一行コメントは `path` / `line` / `side` を指定する。
 - 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。
 - `commit_id` は caller から `COMMIT_ID` が渡された場合のみ含める (詳細は「Public Payload Interface」セクションの「Payload スキーマ」参照)。
-- **`label_counts` / `LABEL_COUNTS` / `external_review` / `EXTERNAL_REVIEW` は GitHub へ送る最終 Payload に含めない** (いずれも本 skill 内で `body` の機械可読行を組み立てるためだけに使う入力。GitHub の Review API が受け付けないキーであり `--input` に混ぜると 422 になる)。`compose-review` が出力する `mode` 等、本 skill の Payload スキーマに無いキーも同様に受け取っても最終 Payload には含めない。
+- **`label_counts` / `LABEL_COUNTS` / `external_review` / `EXTERNAL_REVIEW` / `escalation` / `ESCALATION` は GitHub へ送る最終 Payload に含めない** (いずれも本 skill 内で `body` の機械可読行を組み立てるためだけに使う入力。GitHub の Review API が受け付けないキーであり `--input` に混ぜると 422 になる)。`compose-review` が出力する `mode` 等、本 skill の Payload スキーマに無いキーも同様に受け取っても最終 Payload には含めない。
 - 指摘がない場合: `body` はマーカー + 全キー `0` のサマリ行 (`<!-- AI-REVIEW-RESULT: must=0 should=0 nit=0 question=0 pre_existing=0 other=0 -->`) + 区切り線 + 「特に指摘なし」相当の文言、`comments` は `[]`、`event` は `COMMENT` で投稿する。指摘 0 件でもサマリ行を省略しない (CI が「レビュー実施済みで指摘ゼロ」を判別するための必須要件)。
 - インラインコメント (`comments[].body`) には個別マーカーを付けない (Review 本文側のマーカーで帰属は十分であり、`[must]` 等の重要度ラベルとの衝突や冗長さも避けるため)。
 

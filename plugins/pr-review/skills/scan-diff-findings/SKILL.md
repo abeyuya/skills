@@ -41,7 +41,7 @@ description: 差分 (ref range / ブランチ / staged / worktree) を対象に�
 本 skill は **現在コンテキストで直接 (Skill ツール経由で) 呼ばれる** 前提。findings は `FINDINGS_PATH` にファイル書き出しし、最終メッセージでは継続指示文を返す。caller は **`FINDINGS_PATH` を `Read` ツールで読み込み**、その JSON を parse して後続 step (`compose-review` なら 5-2 の正規化 → 5-3 のマージ) で使う (最終メッセージ自体は JSON ではないので parse 対象にしない)。
 
 - 本 skill は **致命エラー時に `{"error": "..."}` だけを `FINDINGS_PATH` に書き出す** (他フィールドを含めない)。caller は読み込んだ JSON を **`error` 判定 → 正常** の順で評価する。
-- caller は本 skill の失敗 / error を **自身の失敗にしない**。外部レビューが 1 系統得られなかっただけなので、caller は自前レビュー単独で続行し、その事実を開示する (`compose-review` なら 5-2 の未併用開示 / 5-4)。
+- caller は本 skill の失敗 / error を **自身の失敗にしない**。外部レビューが 1 系統得られなかっただけなので、caller は自前レビュー単独で続行し、その事実を開示する (`compose-review` なら 5-2 の未併用開示 / 5-5)。
 
 ## 手順
 
@@ -149,7 +149,7 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 
 - `refuted: true` の finding は **破棄** し、件数だけ Step 5 の `fanout.refuted` に記録する (破棄した内容は出力に含めない)。
 - `corrected_line` / `corrected_severity` が返っていれば finding 側を上書きする。
-- **verify 段の集計 (必須)**: Step 5 の `fanout` に次を記録する。`refuted` = 反証されて破棄した件数、`unverified` = **verify が成立しなかった件数** (verifier の起動失敗 / 出力から `refuted` を読み取れなかった / 件数超過で verify をそもそも回さなかった、の合計 = 最終 `findings[]` のうち `confidence: "unverified"` を持つものの数)、`verified` = `confidence: "confirmed"` の件数。**`findings` が 1 件以上あるのに `verified == 0` の回は verify 段が丸ごと機能していない** ことを意味するので、caller はこれを縮退として扱う (`compose-review` 5-2 / 5-4 参照)。値を省略せず 0 も明示する。
+- **verify 段の集計 (必須)**: Step 5 の `fanout` に次を記録する。`refuted` = 反証されて破棄した件数、`unverified` = **verify が成立しなかった件数** (verifier の起動失敗 / 出力から `refuted` を読み取れなかった / 件数超過で verify をそもそも回さなかった、の合計 = 最終 `findings[]` のうち `confidence: "unverified"` を持つものの数)、`verified` = `confidence: "confirmed"` の件数。**`findings` が 1 件以上あるのに `verified == 0` の回は verify 段が丸ごと機能していない** ことを意味するので、caller はこれを縮退として扱う (`compose-review` 5-2 / 5-5 参照)。値を省略せず 0 も明示する。
 - **findings が 12 件を超える場合**は `severity` 降順で 12 件までを verify し、残りは破棄せず `confidence: "unverified"` を付けて残す (取りこぼし回避)。verify 済みは `confidence: "confirmed"`。
 - verifier の起動自体が失敗した finding も破棄せず `confidence: "unverified"` を付けて残す。**verifier が起動はしたが `refuted` を読み取れない出力を返した場合 (非 JSON テキスト / `refuted` キー欠落 / 真偽値でない) も同じ扱い** — verify 不成立として `confidence: "unverified"` で残す。読み取れない出力を「反証された」と解釈して破棄してはならない (verify の失敗を指摘の否定にすり替えると、実在する指摘が静かに消える)。
 

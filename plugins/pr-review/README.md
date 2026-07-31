@@ -111,6 +111,16 @@ Payload (caller が渡す JSON 相当) の概要:
 
   `skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はレビュー体制の縮退シグナル (前述「外部レビュースキルの併用」参照)。パース時は `AI-REVIEW-RESULT` と同様に係留キーを前置する。
 
+- caller が `ESCALATION` を渡した場合、外部レビュー行の直後に **エスカレーション行** も 1 行埋め込まれる。「この PR は重要な判断 (仕様 / 挙動 / 設計) を含むので第三者の確認が要る」と `compose-review` が判定したかを機械判定するための行。
+
+  ```
+  <!-- AI-REVIEW-ESCALATE: escalate=1 reasons=2 -->
+  ```
+
+  `escalate` は `1` / `0`、`reasons` は理由の **件数** (人間向けの理由本文はレビュー本文の `## エスカレーション` セクションに出る)。用途は **CI が該当者をレビュアーに追加するためのルーティング**で、マージをブロックするゲートではない (`event` は常に `COMMENT`)。required status check にするかは利用側の判断。
+
+  **判定基準は当 plugin 側に持たない** — `compose-review` はプロジェクト指示ファイル (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` の優先順で最初の 1 つ) にエスカレーション基準の記載があるときだけ判定する。記載が無い利用側では判定を行わず (`escalate: false`) **この行自体が出ない**ため、従来と同じ出力になる。行の有無で「判定なし」と「判定した結果エスカレーション不要 (`escalate=0`)」を区別できる。利用側は (1) プロジェクト指示ファイルへの基準の記述、(2) この行をパースしてレビュアーを追加する workflow を自前で用意する (誰をアサインするかはプロジェクト固有なので plugin 側では行わない)。
+
 ## 重要度ラベル
 
 インライン指摘は以下のいずれかのラベルで開始する (詳細は `/pr-review-style-reference`):
