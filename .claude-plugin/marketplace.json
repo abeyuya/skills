@@ -12,7 +12,7 @@
       "name": "pr-review",
       "source": "./plugins/pr-review",
       "description": "PR レビュー本文生成 (compose-review) / 差分に対する観点別 fan-out + adversarial verify レビュー (scan-diff-findings) / PR レビューの投稿 / 過去スレッドの resolve / ローカルブランチ向け AI レビューの skill と、スタイル参考ガイドコマンド (/pr-review-style-reference) を提供する",
-      "version": "0.3.0"
+      "version": "0.4.0"
     }
   ]
 }

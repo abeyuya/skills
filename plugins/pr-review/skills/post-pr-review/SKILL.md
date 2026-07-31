@@ -162,6 +162,7 @@ caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON) �
 - `escalate=1` なのに `reasons=0` は「判定はしたが理由が渡っていない」状態を意味する (行としては有効。CI は `escalate` だけで分岐できる)。
 - **異常系 (`AI-REVIEW-EXTERNAL` と同じ扱い)**: `ESCALATION` が渡されたが **JSON として parse できない / `escalate` を欠く / `escalate` が boolean でない** 場合は、**行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない。`reasons` が配列でない場合は `reasons=0` として出力する (`escalate` が読めているなら行自体は出す)。
 - CI 側は係留キー `AI-REVIEW-ESCALATE` を前置してパースする (例: `AI-REVIEW-ESCALATE:.*?escalate=([01])`)。**行の有無だけを見て「判定が行われたか」を判断しない** — `run-pr-review` 経路では `escalate: true` の回だけ `ESCALATION` が転送される (エスカレーション基準を持たない caller の出力を変えないため。詳細は `run-pr-review` Step 4) ので、**行が無い状態は「エスカレーション不要」と「判定基準が無く判定なし」の両方を含む**。CI が分岐すべきは `escalate=1` の存在のみ。本 skill 自体は渡された値を忠実に `1` / `0` で描画するため、`escalate=0` の行を出したい caller (prompt 経由 / 外部システム) は `escalate: false` を明示的に渡せばよい。
+- **パース範囲を body 冒頭のサマリ行ブロックに限定する (本行固有の注意)**: `AI-REVIEW-RESULT` / `AI-REVIEW-EXTERNAL` は「最初のマッチを採用する」で守られる (本 skill が必ず body 冒頭に prepend するので、caller 本文側に同形の文字列が混ざっても先頭のマッチが本 skill の出力になる)。一方 **本行は常在しない**ため、行が出ていない回に総括本文中のフォーマット例 (本 plugin のドキュメント自体をレビューする PR など) が **唯一のマッチ**になりうる。CI は本行を **マーカー行から最初の区切り線 `---` までの範囲に限って** 探し、その外側のマッチは無視すること。
 - **1 つの Review body にこの行も 1 行だけ**。`AI-REVIEW-RESULT` と同様、caller 由来の総括本文には入れない。
 
 ### 集計ルール
