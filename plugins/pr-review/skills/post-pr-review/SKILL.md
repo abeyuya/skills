@@ -51,7 +51,7 @@ type ReviewPayload = {
     findings?: number;
     omitted?: number;          // 外部スキル側で件数上限により落とされた指摘数。
   };
-  escalation?: {               // 任意。レビュー生成側が「この PR は人にエスカレーションすべき」と判定したかの記録 (prompt 経由では `ESCALATION`、1 行の JSON)。渡されれば `AI-REVIEW-ESCALATE` 行として body に埋め込む。詳細は「機械可読サマリ行」節。
+  escalation?: {               // 任意。レビュー生成側が「この PR は人にエスカレーションすべき」と判定したかの記録 (prompt 経由では `ESCALATION`、1 行の JSON。`reasons` は自由文なので **値に改行を含めない** — 折り返すと後続行が別 key として解釈され parse が壊れる)。渡されれば `AI-REVIEW-ESCALATE` 行として body に埋め込む。詳細は「機械可読サマリ行」節。
     escalate: boolean;         // true / false。
     reasons?: string[];        // 理由の配列 (人間向け本文)。本行には件数だけを載せ、本文は載せない。
   };
@@ -161,7 +161,7 @@ caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON) �
 - キーと値: `escalate` (`1` / `0`。`escalation.escalate` が `true` なら `1`、`false` なら `0`) / `reasons` (`escalation.reasons` の **件数** (整数)。`reasons` が無い / 空配列なら `0`)。**理由の本文はこの行に載せない** — HTML コメントに長文 (改行や `-->` を含みうる自由文) を入れると 1 行契約が壊れるため。人間向けの理由はレビュー生成側が総括本文に `## エスカレーション` セクションとして出す。
 - `escalate=1` なのに `reasons=0` は「判定はしたが理由が渡っていない」状態を意味する (行としては有効。CI は `escalate` だけで分岐できる)。
 - **異常系 (`AI-REVIEW-EXTERNAL` と同じ扱い)**: `ESCALATION` が渡されたが **JSON として parse できない / `escalate` を欠く / `escalate` が boolean でない** 場合は、**行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない。`reasons` が配列でない場合は `reasons=0` として出力する (`escalate` が読めているなら行自体は出す)。
-- CI 側は係留キー `AI-REVIEW-ESCALATE` を前置してパースする (例: `AI-REVIEW-ESCALATE:.*?escalate=([01])`)。**行が無い状態は「エスカレーション判定なし」** を意味し、`escalate=0` (判定した結果エスカレーション不要) とは区別できる (判定基準を持たない caller ではこの行が出ない)。
+- CI 側は係留キー `AI-REVIEW-ESCALATE` を前置してパースする (例: `AI-REVIEW-ESCALATE:.*?escalate=([01])`)。**行の有無だけを見て「判定が行われたか」を判断しない** — `run-pr-review` 経路では `escalate: true` の回だけ `ESCALATION` が転送される (エスカレーション基準を持たない caller の出力を変えないため。詳細は `run-pr-review` Step 4) ので、**行が無い状態は「エスカレーション不要」と「判定基準が無く判定なし」の両方を含む**。CI が分岐すべきは `escalate=1` の存在のみ。本 skill 自体は渡された値を忠実に `1` / `0` で描画するため、`escalate=0` の行を出したい caller (prompt 経由 / 外部システム) は `escalate: false` を明示的に渡せばよい。
 - **1 つの Review body にこの行も 1 行だけ**。`AI-REVIEW-RESULT` と同様、caller 由来の総括本文には入れない。
 
 ### 集計ルール
