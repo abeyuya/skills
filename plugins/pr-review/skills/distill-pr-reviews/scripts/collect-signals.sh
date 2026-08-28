@@ -394,8 +394,10 @@ BUGFIX_LIST_FILE="${OUTPUT_DIR}/_bugfix_pr_numbers.txt"
 jq -r '[.prs[] | select(.pr_kind == "bugfix")] | sort_by(.merged_at) | reverse | .[].number' \
   "$PRS_FILE" > "$BUGFIX_LIST_FILE" \
   || { log "ERROR: bugfix PR 番号の抽出に失敗 (${PRS_FILE})"; exit 2; }
-# 空配列の明示宣言は必須。無いと 0 件時に直後の `${#BUGFIX_PR_ARRAY[@]}` が
-# bash 3.2 の set -u で unbound variable になる。
+# 空配列の明示宣言は必須。0 件のときは下の while ループ本体が一度も実行されず変数自体が
+# 作られないため、直後の `${#BUGFIX_PR_ARRAY[@]}` が set -u で unbound variable になる。
+# これは bash 3.2 固有ではなく全バージョンで起きるので、bash 3.2 対応をやめても消せない
+# (下の `${arr[@]+...}` が bash 4.4 未満固有なのとは別の話)。
 BUGFIX_PR_ARRAY=()
 while IFS= read -r BUGFIX_PR_LINE; do
   BUGFIX_PR_ARRAY+=("$BUGFIX_PR_LINE")
