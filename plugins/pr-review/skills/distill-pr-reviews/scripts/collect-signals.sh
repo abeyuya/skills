@@ -16,6 +16,12 @@
 #
 # 詳細スキーマと AI 側 (Phase C) との接続は ../SKILL.md を参照。
 #
+# bash 互換要件: **bash 3.2 (macOS 標準の /bin/bash) で動くこと**。
+#   CI (ubuntu / bash 5.x) では通っても手元の macOS で落ちるため、bash 4+ の機能は使わない。
+#   代表的な NG: mapfile / readarray, declare -A (連想配列), ${var^^} / ${var,,}, wait -n, coproc。
+#   加えて bash 4.4 未満では set -u 下で要素 0 件の配列を `"${arr[@]}"` 展開すると unbound variable
+#   になるため、配列展開は `${arr[@]+"${arr[@]}"}` の形で書く。
+#
 # rate limit 対策:
 #   - 1 PR あたり GraphQL 1 query (基本) で reviewThreads + commits + files を一括取得。
 #   - reviewThreads が 50 件超の PR は after cursor で追加 query を発行。
@@ -378,8 +384,23 @@ DIFF_CHAR_CAP=20000
 # bugfix PR 番号を一度だけ取得し、件数算出と diff 取得ループの双方で使い回す (jq の二重実行回避)。
 # gh pr list --search は検索 API 経由のため並び順 (既定 best-match) が merged_at 降順とは限らない。
 # 「新しい順に MAX_BUGFIX_DIFFS 件」の打ち切り保証は merged_at 降順の明示ソートで担保する。
-# mapfile + 配列で受けることで wc / ヒアストリングのサブシェル起動を避ける。
-mapfile -t BUGFIX_PR_ARRAY < <(jq -r '[.prs[] | select(.pr_kind == "bugfix")] | sort_by(.merged_at) | reverse | .[].number' "$PRS_FILE")
+# 配列で受けることで wc / ヒアストリングのサブシェル起動を避ける。
+# `mapfile` は bash 4.0 以降の builtin で macOS 標準の bash 3.2 には無いため (実行時に
+# `mapfile: command not found`)、while read で配列に詰める。
+# 中間ファイル経由にするのは、プロセス置換 (`< <(jq ...)`) だと jq の終了コードが捨てられ、
+# prs.json が壊れていても「bugfix PR 0 件」として正常終了してしまうため。
+# 他の jq 呼び出しと同様、失敗はここで非 0 終了させる。
+BUGFIX_LIST_FILE="${OUTPUT_DIR}/_bugfix_pr_numbers.txt"
+jq -r '[.prs[] | select(.pr_kind == "bugfix")] | sort_by(.merged_at) | reverse | .[].number' \
+  "$PRS_FILE" > "$BUGFIX_LIST_FILE" \
+  || { log "ERROR: bugfix PR 番号の抽出に失敗 (${PRS_FILE})"; exit 2; }
+# 空配列の明示宣言は必須。無いと 0 件時に直後の `${#BUGFIX_PR_ARRAY[@]}` が
+# bash 3.2 の set -u で unbound variable になる。
+BUGFIX_PR_ARRAY=()
+while IFS= read -r BUGFIX_PR_LINE; do
+  BUGFIX_PR_ARRAY+=("$BUGFIX_PR_LINE")
+done < "$BUGFIX_LIST_FILE"
+rm -f "$BUGFIX_LIST_FILE"
 BUGFIX_PR_COUNT=${#BUGFIX_PR_ARRAY[@]}
 BUGFIX_DIFFS_TRUNCATED=false
 log "bugfix PR count: ${BUGFIX_PR_COUNT} (diff fetch cap: ${MAX_BUGFIX_DIFFS})"
@@ -388,7 +409,9 @@ DIFF_MAP_FILE="${OUTPUT_DIR}/_bugfix_diffs.jsonl"
 : > "$DIFF_MAP_FILE"
 
 DIFF_FETCHED=0
-for PR_NUMBER in "${BUGFIX_PR_ARRAY[@]}"; do
+# bash 4.4 未満は set -u 下で要素 0 件の配列を `"${arr[@]}"` 展開すると unbound variable に
+# なるため、`${arr[@]+"${arr[@]}"}` (未設定/空なら何も展開しない) で受ける。bash 5 でも挙動は同じ。
+for PR_NUMBER in ${BUGFIX_PR_ARRAY[@]+"${BUGFIX_PR_ARRAY[@]}"}; do
   if [[ "$DIFF_FETCHED" -ge "$MAX_BUGFIX_DIFFS" ]]; then
     BUGFIX_DIFFS_TRUNCATED=true
     log "WARNING: bugfix diff fetch capped at MAX_BUGFIX_DIFFS=${MAX_BUGFIX_DIFFS} (残りの bugfix PR の diff は未取得)"
