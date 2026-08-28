@@ -77,6 +77,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
   bash "<SKILL.md と同じディレクトリ>/scripts/collect-signals.sh"
 ```
 
+スクリプトは **bash 3.2 (macOS 標準の `/bin/bash`) 互換**で書いてあるため、bash を新しく入れ直さなくても手元の macOS でそのまま実行できる (`gh` / `jq` は別途必要)。スクリプトを編集する際は本体冒頭の「bash 互換要件」コメントに従う。
+
 スクリプトは進捗を stderr に、`signals.json` の絶対パスを stdout 最終行に出す。非 0 で exit したらエラー停止して caller に報告 (主要原因: `gh` 未認証 / git リポジトリ外実行 / GraphQL ノード上限超過 / GitHub API rate limit 到達)。期間内 0 件でも exit 0 で `signals.json` (空状態) を出す。
 
 #### スクリプトの責務 (詳細は `scripts/collect-signals.sh` の本体コメント参照)
