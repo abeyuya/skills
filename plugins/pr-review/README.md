@@ -51,7 +51,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
 - `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
 - `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
-- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` (かつ `verify_degraded != true`) は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
+- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` (かつ `verify_degraded != true`) は、いずれも `reason == null` なら開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
 
 PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
