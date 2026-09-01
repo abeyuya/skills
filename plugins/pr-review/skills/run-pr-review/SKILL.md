@@ -83,7 +83,11 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 - `subagent_type` は **汎用エージェント** (Claude Code なら `general-purpose`) を使う。`compose-review` は `HANDOFF_PATH` への `Write`・`Bash`・`Skill`・`Agent` (呼び先の `scan-diff-findings` が使う) を必要とするため、**read-only / one-shot の探索用エージェント (`Explore` / `Plan` 等) を選んではならない** (`Write` が無いとハンドオフ JSON を書けず必ず失敗する)。
 - **`model` を必ず明示指定する** (未指定で起動しない)。`compose-review` はレビュー方針の解釈・指摘の重要度判定・エスカレーション判定といった判断の重いタスクなので、既定は **ホストで利用可能な上位モデル**を選ぶ。
-- **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とする。ただし **ホストがこの指定を無視して background 実行に回すことがある** (リモート実行環境で実測あり)。その場合は **完了通知を待ってよい** — sub-agent の完了通知はセッションを再開させるので、待っても「何も出力しないまま停止」にはならない (`scan-diff-findings` の finder に課している「background 待ちでターンを yield しない」規定は、**完了通知の無い直接呼び経路の内部 fan-out** に対するものであり、本 step の `compose-review` sub-agent には当てはまらない)。再開したら `HANDOFF_PATH` を `Read` して Step 4 以降を続行する。**この待ちを理由にレビュー結果を捨てて直接呼びをやり直さない** (二重にレビューを走らせるだけ)。
+- **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とする。ただし **ホストがこの指定を無視して background 実行に回すことがある** (リモート実行環境で実測あり)。その場合の扱いは次の順で、**「Step 4〜6 を同一応答内で完了する」を最優先** に置く:
+  1. **同一応答内で `HANDOFF_PATH` の出現を待てるなら、そうする** (`compose-review` はこのパスに JSON を書いてから終わるので、ファイルの出現を bounded に待ち合わせれば `Read` → Step 4 へそのまま進める)。ターンを終えないのでこれが最善。
+  2. それも不可でターンが終わってしまった場合は、**完了通知で再開したときに必ず `HANDOFF_PATH` を `Read` して Step 4 以降を実行する**。再開後の続行を忘れると、`compose-review` が JSON を書き終えているのに **PR へ何も投稿されないまま終わる** = 本 skill が最頻の失敗として挙げている silent stop そのものになる。
+  3. **完了通知でセッションが再開しない構成では、待ちに頼らない** — その環境では 3-1 のフォールバック (直接呼び) を選ぶ。
+  いずれの場合も **background 化を理由にレビュー結果を捨てて直接呼びをやり直さない** (二重にレビューを走らせるだけ)。なお `scan-diff-findings` の finder に課している「background 待ちでターンを yield しない」規定は、**完了通知の無い直接呼び経路の内部 fan-out** に対するもので、本 step の `compose-review` sub-agent とは別の話。
 - sub-agent への prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示にする (本 skill が `compose-review` の手順を prompt に書き写さない — 手順の正典は `compose-review/SKILL.md`)。
 - prompt に **read-only 制約を明記する**。ただし **`compose-review` / `scan-diff-findings` が正常動作に必要とする操作まで禁じないこと** — prompt の制約が呼び先 SKILL.md の許可より厳しいと、レビューが実行不能になる。次の 3 点を、括弧内の例外込みで書く:
   - **GitHub 投稿系ツールを使わない** (`gh pr review` / `gh pr comment` / `gh api .../reviews` も、`mcp__github__*` の投稿系も)。**sub-agent が投稿すると Step 4 の `post-pr-review` と二重投稿になる** ため、ここは例外なしの禁止。
@@ -105,7 +109,7 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 この運用を成立させる **検出と転送は本 skill の責務**: `compose-review` を sub-agent として起動すると `compose-review` からは本セッションのコンテキストが見えず、先行実行された `/code-review` の findings を自力では拾えないため。手順:
 
 1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 3-3 の `PRIOR_CODE_REVIEW` 行を **省略** する (それだけ。`code-review` を本 skill から呼ぶ実装は持たない)。
-2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}`。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 落とすと `compose-review` 側で未検証の指摘が 1 段下げ処理なしに `[must]` へ計上され、`AI-REVIEW-RESULT` を required check にしている運用でマージを不当にブロックする。出力に無ければ `null` か省略。
+2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}`。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 全件落とすと `compose-review` 側で「verify を通っていない findings を採用した」扱いになり (`verify_degraded: true` + 「外部由来の指摘は未検証」の開示)、`CONFIRMED` だった指摘まで自己追認待ちになって重大度が下がりうる。出力に無ければ `null` か省略 (その場合の扱いは `compose-review` 5-2 解決順 1 の verdict 規則)。
 
 **`head` が `null` でも、findings があるなら転送する** (行ごと省略しない)。PR モードの `compose-review` は `head: null` を不成立にするので findings 自体は採用されないが、**`compose-review` は「`PRIOR_CODE_REVIEW` を渡されたのに不採用にした」事実を `external_review.reason` と総括 `body` に必ず記録する契約** (5-2 解決順 1 / 5-5) になっている。転送せずに握り潰すと **ユーザーが先に回した `/code-review` の findings が黙って捨てられ**、その痕跡がどこにも残らない (`head` が `null` になるのが最多ケースなので影響が大きい)。省略してよいのは「findings がそもそも無い」場合と、下記の「1 行が過大」な場合だけ。
 
