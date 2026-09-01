@@ -30,7 +30,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 経路の違いが表に出るのは 2 点だけ:
 
-- **手動 `/code-review` findings の扱い**: sub-agent からは orchestrator のセッションコンテキストが見えないため、検出と転送 (`PRIOR_CODE_REVIEW` = 対象表現 / head SHA / findings の 1 行 JSON) は orchestrator の責務。採否の判定は従来どおり `compose-review` が行う (後述「外部レビューの手動併用」)。
+- **手動 `/code-review` findings の扱い**: sub-agent からは orchestrator のセッションコンテキストが見えないため、検出と転送 (`PRIOR_CODE_REVIEW` = 対象表現 / head SHA / findings の 1 行 JSON) は orchestrator の責務。マージは `compose-review` が 5-3 で行う (後述「外部レビューの手動併用」)。
 - **報告**: どちらの経路を採ったかを orchestrator が必ず 1 行報告する (既定の sub-agent 経路から落ちた回を黙って隠さないため)。
 
 ## 外部レビュースキルの併用 (自前レビュー + 外部スキル → マージ)
@@ -39,7 +39,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 優先順位:
 
-1. `code-review` (Claude Code 組み込み) — **多くの環境ではモデルから呼び出せない** (後述「`code-review` が呼べない問題」)。実質的には、ユーザーが先に `/code-review` を手動実行した回に orchestrator が `PRIOR_CODE_REVIEW` として転送してくる findings を採用する経路になる (後述「外部レビューの手動併用」)。
+1. `code-review` (Claude Code 組み込み) — **多くの環境ではモデルから呼び出せない** (後述「`code-review` が呼べない問題」) ため、実際にこの枠が埋まることは稀。
 2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、`code-review` と同じ「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい。
 3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
 4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
@@ -51,7 +51,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
 - `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
 - `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
-- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` (かつ `verify_degraded != true`) は、いずれも `reason == null` なら開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
+- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** (`reason` が `PRIOR_CODE_REVIEW` のマージ件数だけを伝えている回も縮退ではないので開示不要。開示が必要なケースは `compose-review` 5-5 が列挙する) — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
 
 PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
@@ -74,11 +74,14 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 1. `/code-review` を手動で実行する (レビュー対象を引数で指定。`--fix` / `--comment` は付けない)。
 2. **同じセッションのまま** `/run-pr-review` (または `/run-local-review`) を実行する。
 
-1 の findings はセッションのコンテキストに残っているため、orchestrator (`run-pr-review` Step 3-2 / `run-local-review` Step 1-2) がそれを検出し、**`PRIOR_CODE_REVIEW` (1 行 JSON) として `compose-review` に転送する**。`compose-review` Step 5-2 はこれを外部レビュー結果として採用するので、実質的に「自前レビュー + `code-review`」の併用になる。この運用を取らない場合は優先順 2 の `scan-diff-findings` が自動で使われる。
+1 の findings はセッションのコンテキストに残っているため、orchestrator (`run-pr-review` Step 3-2 / `run-local-review` Step 1-2) がそれを検出し、**`PRIOR_CODE_REVIEW` (1 行 JSON) として `compose-review` に転送する**。
 
-検出・転送を orchestrator の責務にしているのは、`compose-review` が **sub-agent として起動される**と本セッションのコンテキストが見えず、先行実行された findings を自力では拾えないため (前述「`compose-review` の呼び出し経路」)。一方 **「その findings が今回のレビュー対象と同じ範囲に対して実行されたか」の採否判定は `compose-review` の責務** — diff 範囲を確定するのは `compose-review` 自身 (Step 1) で orchestrator はそれを知らないため、orchestrator は観測できた対象表現 (`target`) と head SHA (`head`) をそのまま添えて転送し、`compose-review` が突き合わせて決める。判定できなければ採用せず `scan-diff-findings` に落ちる (古い findings を本 PR の外部レビュー結果として通さないため)。
+**転送された findings は「外部レビュー枠の代替」にはならない** — `compose-review` はこれを解決順 1 の成立根拠にせず、**5-3 で自前レビュー / 外部スキルの指摘と一緒に補助的にマージする**。`/code-review` の target は任意 (引数なしなら `@{upstream}...HEAD` 等) でレビュー範囲が一致している保証が無いため、これを外部レビュー枠に据えると「範囲の狭いレビューを正常併用として記録し、正規経路の `scan-diff-findings` を走らせない」縮退が機械可読な記録にも開示にも現れなくなる。補助入力として扱えば、範囲・鮮度のズレは 5-3 の既存フィルタ (実際の差分に含まれない指摘の除外 / 重複排除) がそのまま吸収するので、head や base の一致を証明する必要もない。
 
-**不採用にした回は必ず痕跡が残る**: `compose-review` は `external_review.reason` に理由を入れ、総括 `body` にも 1 文開示し、orchestrator も報告に転記する (ユーザーが意図して先に回した `/code-review` の findings が黙って捨てられないようにするため)。ただし `post-pr-review` は `reason` を `AI-REVIEW-EXTERNAL` 行に出力しないため、**このケースだけは GitHub 上に機械可読な痕跡が残らない** (既知の制約。`AI-REVIEW-EXTERNAL` のキー構成は CI のパース契約なので、本シグナルのための拡張は意図的に見送っている)。
+マージした件数 (またはマージ後 0 件になった事実) は `external_review.reason` に情報として記録され、orchestrator の報告にも載る。ただし `post-pr-review` は `reason` を `AI-REVIEW-EXTERNAL` 行に出力しないため、**この情報は GitHub 上に機械可読な形では残らない** (既知の制約。同行のキー構成は CI のパース契約なので拡張は意図的に見送っている)。
+
+検出・転送を orchestrator の責務にしているのは、`compose-review` が **sub-agent として起動される**と本セッションのコンテキストが見えず、先行実行された findings を自力では拾えないため (前述「`compose-review` の呼び出し経路」)。
+
 
 ## caller プロジェクトのレビュー方針の置き方
 
