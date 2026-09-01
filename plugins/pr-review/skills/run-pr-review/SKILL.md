@@ -14,7 +14,7 @@ PR レビュー一式 (PR 情報取得 → compose-review でレビュー本文�
 
 > かつてはここに「`compose-review` の Step 5-2 の fan-out (Agent ツール) が sub-agent コンテキストでは動かないため直接呼びが必須」と書かれていたが、**sub-agent のネスト起動は現在可能** (既定でメイン会話から数えて 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可) なので、その制約は前提として成立しない。深さ予算は本 skill (メイン) → `compose-review` (1 階層目) → `scan-diff-findings` の finder / verifier (2 階層目) で既定の 3 に収まる (`compose-review` → `scan-diff-findings` は Skill 呼びで同一コンテキストのため段を消費しない)。
 
-**トレードオフ (既定経路の代償)**: ネスト起動が可能でも、**`compose-review` sub-agent のコンテキストで Agent ツールが実際に提示されるとは限らない** (深さ上限のほか、ホストや agent 定義がツールを絞る場合がある)。提示されなければ `scan-diff-findings` は inline フォールバックに落ち、外部レビューが `compose-review` 自身と同一コンテキストの逐次自己適用になる = **5-1 自前レビューとの独立性が失われる** (実測でもこの縮退は起きる)。外部レビュー併用そのものは成立し、縮退は `fanout.mode="inline"` として記録され 5-5 で開示されるので黙って劣化することはないが、**「sub-agent 既定 = 独立した第 2 系統が常に得られる」ではない**点は理解した上で運用する。直接呼び経路の方が独立した fan-out を得やすい環境もあるため、外部レビューの独立性を最優先したい caller は直接呼びを選んでもよい (その場合は 3-4 の停止バグに注意)。
+**トレードオフ (既定経路の代償)**: ネスト起動が可能でも、**`compose-review` sub-agent のコンテキストで Agent ツールが実際に提示されるとは限らない** (深さ上限のほか、ホストや agent 定義がツールを絞る場合がある)。提示されなければ `scan-diff-findings` は inline フォールバックに落ち、外部レビューが `compose-review` 自身と同一コンテキストの逐次自己適用になる = **5-1 自前レビューとの独立性が失われる** (実測でもこの縮退は起きる)。外部レビュー併用そのものは成立し、縮退は `fanout.mode="inline"` として記録され 5-5 で開示されるので黙って劣化することはないが、**「sub-agent 既定 = 独立した第 2 系統が常に得られる」ではない**点は理解した上で運用する。なお **経路を caller が選ぶ引数は用意していない** — 経路は本 step が Agent ツールの可否だけで機械的に決める。停止バグの回避 (直接呼びの最頻の失敗) を、環境依存で起きる独立性縮退より優先する判断であり、縮退した回は `external_review` と Step 6 の報告で可視化される。
 
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
@@ -85,7 +85,11 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 - **`model` を必ず明示指定する** (未指定で起動しない)。`compose-review` はレビュー方針の解釈・指摘の重要度判定・エスカレーション判定といった判断の重いタスクなので、既定は **ホストで利用可能な上位モデル**を選ぶ。
 - **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とする。ただし **ホストがこの指定を無視して background 実行に回すことがある** (リモート実行環境で実測あり)。その場合は **完了通知を待ってよい** — sub-agent の完了通知はセッションを再開させるので、待っても「何も出力しないまま停止」にはならない (`scan-diff-findings` の finder に課している「background 待ちでターンを yield しない」規定は、**完了通知の無い直接呼び経路の内部 fan-out** に対するものであり、本 step の `compose-review` sub-agent には当てはまらない)。再開したら `HANDOFF_PATH` を `Read` して Step 4 以降を続行する。**この待ちを理由にレビュー結果を捨てて直接呼びをやり直さない** (二重にレビューを走らせるだけ)。
 - sub-agent への prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示にする (本 skill が `compose-review` の手順を prompt に書き写さない — 手順の正典は `compose-review/SKILL.md`)。
-- prompt に **read-only 制約を明記する**: 「`HANDOFF_PATH` への書き出し以外のファイル編集をしない」「GitHub 投稿系ツール (`gh pr review` / `gh pr comment` / `gh api .../reviews` / `mcp__github__*` の投稿系) を使わない」「working tree / ローカル ref を変える git 操作をしない」。`compose-review` 自体が同じ制約を持つが、**sub-agent が投稿してしまうと Step 4 の `post-pr-review` と二重投稿になる** ため prompt でも重ねて明示する (`scan-diff-findings` が finder に同じ制約を課しているのと同じ方針)。
+- prompt に **read-only 制約を明記する**。ただし **`compose-review` / `scan-diff-findings` が正常動作に必要とする操作まで禁じないこと** — prompt の制約が呼び先 SKILL.md の許可より厳しいと、レビューが実行不能になる。次の 3 点を、括弧内の例外込みで書く:
+  - **GitHub 投稿系ツールを使わない** (`gh pr review` / `gh pr comment` / `gh api .../reviews` も、`mcp__github__*` の投稿系も)。**sub-agent が投稿すると Step 4 の `post-pr-review` と二重投稿になる** ため、ここは例外なしの禁止。
+  - **ファイル編集は成果物パスへの書き出しに限る** — `HANDOFF_PATH` (`compose-review` の完成 JSON) と、5-2 で呼ぶ外部レビュースキルの出力先 (`scan-diff-findings` の `FINDINGS_PATH`) は **許可する**。「`HANDOFF_PATH` 以外の Write 禁止」と書くと `FINDINGS_PATH` への書き出しが塞がれ、既定の外部レビュー併用が常時不成立になる (本 plugin が最も強く禁じる「自前レビュー単独への黙った退化」を prompt で引き起こす)。レビュー対象コードの修正・markdown 出力等はいずれの経路でも禁止。
+  - **working tree / ローカルブランチを変える git 操作をしない** (`checkout` / `reset` / `commit` / `push` / `pull` / `merge` / `rebase`)。ただし **PR ref / base ref の read-only fetch は許可する** (`git fetch origin refs/pull/<N>/head` 等)。これは `compose-review` Step 1 が head/base SHA を materialize するために **必須** で、同 skill も「守ること」で明示的な例外としている。ここを禁じると PR head object がローカルに無い通常ケースで差分を取れず、error JSON でレビューが丸ごと失敗する。
+  - 迷ったら **呼び先 SKILL.md の「守ること」を正典とする** 旨も 1 文添える (prompt 側で制約を再発明しない)。
 - **引数ブロック (3-3) は prompt の末尾に置く**。指示文・read-only 制約・その他の注意書きは **すべて引数ブロックより前** に書き、引数ブロックの後ろには何も足さない。`compose-review` の `KEY=VALUE` parser は長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) を「次の `^[A-Z_]+=` 行または prompt 末尾まで」として読むため、引数ブロックの後ろに文を置くと **それが最後の長文 value に飲み込まれ**、汚染された値がレビュー本文の CI / 既存スレッド文脈として PR に投稿される (3-3 の `PRIOR_CODE_REVIEW` の配置制約と同じ理由)。
 
 **Agent ツールが当コンテキストで使えない場合のみ**、`Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す (従来経路)。この場合は下記「3-4. 戻り値の扱い」の ⚠️ 警告が該当するので特に注意する。**どちらの経路を採ったかは Step 6 の報告に 1 行含める** (直接呼びに落ちたことを黙って隠さない)。
@@ -105,7 +109,12 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 
 **レビュー対象が一致するかの採否判定は `compose-review` の責務** (5-2 解決順 1)。diff 範囲 (`<BASE_SHA>...<HEAD_SHA>`) を確定するのは `compose-review` Step 1 であって本 skill ではないため、本 skill 側で「一致すると確認できたか」を判定条件にしない (`BASE_SHA` を持たない本 skill では常に判定不能になり、この経路が死ぬ)。本 skill は観測できた `target` / `head` をそのまま添えて渡し、`compose-review` が `head` と自身の `HEAD_SHA` を突き合わせて採否を決める。ただし **明らかに別 PR / 別ブランチを対象にしたと分かる findings は転送しない** (その足切りだけは本 skill で行う)。
 
-**`head` に Step 2 の `headRefOid` を機械的に入れてはならない**。`compose-review` の PR モードの採否判定は「`head` が `HEAD_SHA` と一致すれば採用」なので、caller が常に現 head を入れると条件が恒真になり、**古い findings を弾く手段が消える** (`/code-review` 実行後に PR へ push した場合、修正済みの指摘が「現 head への外部レビュー結果」として全件採用され、そのまま PR に再掲される)。入れてよいのは「その `/code-review` が実際に見ていた head SHA」だけで、分からなければ `null` にして `compose-review` の判定に委ねる (PR モードでは `head` が `null` なら不成立となり `scan-diff-findings` に落ちる = 安全側)。
+**`head` は「その `/code-review` が実際に見ていた head SHA」を入れる**。`compose-review` の PR モードの採否判定は「`head` が `HEAD_SHA` と一致すれば採用 / `null` なら不成立」なので、ここを取り違えると経路が壊れる:
+
+- **機械的に現 `headRefOid` を入れてはならない** — 条件が恒真になり **古い findings を弾く手段が消える** (`/code-review` 実行後に PR へ push した場合、修正済みの指摘が「現 head への外部レビュー結果」として全件採用され PR に再掲される)。
+- **一方、分からないから常に `null`、でも経路が死ぬ** — `/code-review` は自分がレビューした head SHA を出力しないため、「出力から SHA を読み取れたときだけ入れる」運用だと実務上ほぼ常に `null` になり、この手動併用フローが PR モードで一度も成立しない。
+- したがって **`headRefOid` を入れてよい条件を、次のいずれかが確認できたときに限る**: (a) `/code-review` の出力にレビュー対象の SHA / ref range が含まれ、それが `headRefOid` と一致する。(b) **`/code-review` を実行した後、本 skill 呼び出しまでの間にこの PR へ新しい push が無いと確認できる** (同一セッション内で自分が push していない、かつ Step 2 で取得した `headRefOid` が `/code-review` 実行時点から変わっていないと言える)。この (b) が実務上の主経路になる。
+- どちらも確認できなければ `null` にする (`scan-diff-findings` に落ちる = 安全側)。
 
 #### 3-3. 渡す引数
 
