@@ -79,6 +79,8 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 #### 3-1. 呼び出し方式を決める
 
+**実行順**: 本 step のサブステップは 3-1 → 3-2 → 3-3 → 3-4 の順に**読む**が、**実際に sub-agent を起動する (または直接呼びする) のは 3-2 (findings 検出) と 3-3 (引数組み立て) を終えた後**。番号順に起動してしまうと引数が未生成のまま渡り、`PRIOR_CODE_REVIEW` の転送が発火しない。
+
 **既定は sub-agent 起動**。Agent ツールが当コンテキストで利用可能なら、`compose-review` を sub-agent として起動する:
 
 - `subagent_type` は **汎用エージェント** (Claude Code なら `general-purpose`) を使う。`compose-review` は `HANDOFF_PATH` への `Write`・`Bash`・`Skill`・`Agent` (呼び先の `scan-diff-findings` が使う) を必要とするため、**read-only / one-shot の探索用エージェント (`Explore` / `Plan` 等) を選んではならない** (`Write` が無いとハンドオフ JSON を書けず必ず失敗する)。
@@ -86,8 +88,7 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 - **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とする。ただし **ホストがこの指定を無視して background 実行に回すことがある** (リモート実行環境で実測あり)。その場合の扱いは次の順で、**「Step 4〜6 を同一応答内で完了する」を最優先** に置く:
   1. **同一応答内で `HANDOFF_PATH` の出現を待てるなら、そうする** (`compose-review` はこのパスに JSON を書いてから終わるので、ファイルの出現を bounded に待ち合わせれば `Read` → Step 4 へそのまま進める)。ターンを終えないのでこれが最善。
   2. それも不可でターンが終わってしまった場合は、**完了通知で再開したときに必ず `HANDOFF_PATH` を `Read` して Step 4 以降を実行する**。再開後の続行を忘れると、`compose-review` が JSON を書き終えているのに **PR へ何も投稿されないまま終わる** = 本 skill が最頻の失敗として挙げている silent stop そのものになる。
-  3. **完了通知でセッションが再開しない構成では、待ちに頼らない** — その環境では 3-1 のフォールバック (直接呼び) を選ぶ。
-  いずれの場合も **background 化を理由にレビュー結果を捨てて直接呼びをやり直さない** (二重にレビューを走らせるだけ)。なお `scan-diff-findings` の finder に課している「background 待ちでターンを yield しない」規定は、**完了通知の無い直接呼び経路の内部 fan-out** に対するもので、本 step の `compose-review` sub-agent とは別の話。
+  **どちらの場合も background 化を理由にレビュー結果を捨てて直接呼びをやり直さない** (`compose-review` は既に走っているので、二重にレビューを走らせるだけになる)。「完了通知で再開しない環境かもしれない」ことを理由に起動をやり直すのも同じ — 起動後にその判定はできないので、上記 1 (同一応答内での待ち合わせ) を優先することで対処する。なお `scan-diff-findings` の finder に課している「background 待ちでターンを yield しない」規定は、**完了通知の無い直接呼び経路の内部 fan-out** に対するもので、本 step の `compose-review` sub-agent とは別の話。
 - sub-agent への prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示にする (本 skill が `compose-review` の手順を prompt に書き写さない — 手順の正典は `compose-review/SKILL.md`)。
 - prompt に **read-only 制約を明記する**。ただし **`compose-review` / `scan-diff-findings` が正常動作に必要とする操作まで禁じないこと** — prompt の制約が呼び先 SKILL.md の許可より厳しいと、レビューが実行不能になる。次の 3 点を、括弧内の例外込みで書く:
   - **GitHub 投稿系ツールを使わない** (`gh pr review` / `gh pr comment` / `gh api .../reviews` も、`mcp__github__*` の投稿系も)。**sub-agent が投稿すると Step 4 の `post-pr-review` と二重投稿になる** ため、ここは例外なしの禁止。

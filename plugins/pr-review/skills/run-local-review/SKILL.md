@@ -28,11 +28,13 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 #### 1-1. 呼び出し方式を決める
 
+**実行順**: 本 step のサブステップは 1-1 → 1-2 → 1-3 の順に**読む**が、**実際に sub-agent を起動するのは 1-2 (findings 検出) と 1-3 (引数組み立て) を終えた後**。番号順に起動してしまうと引数が未生成のまま渡り、`PRIOR_CODE_REVIEW` の転送が発火しない。
+
 **既定は sub-agent 起動**。Agent ツールが当コンテキストで利用可能なら、`compose-review` を sub-agent として起動する。指定は `run-pr-review` Step 3-1 と同一:
 
 - `subagent_type` は **汎用エージェント** (Claude Code なら `general-purpose`)。`compose-review` は `HANDOFF_PATH` への `Write`・`Bash`・`Skill`・`Agent` を必要とするため、**read-only / one-shot の探索用エージェント (`Explore` / `Plan` 等) を選んではならない**。
 - **`model` を必ず明示指定する** (未指定で起動しない)。既定はホストで利用可能な上位モデル。
-- **`run_in_background: false` を明示指定する**。ただし **ホストがこの指定を無視して background 実行に回すことがある** (実測あり)。扱いは `run-pr-review` Step 3-1 と同じ順序で、**「Step 2〜3 を同一応答内で完了する」を最優先** にする: (1) 同一応答内で `HANDOFF_PATH` の出現を待てるならそうする (ターンを終えずに済むので最善)、(2) ターンが終わってしまった場合は完了通知で再開したときに必ず `HANDOFF_PATH` を `Read` して Step 2 以降を実行する (忘れると markdown が出力されないまま終わる)、(3) 完了通知で再開しない構成では待ちに頼らず 1-1 のフォールバック (直接呼び) を選ぶ。**background 化を理由にレビューをやり直さない**。1-4 の「background 待ちでターンを yield しない」規定は、完了通知の無い直接呼び経路の内部 fan-out に対するもので本 step とは別の話。
+- **`run_in_background: false` を明示指定する**。ただし **ホストがこの指定を無視して background 実行に回すことがある** (実測あり)。扱いは `run-pr-review` Step 3-1 と同じ順序で、**「Step 2〜3 を同一応答内で完了する」を最優先** にする: (1) 同一応答内で `HANDOFF_PATH` の出現を待てるならそうする (ターンを終えずに済むので最善)、(2) ターンが終わってしまった場合は完了通知で再開したときに必ず `HANDOFF_PATH` を `Read` して Step 2 以降を実行する (忘れると markdown が出力されないまま終わる)。**background 化を理由にレビューをやり直さない** (`compose-review` は既に走っており、二重に走らせるだけ。起動後に「再開しない環境か」は判定できないので、(1) を優先することで対処する)。1-4 の「background 待ちでターンを yield しない」規定は、完了通知の無い直接呼び経路の内部 fan-out に対するもので本 step とは別の話。
 - prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示 (`compose-review` の手順を prompt に書き写さない — 正典は `compose-review/SKILL.md`)。
 - prompt に **read-only 制約を明記する**。ただし **`compose-review` / `scan-diff-findings` が正常動作に必要とする操作まで禁じないこと** (制約が呼び先 SKILL.md の許可より厳しいとレビューが実行不能になる)。内訳は `run-pr-review` Step 3-1 と同じ:
   - **GitHub 投稿系ツールを使わない** (例外なし。本 skill は GitHub 投稿を一切行わない)。
@@ -56,8 +58,8 @@ sub-agent 経路を既定にするのは、(1) sub-agent の完了が Agent ツ�
 1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 1-3 の `PRIOR_CODE_REVIEW` 行を **省略** する。
 2. 残っていれば **1 行 JSON** にシリアライズして渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / uncommitted 差分の別など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}`。**`verdict` は取れる限り必ず転送する** (全件落とすと `compose-review` 側で `verify_degraded: true` = 「外部由来の指摘は未検証」扱いになり、`CONFIRMED` だった指摘まで自己追認待ちになる)。**物理的な改行を含めてはならない** が、**JSON 文字列内の改行は `\n` にエスケープすれば 1 物理行に収まる** ので `failure_scenario` が複数行でも転送できる (字句どおり「改行があれば諦める」と読むとこの経路が常時不発になる)。エスケープしても 1 行が過大になる規模のときだけ転送を諦めて行ごと省略する。
    - **`head` は「その `/code-review` が実際に見ていた head SHA」を入れる**。現在の `git rev-parse HEAD` を機械的に入れてはならない — `compose-review` のローカル `commit` モードの採否判定は「`head` が現 HEAD と一致すれば採用」なので、常に現 HEAD を入れると条件が恒真になり **古い findings を弾く手段が消える** (`/code-review` 実行後に新しくコミットを積んだ場合、修正済みの指摘が「今回の対象への外部レビュー結果」として全件採用され再掲される)。
-   - 逆に常に `null` にすると経路が死ぬため、**現 HEAD を入れてよい条件**を次のいずれかとする: (a) `/code-review` の出力から対象 SHA が読み取れて現 HEAD と一致する、(b) **`/code-review` 実行後に HEAD SHA が変わっていないと確認できる** (ローカルブランチは自分以外が進めないので、この確認は成立する。実務上の主経路)。どちらも確認できなければ `null`。
-   - **(b) は「新しいコミットを積んでいない」ではなく「HEAD SHA が変わっていない」で判定する**。`git commit --amend` / `git reset --soft` + 再コミット / `git rebase` はコミット数を増やさずに HEAD を差し替えるため、「積んでいない」だけを見ると **書き換え後の別コミットに対して古い findings を採用** してしまい `head` の存在意義が消える。`/code-review` 実行時点の HEAD SHA をセッション内で観測できていればそれと現 `git rev-parse HEAD` を直接比較し、観測できていなければ (`git log` でコミット追加の有無しか分からない場合を含め) `null` に倒す。
+   - 逆に常に `null` にすると経路が死ぬため、**現 HEAD を入れてよい条件**を次のいずれかとする: (a) `/code-review` の出力から対象 SHA が読み取れて現 HEAD と一致する、(b) **`/code-review` 実行後に HEAD SHA が変わっていないと確認できる** — 同一セッション内で `/code-review` を回した回は、その時点の HEAD SHA をセッションのコンテキストから拾えることが多く (ユーザーの `git` 実行や自分の `git rev-parse` の出力など)、拾えていればそれと現 `git rev-parse HEAD` を比較すればよい。これが成立する回がローカルの主経路になる。どちらも確認できなければ `null`。
+   - **(b) は「新しいコミットを積んでいない」ではなく「HEAD SHA が変わっていない」で判定する**。`git commit --amend` / `git reset --soft` + 再コミット / `git rebase` はコミット数を増やさずに HEAD を差し替えるため、「積んでいない」だけを見ると **書き換え後の別コミットに対して古い findings を採用** してしまい `head` の存在意義が消える。`git log` で「コミットが増えていない」ことだけを確認して (b) を満たしたと扱ってはならない。観測できた HEAD SHA との直接比較ができない回は `null` に倒す。
    - **(b) を認めるのはローカルモードだけ**。`run-pr-review` Step 3-2 は PR に他者や CI が push しうるため (a) のみに限定している (投稿を伴い、旧 head の findings を投稿すると行 anchor がずれるため)。ローカルブランチにはその経路が無いので (b) を認めてよい。
 
 **レビュー対象が一致するかの採否判定は `compose-review` の責務** (5-2 解決順 1)。本 skill は `BASE_BRANCH` を転送するだけで、比較対象や差分モード (`commit` / `staged` / `worktree`) を確定するのは `compose-review` Step 1 であり、本 skill にはそれを判定する手段も情報も無い (本 skill が使う git は `git rev-parse` / `git remote get-url` / `git log` のみで、差分モードの解決はしない)。したがって本 skill 側で範囲の一致確認を判定条件にしない — 観測できた `target` / `head` をそのまま添えて渡し、`compose-review` が自身で確定した範囲と突き合わせて採否を決める。本 skill 側で `code-review` を呼ぶ実装は持たない (`compose-review` 5-2 の責務)。
