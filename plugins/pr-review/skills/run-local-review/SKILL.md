@@ -113,7 +113,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 - 差分モード: <commit / staged / worktree / none>
 - 対象コミット: <ここは `diff_mode="commit"` のとき `<commit_count> 件 (<base_branch>..HEAD)` (例: `3 件 (main..HEAD)`)、それ以外 (`staged` / `worktree` / `none`) のとき `0 件 (コミット未作成)` と固定文字列で書き込む。機械的な置換ではなく `diff_mode` で分岐する>
 - インライン指摘: <count> 件
-- 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` / `finders_expected` のいずれかが `null` なら `finder …` を省く** (`mode="external"` では必ず `null` になり、`null/null` では取得不能なのか 0 観点なのか判別できないため)。`mode="inline"` なら末尾に ` ※独立性は限定的`、`mode="partial"` なら ` ※観点欠落あり`、`mode="empty"` なら ` ※外部は対象差分なしと判定`、`verify_degraded=true` なら ` ※外部由来の指摘は未検証` を付ける。`skill == "none"` なら `未併用 (<reason>)`。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
+- 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` / `finders_expected` のいずれかが `null` なら `finder …` を省く** (`mode="external"` では必ず `null` になり、`null/null` では取得不能なのか 0 観点なのか判別できないため)。`mode="inline"` なら末尾に ` ※独立性は限定的`、`mode="partial"` なら ` ※観点欠落あり`、`mode="empty"` なら ` ※外部は対象差分なしと判定`、`verify_degraded=true` なら ` ※外部由来の指摘は未検証` を付ける。`skill == "none"` なら `未併用 (<reason>)`。**`mode` が正常値でも `reason` が非 null なら ` ※<reason>` を付ける** (`PRIOR_CODE_REVIEW` を渡したのに不採用になった回がこれに当たり、付けないとユーザーが先に回した `/code-review` の findings が捨てられた事実が消える)。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
 
 ## 総括
 
@@ -156,7 +156,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 - レビュー対象のブランチ / `base_branch` / `diff_mode`
 - **`compose-review` の呼び出し経路** (1 行。`sub-agent` / `直接呼び (Agent ツール不可)` / `直接呼び (sub-agent 起動に失敗しフォールバック)` のいずれか。既定から落ちた回を黙って隠さない)
 - インライン指摘件数
-- 外部レビュー併用の有無 (`external_review` の `skill` / `mode`。未併用 / `mode="inline"` / `mode="partial"` なら理由も 1 行)
+- 外部レビュー併用の有無 (`external_review` の `skill` / `mode`。未併用 / `mode="inline"` / `mode="partial"` なら理由も 1 行。**`mode` が正常値でも `reason` が非 null ならその `reason` を必ず添える** — `PRIOR_CODE_REVIEW` を不採用にした回がこれに当たる。`run-pr-review` Step 6 と同じ扱いにする)
 - 出力先 markdown ファイルパス
 
 ## 守ること
@@ -166,5 +166,5 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 - `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 2 (markdown 出力) → Step 3 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (直接呼び経路には制御戻り境界が無く、出力前に停止する事故が起きやすい。詳細は Step 1-4 の警告)。
 - 直接呼び経路では、外部レビュー (`compose-review` Step 5-2 → `scan-diff-findings`) の内部 fan-out で起きた **sub-agent が harness により background 化しても、その完了を待って応答を終了しない**。`Monitor` / background 完了通知待ち / sleep ループでターンを yield せず、**同期的に得られた結果だけで Step 2 → Step 3 を完了する** (recall は `compose-review` の 5-1 自前レビューが担保する。詳細は Step 1-4 の 2 つ目の警告)。sub-agent 経路ではこれらの Agent は `compose-review` sub-agent 側で完結するため本 skill には影響しない。
 - GitHub への投稿は行わない。`post-pr-review` / `resolve-pr-threads` skill は呼ばない。**経路を問わず** GitHub 投稿系ツールを使わない (`gh pr comment` / `gh pr review` / `gh api .../reviews` も、`mcp__github__pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `add_issue_comment` 等の MCP 投稿ツールも使わない。web/remote では MCP が唯一の GitHub 経路になるため、gh のみを禁じても read-only 保証が漏れる)。
-- `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git remote get-url` / `git log`) のみ。`git log` は Step 1-2 の staleness 確認 (`/code-review` 実行後にコミットを積んでいないかの判定) に使う。
+- `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git remote get-url` / `git log`) のみ。`git log` は Step 1-2 の staleness 確認に使う。**判定基準は「コミットを積んでいないか」ではなく「HEAD SHA が変わっていないか」** (`--amend` / `reset --soft` + 再コミット / `rebase` はコミット数を増やさず HEAD を差し替えるため。Step 1-2 参照)。
 - 差分が空の場合も markdown 出力 + 報告は行う (skip しない)。判定は `compose-review` 側の `diff_mode` に従う。

@@ -107,7 +107,7 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 3-3 の `PRIOR_CODE_REVIEW` 行を **省略** する (それだけ。`code-review` を本 skill から呼ぶ実装は持たない)。
 2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}`。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 落とすと `compose-review` 側で未検証の指摘が 1 段下げ処理なしに `[must]` へ計上され、`AI-REVIEW-RESULT` を required check にしている運用でマージを不当にブロックする。出力に無ければ `null` か省略。
 
-**`head` が `null` になる回は `PRIOR_CODE_REVIEW` 行そのものを省略する**。PR モードの `compose-review` は `head: null` を無条件で不成立にするため (5-2 解決順 1)、転送しても確実に破棄され、prompt に無駄な JSON を積むだけになる。
+**`head` が `null` でも、findings があるなら転送する** (行ごと省略しない)。PR モードの `compose-review` は `head: null` を不成立にするので findings 自体は採用されないが、**`compose-review` は「`PRIOR_CODE_REVIEW` を渡されたのに不採用にした」事実を `external_review.reason` と総括 `body` に必ず記録する契約** (5-2 解決順 1 / 5-5) になっている。転送せずに握り潰すと **ユーザーが先に回した `/code-review` の findings が黙って捨てられ**、その痕跡がどこにも残らない (`head` が `null` になるのが最多ケースなので影響が大きい)。省略してよいのは「findings がそもそも無い」場合と、下記の「1 行が過大」な場合だけ。
 
 **物理的な改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が次の `^[A-Z_]+=` 行または末尾までを value として読むため)。ただし **JSON 文字列内の改行は `\n` にエスケープすれば 1 物理行に収まる** ので、`failure_scenario` が複数行でも転送できる (複数行になるのが普通なので、字句どおり「改行があれば諦める」と読むとこの経路が常時不発になる)。エスケープしても 1 行が過大になる規模のときだけ転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
 
@@ -117,7 +117,7 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 
 - **機械的に現 `headRefOid` を入れてはならない** — 条件が恒真になり **古い findings を弾く手段が消える** (`/code-review` 実行後に PR へ push した場合、修正済みの指摘が「現 head への外部レビュー結果」として全件採用され PR に再掲される)。
 - **一方、分からないから常に `null`、でも経路が死ぬ** — `/code-review` は自分がレビューした head SHA を出力しないため、「出力から SHA を読み取れたときだけ入れる」運用だと実務上ほぼ常に `null` になり、この手動併用フローが PR モードで一度も成立しない。
-- したがって **PR モードで `head` に SHA を入れてよいのは、`/code-review` の出力にレビュー対象の SHA / ref range が含まれ、それが Step 2 の `headRefOid` と一致すると確認できたときだけ**。確認できなければ `null` にする (`scan-diff-findings` に落ちる = 安全側)。
+- したがって **PR モードで `head` に SHA を入れてよいのは、`/code-review` の出力にレビュー対象の SHA / ref range が含まれ、それが Step 2 の `headRefOid` と一致すると確認できたときだけ**。確認できなければ `null` にする (findings は採用されず `scan-diff-findings` に落ちる = 安全側。ただし **転送自体は行う** — 上記のとおり不採用の記録が消えるため)。
 - **「自分が push していないから現 head のままのはず」という推定で入れてはならない** — PR には **他者や CI が push しうる**ため、同一セッション内で自分が push していないことは head 不変の証明にならない。旧 head の findings を新 head へのレビューとして投稿すると、行 anchor がずれて誤った箇所を指すか、投稿自体が 422 になる。GitHub に投稿する経路なので、ローカルモード (`run-local-review` Step 1-2) より厳しく倒す。
 - 結果として PR モードの手動併用は「`/code-review` が対象 SHA を出力していた回」に限られ、多くの回は `scan-diff-findings` が使われる。これは意図した安全側の挙動。**`PRIOR_CODE_REVIEW` を渡したのに `compose-review` が不採用にした回は `external_review.reason` と総括 `body` に理由が入る契約** (`compose-review` 5-2 解決順 1 / 5-5) なので、Step 6 でその `reason` をそのまま報告に載せる — そうしないと「ユーザーが先に回した `/code-review` の findings が捨てられた」事実が誰にも見えない (解決順 2 が正常成功すると `mode` は `"agent"` のままで、縮退としては現れない)。
 

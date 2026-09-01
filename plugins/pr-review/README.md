@@ -51,7 +51,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
 - `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
 - `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
-- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
+- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` (かつ `verify_degraded != true`) は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
 
 PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
@@ -77,6 +77,8 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 1 の findings はセッションのコンテキストに残っているため、orchestrator (`run-pr-review` Step 3-2 / `run-local-review` Step 1-2) がそれを検出し、**`PRIOR_CODE_REVIEW` (1 行 JSON) として `compose-review` に転送する**。`compose-review` Step 5-2 はこれを外部レビュー結果として採用するので、実質的に「自前レビュー + `code-review`」の併用になる。この運用を取らない場合は優先順 2 の `scan-diff-findings` が自動で使われる。
 
 検出・転送を orchestrator の責務にしているのは、`compose-review` が **sub-agent として起動される**と本セッションのコンテキストが見えず、先行実行された findings を自力では拾えないため (前述「`compose-review` の呼び出し経路」)。一方 **「その findings が今回のレビュー対象と同じ範囲に対して実行されたか」の採否判定は `compose-review` の責務** — diff 範囲を確定するのは `compose-review` 自身 (Step 1) で orchestrator はそれを知らないため、orchestrator は観測できた対象表現 (`target`) と head SHA (`head`) をそのまま添えて転送し、`compose-review` が突き合わせて決める。判定できなければ採用せず `scan-diff-findings` に落ちる (古い findings を本 PR の外部レビュー結果として通さないため)。
+
+**不採用にした回は必ず痕跡が残る**: `compose-review` は `external_review.reason` に理由を入れ、総括 `body` にも 1 文開示し、orchestrator も報告に転記する (ユーザーが意図して先に回した `/code-review` の findings が黙って捨てられないようにするため)。ただし `post-pr-review` は `reason` を `AI-REVIEW-EXTERNAL` 行に出力しないため、**このケースだけは GitHub 上に機械可読な痕跡が残らない** (既知の制約。`AI-REVIEW-EXTERNAL` のキー構成は CI のパース契約なので、本シグナルのための拡張は意図的に見送っている)。
 
 ## caller プロジェクトのレビュー方針の置き方
 
