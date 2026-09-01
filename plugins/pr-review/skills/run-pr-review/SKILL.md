@@ -105,7 +105,11 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 この運用を成立させる **検出と転送は本 skill の責務**: `compose-review` を sub-agent として起動すると `compose-review` からは本セッションのコンテキストが見えず、先行実行された `/code-review` の findings を自力では拾えないため。手順:
 
 1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 3-3 の `PRIOR_CODE_REVIEW` 行を **省略** する (それだけ。`code-review` を本 skill から呼ぶ実装は持たない)。
-2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}`。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 落とすと `compose-review` 側で未検証の指摘が 1 段下げ処理なしに `[must]` へ計上され、`AI-REVIEW-RESULT` を required check にしている運用でマージを不当にブロックする。出力に無ければ `null` か省略。**改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が壊れる)。1 行に収まらない規模なら転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
+2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}`。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 落とすと `compose-review` 側で未検証の指摘が 1 段下げ処理なしに `[must]` へ計上され、`AI-REVIEW-RESULT` を required check にしている運用でマージを不当にブロックする。出力に無ければ `null` か省略。
+
+**`head` が `null` になる回は `PRIOR_CODE_REVIEW` 行そのものを省略する**。PR モードの `compose-review` は `head: null` を無条件で不成立にするため (5-2 解決順 1)、転送しても確実に破棄され、prompt に無駄な JSON を積むだけになる。
+
+**物理的な改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が次の `^[A-Z_]+=` 行または末尾までを value として読むため)。ただし **JSON 文字列内の改行は `\n` にエスケープすれば 1 物理行に収まる** ので、`failure_scenario` が複数行でも転送できる (複数行になるのが普通なので、字句どおり「改行があれば諦める」と読むとこの経路が常時不発になる)。エスケープしても 1 行が過大になる規模のときだけ転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
 
 **レビュー対象が一致するかの採否判定は `compose-review` の責務** (5-2 解決順 1)。diff 範囲 (`<BASE_SHA>...<HEAD_SHA>`) を確定するのは `compose-review` Step 1 であって本 skill ではないため、本 skill 側で「一致すると確認できたか」を判定条件にしない (`BASE_SHA` を持たない本 skill では常に判定不能になり、この経路が死ぬ)。本 skill は観測できた `target` / `head` をそのまま添えて渡し、`compose-review` が `head` と自身の `HEAD_SHA` を突き合わせて採否を決める。ただし **明らかに別 PR / 別ブランチを対象にしたと分かる findings は転送しない** (その足切りだけは本 skill で行う)。
 
@@ -115,7 +119,7 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 - **一方、分からないから常に `null`、でも経路が死ぬ** — `/code-review` は自分がレビューした head SHA を出力しないため、「出力から SHA を読み取れたときだけ入れる」運用だと実務上ほぼ常に `null` になり、この手動併用フローが PR モードで一度も成立しない。
 - したがって **PR モードで `head` に SHA を入れてよいのは、`/code-review` の出力にレビュー対象の SHA / ref range が含まれ、それが Step 2 の `headRefOid` と一致すると確認できたときだけ**。確認できなければ `null` にする (`scan-diff-findings` に落ちる = 安全側)。
 - **「自分が push していないから現 head のままのはず」という推定で入れてはならない** — PR には **他者や CI が push しうる**ため、同一セッション内で自分が push していないことは head 不変の証明にならない。旧 head の findings を新 head へのレビューとして投稿すると、行 anchor がずれて誤った箇所を指すか、投稿自体が 422 になる。GitHub に投稿する経路なので、ローカルモード (`run-local-review` Step 1-2) より厳しく倒す。
-- 結果として PR モードの手動併用は「`/code-review` が対象 SHA を出力していた回」に限られ、多くの回は `scan-diff-findings` が使われる。これは意図した安全側の縮退であり、`external_review` に記録されるので黙って劣化することはない。
+- 結果として PR モードの手動併用は「`/code-review` が対象 SHA を出力していた回」に限られ、多くの回は `scan-diff-findings` が使われる。これは意図した安全側の挙動。**`PRIOR_CODE_REVIEW` を渡したのに `compose-review` が不採用にした回は `external_review.reason` と総括 `body` に理由が入る契約** (`compose-review` 5-2 解決順 1 / 5-5) なので、Step 6 でその `reason` をそのまま報告に載せる — そうしないと「ユーザーが先に回した `/code-review` の findings が捨てられた」事実が誰にも見えない (解決順 2 が正常成功すると `mode` は `"agent"` のままで、縮退としては現れない)。
 
 #### 3-3. 渡す引数
 
@@ -192,7 +196,7 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
 - **`compose-review` の呼び出し経路** (1 行。`sub-agent` / `直接呼び (Agent ツール不可)` / `直接呼び (sub-agent 起動に失敗しフォールバック)` のいずれか)。既定である sub-agent 経路から落ちた回を caller が把握できるようにするため、**常に 1 行報告する**
 - インライン指摘件数 / ラベル別件数内訳 (優先度順、`[must]` / `[should]` 等、件数>0 のもの)
-- **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`mode="external"` の手動 `/code-review` 併用では必ず `null` になるため、`null/null` と描画すると取得不能なのか 0 観点なのか判別できない)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
+- **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`mode="external"` の手動 `/code-review` 併用では必ず `null` になるため、`null/null` と描画すると取得不能なのか 0 観点なのか判別できない)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。**`mode` が正常値でも `reason` が非 null なら、その `reason` も必ず添える** — `PRIOR_CODE_REVIEW` を渡したのに不採用になった回がこれに当たり (Step 3-2 参照)、添えないとユーザーが先に回した `/code-review` の findings が捨てられた事実が報告から消える。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
 - **エスカレーション判定の結果** (`compose-review` の `escalation` から 1 行。`escalate: true` なら `エスカレーション: 要 (理由 <reasons の件数> 件)`、`false` なら `エスカレーション: 不要`。フィールド欠落 / 壊れていた場合は `エスカレーション判定: 不明 (compose-review が escalation を返さず)` と明記する)。これは「その PR を人に見てもらうべきか」の信号なので、`escalate: true` の回を caller が見落とさないよう **常に 1 行報告する** (マージをブロックする判定ではない点も含意として変えない)
 - resolve したスレッド件数 (Step 5 の戻り値)
 - `label_counts` が欠落 / 壊れていて `LABEL_COUNTS` を渡せなかった場合はその旨 1 行 (機械可読サマリ行が `comments[]` 集計にフォールバックしたことの申告)
