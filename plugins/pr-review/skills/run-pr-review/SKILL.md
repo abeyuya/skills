@@ -99,9 +99,9 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 **Agent ツールが当コンテキストで使えない場合のみ**、`Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す (従来経路)。この場合は下記「3-4. 戻り値の扱い」の ⚠️ 警告が該当するので特に注意する。**どちらの経路を採ったかは Step 6 の報告に 1 行含める** (直接呼びに落ちたことを黙って隠さない)。
 
-sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わった場合は、**フォールバックの前にまず `HANDOFF_PATH` を `Read` する** — sub-agent が JSON を書き出した後に (報告前に) 落ちただけなら、その内容をそのまま採用して 3-4 へ進める (レビューをやり直す必要はない)。
+**直接呼びへのフォールバックは「起動前」の判断だけ**。sub-agent の起動自体ができなかった (Agent ツールが無い / 起動が即座に失敗した) 回はその場で直接呼びに切り替えてよいが、**一度起動できた sub-agent については直接呼びをやり直さない**。起動後にやり直すと、`compose-review` を二重に走らせるだけでなく、**先の sub-agent が後から完了通知で戻ってきた回に Step 4 が 2 回実行され、同一 PR に Review が 2 件投稿されうる**。
 
-`Read` が失敗する / 中身が JSON として読めない場合に限り、**1 回だけ直接呼びにフォールバックしてよい** (2 回目の sub-agent 起動リトライはしない)。このとき **`HANDOFF_PATH` は新しいパスを生成して渡す** — 前回のパスを再利用すると、sub-agent が壊れた JSON や空ファイルを残していた場合に `compose-review` の `Write` が既存ファイルへの上書きとなり、事前 `Read` を要求されて書き出しに失敗する (`compose-review` の `HANDOFF_PATH` は「未作成のパス」が前提)。他の引数は同じでよい。フォールバックした事実は Step 6 で報告する。
+起動できた sub-agent がパスを報告せずに終わった場合は、**`HANDOFF_PATH` を `Read` する** — JSON が書けていればその内容を採用して 3-4 へ進める (レビューをやり直す必要はない)。`Read` が失敗する / JSON として読めない場合は **整合性エラーとして扱い、Step 4 / 5 を実行せず Step 6 でその旨を報告して停止する** (レビューを黙って再実行しない)。ユーザーが再実行を選べるよう、報告には `HANDOFF_PATH` と何が起きたかを書く。
 
 #### 3-2. 手動 `/code-review` findings の検出と転送 (任意)
 
@@ -110,7 +110,7 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 この運用を成立させる **検出と転送は本 skill の責務**: `compose-review` を sub-agent として起動すると `compose-review` からは本セッションのコンテキストが見えず、先行実行された `/code-review` の findings を自力では拾えないため。手順:
 
 1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 3-3 の `PRIOR_CODE_REVIEW` 行を **省略** する (それだけ。`code-review` を本 skill から呼ぶ実装は持たない)。
-2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","base":"<その code-review が比較ベースにしていた ref。分からなければ null>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}`。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 全件落とすと `compose-review` 側で「verify を通っていない findings を採用した」扱いになり (`verify_degraded: true` + 「外部由来の指摘は未検証」の開示)、`CONFIRMED` だった指摘まで自己追認待ちになって重大度が下がりうる。出力に無ければ `null` か省略 (その場合の扱いは `compose-review` 5-2 解決順 1 の verdict 規則)。
+2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","category":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}` (**配列順は `/code-review` が返した順序 = 重大度順のまま保つ**。`category` と配列順は `compose-review` のラベル付与の根拠なので、落とすと cleanup 系の指摘が `[must]` に昇格して `label_counts.must` を誤らせる)。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 全件落とすと `compose-review` 側で「verify を通っていない findings を採用した」扱いになり (`verify_degraded: true` + 「外部由来の指摘は未検証」の開示)、`CONFIRMED` だった指摘まで自己追認待ちになって重大度が下がりうる。出力に無ければ `null` か省略 (その場合の扱いは `compose-review` 5-2 解決順 1 の verdict 規則)。
 
 **`head` が `null` でも、findings があるなら転送する** (行ごと省略しない)。PR モードの `compose-review` は `head: null` を不成立にするので findings 自体は採用されないが、**`compose-review` は「`PRIOR_CODE_REVIEW` を渡されたのに不採用にした」事実を `external_review.reason` と総括 `body` に必ず記録する契約** (5-2 解決順 1 / 5-5) になっている。転送せずに握り潰すと **ユーザーが先に回した `/code-review` の findings が黙って捨てられ**、その痕跡がどこにも残らない (`head` が `null` になるのが最多ケースなので影響が大きい)。省略してよいのは「findings がそもそも無い」場合と、下記の「1 行が過大」な場合だけ。
 
