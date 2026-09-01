@@ -26,6 +26,8 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 > **かつて直接呼びが必須だった理由と、それが解消した経緯**: 以前は「`compose-review` Step 5-2 の外部レビュー fan-out (Agent ツール) が sub-agent コンテキストでは動かない」ため、直接呼びが任意の最適化ではなく必須だった。現在は **sub-agent のネスト起動がサポートされている** (既定でメイン会話から数えて 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可) ため、この制約は成立しない。深さ予算は orchestrator (メイン) → `compose-review` (1 階層目) → `scan-diff-findings` の finder / verifier (2 階層目) で既定の 3 に収まる (`compose-review` → `scan-diff-findings` は Skill 呼びで同一コンテキストのため段を消費しない)。深さ上限に当たった場合も `scan-diff-findings` の inline フォールバックで外部レビュー併用自体は成立し、縮退は `fanout.mode="inline"` として記録・開示される。
 
+**トレードオフ (既定経路の代償)**: ネスト起動が可能でも、`compose-review` sub-agent のコンテキストで Agent ツールが実際に提示されるとは限らない (深さ上限のほか、ホストや agent 定義がツールを絞る場合がある)。提示されなければ `scan-diff-findings` は inline フォールバックに落ち、外部レビューが `compose-review` 自身と同一コンテキストの逐次自己適用になる = **自前レビューとの独立性が失われる**。併用自体は成立し縮退も開示されるが、**「sub-agent 既定 = 独立した第 2 系統が常に得られる」ではない**。外部レビューの独立性を最優先したい場合は直接呼び経路を選ぶ手もある (その場合は停止バグに注意)。
+
 経路の違いが表に出るのは 2 点だけ:
 
 - **手動 `/code-review` findings の扱い**: sub-agent からは orchestrator のセッションコンテキストが見えないため、検出と転送 (`PRIOR_CODE_REVIEW` = 対象表現 / head SHA / findings の 1 行 JSON) は orchestrator の責務。採否の判定は従来どおり `compose-review` が行う (後述「外部レビューの手動併用」)。
