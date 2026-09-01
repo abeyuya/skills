@@ -73,7 +73,7 @@ MODE=local
 BASE_BRANCH=<値>
 MAX_INLINE_COMMENTS=<値>
 HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-<branch (/ 等を - に置換)>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
-PRIOR_CODE_REVIEW=<1-2 で組み立てた 1 行 JSON。該当が無ければ行ごと省略>
+PRIOR_CODE_REVIEW=<1-2 で組み立てた 1 行 JSON。該当が無ければ行ごと省略。**引数ブロックの最後に置く** — escape 漏れで物理改行が混入しても後続に正当な key が無いようにするため (`compose-review` の入力節参照)>
 ```
 
 **引数の内容は 1-1 のどちらの経路でも同一** — sub-agent 経路ではこのブロックをそのまま sub-agent への prompt に埋め込み、直接呼び経路では `Skill` ツールの引数として渡す。
@@ -115,7 +115,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 - 差分モード: <commit / staged / worktree / none>
 - 対象コミット: <ここは `diff_mode="commit"` のとき `<commit_count> 件 (<base_branch>..HEAD)` (例: `3 件 (main..HEAD)`)、それ以外 (`staged` / `worktree` / `none`) のとき `0 件 (コミット未作成)` と固定文字列で書き込む。機械的な置換ではなく `diff_mode` で分岐する>
 - インライン指摘: <count> 件
-- compose-review 呼び出し経路: <`sub-agent` / `直接呼び (Agent ツール不可)` のいずれか。Step 1-1 で採った経路を書く。markdown が完全版なので、既定の sub-agent 経路から落ちた回もこのファイルだけで分かるようにする>
+- compose-review 呼び出し経路: <`sub-agent` / `直接呼び (Agent ツール不可)` / `直接呼び (sub-agent 起動に失敗しフォールバック)` のいずれか。Step 3 の報告と同じ 3 値を使う。Step 1-1 で採った経路を書く。markdown が完全版なので、既定の sub-agent 経路から落ちた回もこのファイルだけで分かるようにする>
 - 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` / `finders_expected` のいずれかが `null` なら `finder …` を省く** (`mode="external"` では必ず `null` になり、`null/null` では取得不能なのか 0 観点なのか判別できないため)。`mode="inline"` なら末尾に ` ※独立性は限定的`、`mode="partial"` なら ` ※観点欠落あり`、`mode="empty"` なら ` ※外部は対象差分なしと判定`、`verify_degraded=true` なら ` ※外部由来の指摘は未検証` を付ける。`skill == "none"` なら `未併用 (<reason>)`。**`reason` が非 null で、かつ上の `未併用 (<reason>)` テンプレートで既に描画していない場合は ` (<reason>)` を付ける** (`skill == "none"` の回は `未併用 (<reason>)` で 1 回だけ出す。`mode` の値では条件分岐しない) (縮退マーカー `※` とは別枠で `reason` の内容をそのまま見せる。`compose-review` は縮退理由と `PRIOR_CODE_REVIEW` の結末を 1 行に併記するので、`mode` で条件分岐すると片方が成果物から落ちる)。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
 
 ## 総括
