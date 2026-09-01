@@ -88,7 +88,9 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 - **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とする。ただし **ホストがこの指定を無視して background 実行に回すことがある** (リモート実行環境で実測あり)。その場合の扱いは次の順で、**「Step 4〜6 を同一応答内で完了する」を最優先** に置く:
   1. **同一応答内で `HANDOFF_PATH` の出現を待てるなら、そうする** (`compose-review` はこのパスに JSON を書いてから終わるので、ファイルの出現を bounded に待ち合わせれば `Read` → Step 4 へそのまま進める)。ターンを終えないのでこれが最善。**待ち合わせの条件は「ファイルが存在する」ではなく「JSON として閉じている (parse できる)」にする** — 書き込み途中を読むと 3-4 の整合性エラー判定に落ちて、完成済みのレビューが投稿されないまま停止する。parse できなければ数秒おきに読み直し、bounded な上限まで再試行する。
   2. それも不可でターンが終わってしまった場合は、**完了通知で再開したときに必ず `HANDOFF_PATH` を `Read` して Step 4 以降を実行する**。再開後の続行を忘れると、`compose-review` が JSON を書き終えているのに **PR へ何も投稿されないまま終わる** = 本 skill が最頻の失敗として挙げている silent stop そのものになる。
-  **どちらの場合も background 化を理由にレビュー結果を捨てて直接呼びをやり直さない** (`compose-review` は既に走っているので、二重にレビューを走らせるだけになる)。「完了通知で再開しない環境かもしれない」ことを理由に起動をやり直すのも同じ — 起動後にその判定はできないので、上記 1 (同一応答内での待ち合わせ) を優先することで対処する。なお `scan-diff-findings` の finder に課している「background 待ちでターンを yield しない」規定は、**完了通知の無い直接呼び経路の内部 fan-out** に対するもので、本 step の `compose-review` sub-agent とは別の話。
+  **冪等ガード (必須)**: (1) で待ち合わせて Step 4 まで進めた後に、同じ sub-agent の完了通知が届くことがある。**その通知を受けて Step 4 以降をもう一度実行してはならない** — 同一 PR に Review が 2 件投稿される。通知で再開したら、まず「この `HANDOFF_PATH` に対する投稿を既に完了していないか」を自分の実行履歴で確認し、完了していれば何もせず終える (必要なら 1 行そう報告する)。
+
+ (`compose-review` は既に走っているので、二重にレビューを走らせるだけになる)。「完了通知で再開しない環境かもしれない」ことを理由に起動をやり直すのも同じ — 起動後にその判定はできないので、上記 1 (同一応答内での待ち合わせ) を優先することで対処する。なお `scan-diff-findings` の finder に課している「background 待ちでターンを yield しない」規定は、**完了通知の無い直接呼び経路の内部 fan-out** に対するもので、本 step の `compose-review` sub-agent とは別の話。
 - sub-agent への prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示にする (本 skill が `compose-review` の手順を prompt に書き写さない — 手順の正典は `compose-review/SKILL.md`)。
 - prompt に **read-only 制約を明記する**。ただし **`compose-review` / `scan-diff-findings` が正常動作に必要とする操作まで禁じないこと** — prompt の制約が呼び先 SKILL.md の許可より厳しいと、レビューが実行不能になる。次の 3 点を、括弧内の例外込みで書く:
   - **GitHub 投稿系ツールを使わない** (`gh pr review` / `gh pr comment` / `gh api .../reviews` も、`mcp__github__*` の投稿系も)。**sub-agent が投稿すると Step 4 の `post-pr-review` と二重投稿になる** ため、ここは例外なしの禁止。
@@ -111,9 +113,9 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 この運用を成立させる **検出と転送は本 skill の責務**: `compose-review` を sub-agent として起動すると `compose-review` からは本セッションのコンテキストが見えず、先行実行された `/code-review` の findings を自力では拾えないため。手順:
 
 1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 3-3 の `PRIOR_CODE_REVIEW` 行を **省略** する (それだけ。`code-review` を本 skill から呼ぶ実装は持たない)。
-2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","category":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}` (**配列順は `/code-review` が返した順序 = 重大度順のまま保つ**。`category` と配列順は `compose-review` のラベル付与の根拠なので、落とすと cleanup 系の指摘が `[must]` に昇格して `label_counts.must` を誤らせる)。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 全件落とすと `compose-review` 側で「verify を通っていない findings を採用した」扱いになり (`verify_degraded: true` + 「外部由来の指摘は未検証」の開示)、`CONFIRMED` だった指摘まで自己追認待ちになって重大度が下がりうる。出力に無ければ `null` か省略 (その場合の扱いは `compose-review` 5-2 解決順 1 の verdict 規則)。
+2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","category":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}` (**配列順は `/code-review` が返した順序 = 重大度順のまま保つ**。`category` と配列順は `compose-review` のラベル付与の根拠なので、落とすと cleanup 系の指摘が `[must]` に昇格して `label_counts.must` を誤らせる)。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — `compose-review` はこれをラベル付与に使い、`"PLAUSIBLE"` / 欠落の finding は `failure_scenario` を自分で追認できなければ 1 段下げる。落とすと `"CONFIRMED"` だった指摘まで追認待ちになり重大度が下がりうる。出力に無ければ `null` か省略 (その場合の扱いは `compose-review` 5-2 解決順 1 の verdict 規則)。
 
-**`head` が `null` でも、findings があるなら転送する** (行ごと省略しない)。PR モードの `compose-review` は `head: null` を不成立にするので findings 自体は採用されないが、**`compose-review` は「`PRIOR_CODE_REVIEW` を渡されたのに不採用にした」事実を `external_review.reason` と総括 `body` に必ず記録する契約** (5-2 解決順 1 / 5-5) になっている。転送せずに握り潰すと **ユーザーが先に回した `/code-review` の findings が黙って捨てられ**、その痕跡がどこにも残らない (`head` が `null` になるのが最多ケースなので影響が大きい)。省略してよいのは「findings がそもそも無い」場合と、下記の「1 行が過大」な場合だけ。
+**`head` が `null` でも、findings があるなら転送する** (行ごと省略しない)。転送された findings は 5-3 で補助的にマージされ、`head` は採否のゲートには使われないため、`null` でも無駄にはならない。握り潰すとユーザーが先に回した `/code-review` の findings が黙って消える。
 
 **物理的な改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が次の `^[A-Z_]+=` 行または末尾までを value として読むため)。ただし **JSON 文字列内の改行は `\n` にエスケープすれば 1 物理行に収まる** ので、`failure_scenario` が複数行でも転送できる (複数行になるのが普通なので、字句どおり「改行があれば諦める」と読むとこの経路が常時不発になる)。エスケープしても 1 行が過大になる規模のときだけ転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
 
@@ -121,6 +123,26 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 **`head` には「その `/code-review` が実際に見ていた head SHA」を入れる** (分からなければ `null`)。`compose-review` は採否のゲートにこれを使わない (マージ時の範囲フィルタが担う) が、不採用 / 範囲外だった場合の記録に使う情報なので、**現 `headRefOid` を機械的に埋めず、分からないなら `null` にする**。
 
+
+#### 3-3. 渡す引数
+
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。**引数の内容は 3-1 のどちらの経路でも同一** — sub-agent 経路ではこのブロックをそのまま sub-agent への prompt に埋め込み、直接呼び経路では `Skill` ツールの引数として渡す。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
+
+```
+MODE=pr
+OWNER=<OWNER>
+REPO=<REPO>
+PR_NUMBER=<PR_NUMBER>
+COMMIT_ID=<Step 2 で取得した headRefOid>
+BASE_BRANCH=<Step 2 で取得した baseRefName>
+MAX_INLINE_COMMENTS=<値>
+HANDOFF_PATH=<本 step で生成した /tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
+PRIOR_CODE_REVIEW=<3-2 で組み立てた 1 行 JSON。該当が無ければ行ごと省略>
+EXISTING_THREADS_CONTEXT=<Step 2 で組み立てたテキスト>
+CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
+```
+
+`PRIOR_CODE_REVIEW` は **必ず長文 value より前 (上記の位置) に置く**。`compose-review` の parser は長文 value を「次の `^[A-Z_]+=` 行または prompt 末尾まで」として読むため、末尾配置の長文 value より後ろに置くと value の一部として飲み込まれる。
 
 #### 3-4. 戻り値の扱い
 
