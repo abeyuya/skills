@@ -14,7 +14,7 @@ description: 差分 (ref range / ブランチ / staged / worktree) を対象に�
 本 skill は **リポジトリ / ユーザー管理下にあり、`disable-model-invocation` を持たない** ため、モデルから Skill ツール経由で確実に呼べる。`code-review` が呼べない環境でも 5-2 を成立させるための正規の代替経路。
 
 - 本 skill に `disable-model-invocation` を付けてはならない (付けたら同じ問題を再生産する)。
-- `code-review` が (手動 `/code-review` 実行等で) 既に使える状況ではそちらを優先してよい。優先順の正典は `compose-review` Step 5-2。
+- `code-review` が Skill ツールから実際に呼べる環境ではそちらが優先されうる (優先順の正典は `compose-review` Step 5-2)。ただし **ユーザーが手動で `/code-review` を実行した回の findings は「外部レビュー枠」にはならない** — `compose-review` はそれを補助入力として 5-3 でマージする契約なので、本 skill の fan-out を省略する理由にはならない。
 
 ## 入力 (任意, caller から prompt 経由で渡される)
 
