@@ -1,6 +1,6 @@
 ---
 name: run-local-review
-description: 現在のローカルブランチを対象に、PR を作る前段階で AI レビューを行う thin orchestrator。`compose-review` skill を (sub-agent を立てず) 現在コンテキストで直接呼んでレビュー本文を生成し、結果をチャットと markdown ファイルの両方に出力する。GitHub への投稿は行わない (post-pr-review / resolve-pr-threads は呼ばない)。
+description: 現在のローカルブランチを対象に、PR を作る前段階で AI レビューを行う thin orchestrator。`compose-review` skill を sub-agent として起動して (Agent ツールが使えない環境では現在コンテキストで直接呼んで) レビュー本文を生成し、結果をチャットと markdown ファイルの両方に出力する。GitHub への投稿は行わない (post-pr-review / resolve-pr-threads は呼ばない)。
 ---
 
 # run-local-review skill
@@ -22,15 +22,31 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ## 手順
 
-### Step 1. `compose-review` でレビュー本文を生成する (sub-agent を立てず現在コンテキストで直接呼ぶ)
+### Step 1. `compose-review` でレビュー本文を生成する (sub-agent 起動が既定 / 直接呼びに fallback)
 
-Skill ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す。**Task / Agent ツールで sub-agent を spawn しない** — sub-agent 起動のオーバーヘッドを避けサクッとレビューを回すため、かつ `compose-review` が Step 5-2 で `code-review` 等の外部レビュースキルを併用する際その fan-out (Agent ツール) が現在コンテキストでないと動かないため。レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。
+レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。呼び出し方式は下記 1-1 で決める。
 
-#### 外部レビューの手動併用 (任意, ユーザー向け運用)
+#### 1-1. 呼び出し方式を決める
 
-`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
+**既定は sub-agent 起動**。Agent ツールが当コンテキストで利用可能なら、`compose-review` を sub-agent として起動する。指定は `run-pr-review` Step 3-1 と同一:
 
-#### 渡す引数
+- `subagent_type` は **汎用エージェント** (Claude Code なら `general-purpose`)。`compose-review` は `HANDOFF_PATH` への `Write`・`Bash`・`Skill`・`Agent` を必要とするため、**read-only / one-shot の探索用エージェント (`Explore` / `Plan` 等) を選んではならない**。
+- **`model` を必ず明示指定する** (未指定で起動しない)。既定はホストで利用可能な上位モデル。
+- **`run_in_background: false` を明示指定する**。
+- prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」+ 下記「渡す引数」ブロック (`compose-review` の手順を prompt に書き写さない — 正典は `compose-review/SKILL.md`)。
+- prompt に **read-only 制約を明記する**: 「`HANDOFF_PATH` への書き出し以外のファイル編集をしない」「GitHub 投稿系ツールを使わない」「working tree / ローカル ref を変える git 操作をしない」。`compose-review` 自体が同じ制約を持つが、本 skill は GitHub 投稿を一切行わない skill なので sub-agent 側にも重ねて明示する。
+
+sub-agent 経路を既定にするのは、(1) sub-agent の完了が Agent ツールの結果として返るため「レビュー本文を作っただけで markdown 出力前にターンを終了する」停止バグが構造的に起きない、(2) 差分読解や外部レビューの中間出力が sub-agent 側に閉じ本 skill のコンテキストを膨らませない、の 2 点による。**Agent ツールが当コンテキストで使えない場合のみ** Skill ツール (`skill: "compose-review"`) を現在のコンテキストで直接呼ぶ (従来経路。下記「戻り値の扱い」の ⚠️ 警告が該当する)。sub-agent 起動に失敗した / sub-agent が `HANDOFF_PATH` を書かずに終わった場合も、**1 回だけ**直接呼びにフォールバックしてよい (2 回目の sub-agent 起動リトライはしない)。**どちらの経路を採ったかは Step 3 の報告に 1 行含める**。
+
+> かつてはここに「`compose-review` の Step 5-2 の fan-out (Agent ツール) が sub-agent コンテキストでは動かないため直接呼びが必須」と書かれていたが、**sub-agent のネスト起動は現在可能** (既定でメイン会話から数えて 3 階層まで) なので、その制約は前提として成立しない。深さ予算は 本 skill (メイン) → `compose-review` (1 階層目) → `scan-diff-findings` の finder / verifier (2 階層目) で既定の 3 に収まる。
+
+#### 1-2. 手動 `/code-review` findings の検出と転送 (任意)
+
+`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼ぶ (詳細は plugin README「外部レビューの手動併用」)。
+
+**検出と転送は本 skill の責務** (sub-agent 経路では `compose-review` から本セッションのコンテキストが見えないため)。手順は `run-pr-review` Step 3-2 と同じ: (1) コンテキストに findings が残っているか確認し、無ければ `PRIOR_CODE_REVIEW` 行を省略、(2) 残っていれば **本 skill のレビュー対象と同じ範囲に対して実行されたものか確認** し、確認できなければ転送しない、(3) 確認できたら 1 行 JSON (`{"target":"…","findings":[…]}`、改行禁止) として `PRIOR_CODE_REVIEW` に渡す。本 skill 側で `code-review` を呼ぶ実装は持たない (`compose-review` 5-2 の責務)。
+
+#### 1-3. 渡す引数
 
 `compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-local-<branch>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。`<branch>` は `OUTPUT_PATH` の `{branch}` 規則と同様に **現在ブランチ名の英数記号以外 (`/` 等) を `-` に置換** してから埋め込む (本リポジトリの `claude/...` のようなスラッシュ入りブランチで `/tmp/.../` のネストパスになり親ディレクトリ不在で `Write` 失敗するのを防ぐ)。これは markdown 出力先 `OUTPUT_PATH` とは **別物** (compose-review からの JSON 受け渡し用 temp ファイル) であり、**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため):
 
@@ -39,13 +55,18 @@ MODE=local
 BASE_BRANCH=<値>
 MAX_INLINE_COMMENTS=<値>
 HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-<branch (/ 等を - に置換)>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
+PRIOR_CODE_REVIEW=<1-2 で組み立てた 1 行 JSON。該当が無ければ行ごと省略>
 ```
 
-#### 戻り値の扱い
+**引数の内容は 1-1 のどちらの経路でも同一** — sub-agent 経路ではこのブロックをそのまま sub-agent への prompt に埋め込み、直接呼び経路では `Skill` ツールの引数として渡す。
 
-> ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、ここで応答を打ち切ると、レビュー本文を生成しただけで **Step 2 (markdown 出力) 以降が実行されず、何も出力されないまま停止する** (この設計で最も起こりやすい失敗)。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 1 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 2 → Step 3 まで連続実行する**。markdown 出力・報告 (Step 3) を終えるまで応答を終了してはならない。
+#### 1-4. 戻り値の扱い
 
-> ⚠️ **外部レビュー fan-out の待ちでターンを yield しない (上記停止バグの変種)**: `compose-review` の Step 5-2 は `code-review` 等の外部レビュースキルを現在コンテキストで呼び、その内部で **Agent ツールによる finder/verifier の fan-out** が走る。リモート実行環境では並列起動した Agent の一部が **harness によって自動で background 実行に回される** ことがあるが、その完了を **`Monitor` / `run_in_background` の完了通知 / sleep ループ等で待って応答 (ターン) を終了してはならない**。background agent の完了を待つために応答を打ち切った時点で「何も出力しないまま停止」に見え、上の停止バグと同じ結末になる。**同期的に得られた finder 結果だけで先へ進む** — recall は `compose-review` の 5-1 自前レビューが必ず担保しており、background 化した一部 finder を取りこぼしても致命ではない。Step 2 (markdown 出力) → Step 3 (報告) を **同一応答内で完了させることを最優先** する。background agent の結果がどうしても要るなら、ターンを yield せず現在の応答内で待ち合わせる手段だけを使う (`compose-review` 側も sub-agent を直接 spawn せず外部スキルに委ねる契約のため、本 skill が背後の Agent を background 化して待つ必要は本来無い)。
+**どちらの経路でも受け取り方は同じ**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。sub-agent 経路ではその継続指示文が Agent ツールの結果として本 skill に返る。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 1 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 2 → Step 3 まで連続実行する**。
+
+> ⚠️ **直接呼び経路 (1-1 の fallback) では特に: ターンを終了しない (最頻の停止バグ)**。現在コンテキスト直接呼びでは Agent ツールのような明示的な制御戻り境界が無いため、`compose-review` の継続指示文をそのまま自分の最終メッセージにして応答を打ち切りやすい。そうなると、レビュー本文を生成しただけで **Step 2 (markdown 出力) 以降が実行されず、何も出力されないまま停止する**。markdown 出力・報告 (Step 3) を終えるまで応答を終了してはならない。**sub-agent 経路ではこの事故は構造的に起きない** (sub-agent の完了は本 skill のターンの終わりではなくツール結果) — これが sub-agent 起動を既定にしている主目的。
+
+> ⚠️ **外部レビュー fan-out の待ちでターンを yield しない (直接呼び経路の変種)**: 直接呼び経路では `compose-review` → `scan-diff-findings` の finder / verifier が **本 skill と同じコンテキストで** 起動する。リモート実行環境では並列起動した Agent の一部が **harness によって自動で background 実行に回される** ことがあるが、その完了を **`Monitor` / `run_in_background` の完了通知 / sleep ループ等で待って応答 (ターン) を終了してはならない**。background agent の完了を待つために応答を打ち切った時点で「何も出力しないまま停止」に見え、上の停止バグと同じ結末になる。**同期的に得られた finder 結果だけで先へ進む** — recall は `compose-review` の 5-1 自前レビューが必ず担保しており、background 化した一部 finder を取りこぼしても致命ではない。Step 2 (markdown 出力) → Step 3 (報告) を **同一応答内で完了させることを最優先** する。**sub-agent 経路ではこれらの Agent は sub-agent 側で完結する**ため、本 skill がこの判断を迫られること自体が無い。
 
 `Read` で取得した `HANDOFF_PATH` の中身はローカルモードの JSON (`mode` / `base_branch` / `diff_mode` / `commit_count` / `body` / `event` / `comments[]` / `label_counts` / `external_review` / `escalation`) または error JSON。これを parse して各フィールドを読み取り、得られた `base_branch` / `diff_mode` / `commit_count` / `body` / `comments` をそのまま Step 2 に渡し、**Step 2 → Step 3 を順に必ず実行する**。
 
@@ -117,15 +138,17 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 以下を簡潔に caller へ返す:
 
 - レビュー対象のブランチ / `base_branch` / `diff_mode`
+- **`compose-review` の呼び出し経路** (1 行。`sub-agent` / `直接呼び (Agent ツール不可)` / `直接呼び (sub-agent 起動に失敗しフォールバック)` のいずれか。既定から落ちた回を黙って隠さない)
 - インライン指摘件数
 - 外部レビュー併用の有無 (`external_review` の `skill` / `mode`。未併用 / `mode="inline"` / `mode="partial"` なら理由も 1 行)
 - 出力先 markdown ファイルパス
 
 ## 守ること
 
-- レビュー本文生成は **`compose-review` skill に委譲** する (本 skill 内で `/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 差分取得 / 本文生成を再実装しない)。`compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (sub-agent 起動のオーバーヘッドを避けるため、かつ `compose-review` の Step 5-2 で `code-review` 等の外部レビュースキルを併用する際その fan-out (Agent ツール) が現在コンテキストでないと動かないため。後者の制約上、直接呼びは任意の最適化ではなく**必須**)。
-- `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 2 (markdown 出力) → Step 3 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、出力前に停止する事故が起きやすい。詳細は Step 1「戻り値の扱い」冒頭の警告)。
-- 外部レビュー (`compose-review` Step 5-2 / `code-review`) の内部 fan-out で起きた **sub-agent が harness により background 化しても、その完了を待って応答を終了しない**。`Monitor` / background 完了通知待ち / sleep ループでターンを yield せず、**同期的に得られた結果だけで Step 2 → Step 3 を完了する** (recall は `compose-review` の 5-1 自前レビューが担保する。詳細は Step 1「戻り値の扱い」2 つ目の警告)。
+- レビュー本文生成は **`compose-review` skill に委譲** する (本 skill 内で `/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 差分取得 / 本文生成を再実装しない)。`compose-review` は **sub-agent 起動を既定** とし、Agent ツールが使えない環境でのみ現在コンテキストの直接呼びにフォールバックする (Step 1-1)。sub-agent 起動時は **`model` を必ず明示指定** し、`run_in_background: false` を明示し、`Write` / `Bash` / `Skill` / `Agent` を持つ汎用エージェントを選ぶ (read-only の探索用エージェントでは `HANDOFF_PATH` を書けず必ず失敗する)。**どちらの経路を採ったかは Step 3 で必ず報告する**。
+- 手動 `/code-review` findings の **検出と `PRIOR_CODE_REVIEW` としての転送は本 skill の責務** (Step 1-2)。sub-agent 経路では `compose-review` から本セッションのコンテキストが見えないため、転送しなければこの運用は成立しない。転送前に対象範囲の一致を必ず確認し、確認できなければ転送しない。
+- `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 2 (markdown 出力) → Step 3 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (直接呼び経路には制御戻り境界が無く、出力前に停止する事故が起きやすい。詳細は Step 1-4 の警告)。
+- 直接呼び経路では、外部レビュー (`compose-review` Step 5-2 → `scan-diff-findings`) の内部 fan-out で起きた **sub-agent が harness により background 化しても、その完了を待って応答を終了しない**。`Monitor` / background 完了通知待ち / sleep ループでターンを yield せず、**同期的に得られた結果だけで Step 2 → Step 3 を完了する** (recall は `compose-review` の 5-1 自前レビューが担保する。詳細は Step 1-4 の 2 つ目の警告)。sub-agent 経路ではこれらの Agent は `compose-review` sub-agent 側で完結するため本 skill には影響しない。
 - GitHub への投稿は行わない。`post-pr-review` / `resolve-pr-threads` skill は呼ばない。**経路を問わず** GitHub 投稿系ツールを使わない (`gh pr comment` / `gh pr review` / `gh api .../reviews` も、`mcp__github__pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `add_issue_comment` 等の MCP 投稿ツールも使わない。web/remote では MCP が唯一の GitHub 経路になるため、gh のみを禁じても read-only 保証が漏れる)。
 - `git fetch` / `git pull` / `git checkout` / `git reset` 等、ワーキングツリーやローカル ref を書き換える操作はしない。読み取り専用 (`git rev-parse` / `git remote get-url`) のみ。
 - 差分が空の場合も markdown 出力 + 報告は行う (skip しない)。判定は `compose-review` 側の `diff_mode` に従う。

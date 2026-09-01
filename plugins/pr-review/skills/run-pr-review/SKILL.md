@@ -1,13 +1,18 @@
 ---
 name: run-pr-review
-description: PR レビュー全体を 1 コマンドで実行する thin orchestrator。PR 情報取得 / `compose-review` (現在コンテキストで直接呼ぶ) でのレビュー本文生成 / `post-pr-review` でのレビュー投稿 / `resolve-pr-threads` での過去スレッド整理を順に呼ぶ。レビュー方針 (`/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 本文生成 / `code-review` 等外部レビュースキルの併用) は `compose-review` に委ねる。
+description: PR レビュー全体を 1 コマンドで実行する thin orchestrator。PR 情報取得 / `compose-review` (sub-agent 起動が既定。Agent ツール不可なら現在コンテキストで直接呼びにフォールバック) でのレビュー本文生成 / `post-pr-review` でのレビュー投稿 / `resolve-pr-threads` での過去スレッド整理を順に呼ぶ。レビュー方針 (`/pr-review-style-reference` 読み込み / プロジェクト指示ファイル / 本文生成 / `code-review` 等外部レビュースキルの併用) は `compose-review` に委ねる。
 ---
 
 # run-pr-review skill
 
 PR レビュー一式 (PR 情報取得 → compose-review でレビュー本文生成 → post-pr-review で投稿 → resolve-pr-threads で過去スレッド整理) を **1 つの skill 呼び出しで完結** させる thin orchestrator。
 
-`compose-review` は **sub-agent を立てず現在コンテキストで直接呼ぶ** (Step 3 参照)。これは `compose-review` の Step 5-2 で `code-review` 等の外部レビュースキルを併用する際、その fan-out (Agent ツール) が現在コンテキストでないと動かないため。トレードオフとして、大きい PR 差分 + 外部レビューの実行が orchestrator のコンテキストを膨らませる点は許容する。
+`compose-review` は **sub-agent として起動するのを既定** とし、Agent ツールが使えない環境ではその場で現在コンテキストの直接呼びにフォールバックする (Step 3 参照)。sub-agent 経路を既定にする理由は 2 つ:
+
+1. **停止バグが構造的に起きない**: sub-agent の最終メッセージは Agent ツールの結果として本 skill に返るので、明示的な制御戻り境界がある。直接呼び経路の最頻の失敗 (レビュー本文を生成しただけで Step 4 の投稿前にターンが終わる) が設計上発生しない。
+2. **コンテキストが膨らまない**: 大きい PR 差分の読解・外部レビューの中間出力が sub-agent 側に閉じ、本 skill には `HANDOFF_PATH` のパスと短い完了報告だけが返る。
+
+> かつてはここに「`compose-review` の Step 5-2 の fan-out (Agent ツール) が sub-agent コンテキストでは動かないため直接呼びが必須」と書かれていたが、**sub-agent のネスト起動は現在可能** (既定でメイン会話から数えて 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可) なので、その制約は前提として成立しない。深さ予算は本 skill (メイン) → `compose-review` (1 階層目) → `scan-diff-findings` の finder / verifier (2 階層目) で既定の 3 に収まる (`compose-review` → `scan-diff-findings` は Skill 呼びで同一コンテキストのため段を消費しない)。深さ上限に当たった場合も `scan-diff-findings` が inline フォールバックを持つため外部レビュー併用自体は成立する (縮退は `fanout.mode="inline"` として記録・開示される)。
 
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
@@ -66,17 +71,37 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
   - `CHANNEL=mcp`: `mcp__github__pull_request_read` を method=`get_check_runs` で呼び head commit の check runs を取得する。加えて **method=`get_status` (combined commit status) も取得する**: `statusCheckRollup` は GitHub Actions の check runs と外部 CI (Jenkins / CircleCI 等) が status API で報告する legacy commit status の両方を集約するが、`get_check_runs` は前者しか返さないため、status API 経由の失敗を取りこぼさないよう `get_status` の `state=failure` / 各 context の `target_url` も併せて見る。`conclusion` / `state` が `failure` のものについて `details_url` (check run) / `target_url` (commit status) の末尾から `RUN_ID` / `JOB_ID` を取り (GitHub Actions の URL 形式は gh と同じ。外部 CI は自前 URL なのでログ本体は取得せず総括での言及に留める)、GitHub Actions の失敗ジョブごとに `mcp__github__get_job_logs` を `job_id=<JOB_ID>` / `return_content=true` / **`tail_lines=500` (初期値。失敗内容は通常ログ末尾に出るため。見つからなければ値を広げる)** で呼んで対象ジョブのログのみを取得する (`details_url` に `JOB_ID` が無い旧形式では `run_id=<RUN_ID>` + `failed_only=true` + `tail_lines=500`)。全ログの無制限取得はしない (トークン上限超過を招くため。CI_FAILURE_CONTEXT は後段で 2000 文字に丸めるので末尾数百行で十分)。
   - 整形 (チャネル共通): 要点を **`CI_FAILURE_CONTEXT`** として整形する: 1 失敗ごとに `<ジョブ名>: <失敗箇所抜粋 1〜数行>` を 1 ブロックとし、空行で区切って連結する。ANSI escape は除去し、全体は 2000 文字以内に丸める (超過分は `(...truncated)` で打ち切る)。本値の中に `^[A-Z_]+=` 行頭パターン (例: `ENV=production`) があれば、compose-review 側の KEY=VALUE parser を破壊しないよう先頭にスペース 1 文字をインデントして escape する。失敗ジョブが無ければ本値は組み立てず、Step 3 で行ごと省略する。
 
-### Step 3. `compose-review` でレビュー本文を生成する (sub-agent を立てず現在コンテキストで直接呼ぶ)
+### Step 3. `compose-review` でレビュー本文を生成する (sub-agent 起動が既定 / 直接呼びに fallback)
 
-`Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す。**Task / Agent ツールで sub-agent を spawn しない** — `compose-review` が Step 5-2 で `code-review` 等の外部レビュースキルを併用する際、その fan-out (Agent ツール) は sub-agent コンテキストでは動かず、現在コンテキストでのみ動くため。レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。
+レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。呼び出し方式は下記 3-1 で決める。
 
-#### 外部レビューの手動併用 (任意, ユーザー向け運用)
+#### 3-1. 呼び出し方式を決める
 
-`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
+**既定は sub-agent 起動**。Agent ツールが当コンテキストで利用可能なら、`compose-review` を sub-agent として起動する:
 
-#### 渡す引数
+- `subagent_type` は **汎用エージェント** (Claude Code なら `general-purpose`) を使う。`compose-review` は `HANDOFF_PATH` への `Write`・`Bash`・`Skill`・`Agent` (呼び先の `scan-diff-findings` が使う) を必要とするため、**read-only / one-shot の探索用エージェント (`Explore` / `Plan` 等) を選んではならない** (`Write` が無いとハンドオフ JSON を書けず必ず失敗する)。
+- **`model` を必ず明示指定する** (未指定で起動しない)。`compose-review` はレビュー方針の解釈・指摘の重要度判定・エスカレーション判定といった判断の重いタスクなので、既定は **ホストで利用可能な上位モデル**を選ぶ。
+- **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とする。
+- sub-agent への prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示 + 下記「渡す引数」ブロックにする (本 skill が `compose-review` の手順を prompt に書き写さない — 手順の正典は `compose-review/SKILL.md`)。
+- prompt に **read-only 制約を明記する**: 「`HANDOFF_PATH` への書き出し以外のファイル編集をしない」「GitHub 投稿系ツール (`gh pr review` / `gh pr comment` / `gh api .../reviews` / `mcp__github__*` の投稿系) を使わない」「working tree / ローカル ref を変える git 操作をしない」。`compose-review` 自体が同じ制約を持つが、**sub-agent が投稿してしまうと Step 4 の `post-pr-review` と二重投稿になる** ため prompt でも重ねて明示する (`scan-diff-findings` が finder に同じ制約を課しているのと同じ方針)。
 
-`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
+**Agent ツールが当コンテキストで使えない場合のみ**、`Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す (従来経路)。この場合は下記「3-4. 戻り値の扱い」の ⚠️ 警告が該当するので特に注意する。**どちらの経路を採ったかは Step 6 の報告に 1 行含める** (直接呼びに落ちたことを黙って隠さない)。
+
+sub-agent 起動に失敗した / sub-agent が `HANDOFF_PATH` を書かずに終わった場合は、**1 回だけ直接呼びにフォールバックしてよい** (同じ引数で `Skill` ツール経由。2 回目の sub-agent 起動リトライはしない)。フォールバックした事実も Step 6 で報告する。
+
+#### 3-2. 手動 `/code-review` findings の検出と転送 (任意)
+
+`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼ぶ (詳細は plugin README「外部レビューの手動併用」)。
+
+この運用を成立させる **検出と転送は本 skill の責務**: `compose-review` を sub-agent として起動すると `compose-review` からは本セッションのコンテキストが見えず、先行実行された `/code-review` の findings を自力では拾えないため。手順:
+
+1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 3-3 の `PRIOR_CODE_REVIEW` 行を **省略** する (それだけ。`code-review` を本 skill から呼ぶ実装は持たない)。
+2. 残っていれば、**その findings がどの範囲を対象に実行されたものかを確認する** (`/code-review` は target を任意に取れるため、セッション前半に別ブランチや数コミット前の状態で実行されたものが混ざりうる)。Step 2 で取得した `headRefOid` に対するレビューだと確認できなければ **転送しない** (古い findings を本 PR の外部レビュー結果として通すより安全側に倒す)。
+3. 確認できたら **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…"}, …]}`。**改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が壊れる)。1 行に収まらない規模なら転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
+
+#### 3-3. 渡す引数
+
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。**引数の内容は 3-1 のどちらの経路でも同一** — sub-agent 経路ではこのブロックをそのまま sub-agent への prompt に埋め込み、直接呼び経路では `Skill` ツールの引数として渡す。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
 
 ```
 MODE=pr
@@ -87,13 +112,20 @@ COMMIT_ID=<Step 2 で取得した headRefOid>
 BASE_BRANCH=<Step 2 で取得した baseRefName>
 MAX_INLINE_COMMENTS=<値>
 HANDOFF_PATH=<本 step で生成した /tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
+PRIOR_CODE_REVIEW=<3-2 で組み立てた 1 行 JSON。該当が無ければ行ごと省略>
 EXISTING_THREADS_CONTEXT=<Step 2 で組み立てたテキスト>
 CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 ```
 
-#### 戻り値の扱い
+`PRIOR_CODE_REVIEW` は **必ず長文 value より前 (上記の位置) に置く**。`compose-review` の parser は長文 value を「次の `^[A-Z_]+=` 行または prompt 末尾まで」として読むため、末尾配置の長文 value より後ろに置くと value の一部として飲み込まれる。
 
-> ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、ここで応答を打ち切ると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この設計で最も起こりやすい失敗)。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 3 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行する**。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。
+#### 3-4. 戻り値の扱い
+
+**どちらの経路でも受け取り方は同じ**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。sub-agent 経路ではその継続指示文が Agent ツールの結果として本 skill に返る。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 3 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行する**。
+
+> ⚠️ **直接呼び経路 (3-1 の fallback) では特に: ターンを終了しない (最頻の停止バグ)**。現在コンテキスト直接呼びでは Agent ツールのような明示的な制御戻り境界が無いため、`compose-review` の継続指示文をそのまま自分の最終メッセージにして応答を打ち切りやすい。そうなると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この経路で最も起こりやすい失敗)。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。**sub-agent 経路ではこの事故は構造的に起きない** (sub-agent の完了は本 skill のターンの終わりではなくツール結果なので、そのまま Step 4 へ進める) — これが sub-agent 起動を既定にしている主目的。
+
+> ⚠️ **外部レビュー fan-out の待ちでターンを yield しない (直接呼び経路の変種)**: 直接呼び経路では `compose-review` → `scan-diff-findings` の finder / verifier が **本 skill と同じコンテキストで** 起動する。リモート実行環境では並列起動した Agent の一部が harness によって自動で background 実行に回されることがあるが、その完了を `Monitor` / background 完了通知待ち / sleep ループで待って応答 (ターン) を終了してはならない。**同期的に得られた結果だけで先へ進む** (recall は `compose-review` の 5-1 自前レビューが担保する)。sub-agent 経路ではこれらの Agent は sub-agent 側で完結するため、本 skill がこの判断を迫られること自体が無い。
 
 `Read` で取得した `HANDOFF_PATH` の中身は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `label_counts` / `external_review` / `escalation` / `commit_id`) または error JSON。これを parse して各フィールドを読み取り、後続 step に渡す:
 
@@ -140,6 +172,7 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 以下を簡潔に caller へ返す:
 
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
+- **`compose-review` の呼び出し経路** (1 行。`sub-agent` / `直接呼び (Agent ツール不可)` / `直接呼び (sub-agent 起動に失敗しフォールバック)` のいずれか)。既定である sub-agent 経路から落ちた回を caller が把握できるようにするため、**常に 1 行報告する**
 - インライン指摘件数 / ラベル別件数内訳 (優先度順、`[must]` / `[should]` 等、件数>0 のもの)
 - **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`mode="external"` の手動 `/code-review` 併用では必ず `null` になるため、`null/null` と描画すると取得不能なのか 0 観点なのか判別できない)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
 - **エスカレーション判定の結果** (`compose-review` の `escalation` から 1 行。`escalate: true` なら `エスカレーション: 要 (理由 <reasons の件数> 件)`、`false` なら `エスカレーション: 不要`。フィールド欠落 / 壊れていた場合は `エスカレーション判定: 不明 (compose-review が escalation を返さず)` と明記する)。これは「その PR を人に見てもらうべきか」の信号なので、`escalate: true` の回を caller が見落とさないよう **常に 1 行報告する** (マージをブロックする判定ではない点も含意として変えない)
@@ -150,8 +183,9 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 ## 守ること
 
 - 各 step で使う既存資産 (`compose-review` / `post-pr-review` / `resolve-pr-threads`) は **必ず本 skill 経由で利用** する。本 skill 内で同等の処理を再実装してはならない (スタイル参考ガイド・投稿手順・resolve 判定・本文生成の二重管理を防ぐため)。
-- `compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (`compose-review` の `code-review` 等外部レビュースキル併用の fan-out を成立させるため)。
-- `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 4 (投稿) → Step 5 (resolve) → Step 6 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、投稿前に停止する事故が起きやすい。詳細は Step 3「戻り値の扱い」冒頭の警告)。
+- `compose-review` は **sub-agent 起動を既定** とし、Agent ツールが使えない環境でのみ現在コンテキストの直接呼びにフォールバックする (Step 3-1)。sub-agent 起動時は **`model` を必ず明示指定** し、`run_in_background: false` を明示し、`Write` / `Bash` / `Skill` / `Agent` を持つ汎用エージェントを選ぶ (read-only の探索用エージェントでは `HANDOFF_PATH` を書けず必ず失敗する)。**どちらの経路を採ったかは Step 6 で必ず報告する** (既定から落ちたことを黙って隠さない)。
+- 手動 `/code-review` findings の **検出と `PRIOR_CODE_REVIEW` としての転送は本 skill の責務** (Step 3-2)。sub-agent 経路では `compose-review` から本セッションのコンテキストが見えないため、転送しなければこの運用は成立しない。転送前に対象範囲の一致を必ず確認し、確認できなければ転送しない。
+- `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 4 (投稿) → Step 5 (resolve) → Step 6 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (直接呼び経路には制御戻り境界が無く、投稿前に停止する事故が起きやすい。詳細は Step 3-4 の警告)。
 - レビュー方針 (重要度ラベル等) / プロジェクト指示ファイル読み込み / `/pr-review-style-reference` の参照は `compose-review` の責務。本 skill では再実装しない。
 - GitHub API 操作は Step 1 で解決した `CHANNEL` の経路に統一し、下流 skill (`post-pr-review` / `resolve-pr-threads`) にも同じ値を転送する。gh が 403 になったことを理由に投稿や resolve を黙って skip しない — MCP チャネルが使えるならそちらで実行する (逆も同様)。
 - 判定に迷ったら resolve しない / 投稿は 1 つの Review だけ、という既存 skill の安全側ルールはそのまま守る。
