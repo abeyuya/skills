@@ -33,10 +33,11 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 - `subagent_type` は **汎用エージェント** (Claude Code なら `general-purpose`)。`compose-review` は `HANDOFF_PATH` への `Write`・`Bash`・`Skill`・`Agent` を必要とするため、**read-only / one-shot の探索用エージェント (`Explore` / `Plan` 等) を選んではならない**。
 - **`model` を必ず明示指定する** (未指定で起動しない)。既定はホストで利用可能な上位モデル。
 - **`run_in_background: false` を明示指定する**。
-- prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」+ 下記「渡す引数」ブロック (`compose-review` の手順を prompt に書き写さない — 正典は `compose-review/SKILL.md`)。
+- prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示 (`compose-review` の手順を prompt に書き写さない — 正典は `compose-review/SKILL.md`)。
 - prompt に **read-only 制約を明記する**: 「`HANDOFF_PATH` への書き出し以外のファイル編集をしない」「GitHub 投稿系ツールを使わない」「working tree / ローカル ref を変える git 操作をしない」。`compose-review` 自体が同じ制約を持つが、本 skill は GitHub 投稿を一切行わない skill なので sub-agent 側にも重ねて明示する。
+- **引数ブロック (1-3) は prompt の末尾に置く**。指示文・read-only 制約はすべて引数ブロックより前に書き、後ろには何も足さない (`compose-review` の parser は長文 value を「次の `^[A-Z_]+=` 行または prompt 末尾まで」として読むため、後ろに置いた文が value に飲み込まれる)。ローカルモードで渡す引数に長文 value は無いが、prompt の組み立て方を `run-pr-review` Step 3-1 と揃えておく。
 
-sub-agent 経路を既定にするのは、(1) sub-agent の完了が Agent ツールの結果として返るため「レビュー本文を作っただけで markdown 出力前にターンを終了する」停止バグが構造的に起きない、(2) 差分読解や外部レビューの中間出力が sub-agent 側に閉じ本 skill のコンテキストを膨らませない、の 2 点による。**Agent ツールが当コンテキストで使えない場合のみ** Skill ツール (`skill: "compose-review"`) を現在のコンテキストで直接呼ぶ (従来経路。下記「戻り値の扱い」の ⚠️ 警告が該当する)。sub-agent 起動に失敗した / sub-agent が `HANDOFF_PATH` を書かずに終わった場合も、**1 回だけ**直接呼びにフォールバックしてよい (2 回目の sub-agent 起動リトライはしない)。**どちらの経路を採ったかは Step 3 の報告に 1 行含める**。
+sub-agent 経路を既定にするのは、(1) sub-agent の完了が Agent ツールの結果として返るため「レビュー本文を作っただけで markdown 出力前にターンを終了する」停止バグが構造的に起きない、(2) 差分読解や外部レビューの中間出力が sub-agent 側に閉じ本 skill のコンテキストを膨らませない、の 2 点による。**Agent ツールが当コンテキストで使えない場合のみ** Skill ツール (`skill: "compose-review"`) を現在のコンテキストで直接呼ぶ (従来経路。1-4「戻り値の扱い」の ⚠️ 警告が該当する)。sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わった場合は、**フォールバックの前にまず `HANDOFF_PATH` を `Read` する** (書き出し後に報告前に落ちただけならその内容を採用して 1-4 へ進める)。`Read` が失敗する / JSON として読めない場合に限り **1 回だけ**直接呼びにフォールバックしてよい (2 回目の sub-agent 起動リトライはしない)。このとき **`HANDOFF_PATH` は新しいパスを生成して渡す** (前回のパスを再利用すると、壊れた JSON や空ファイルが残っていた場合に `compose-review` の `Write` が既存ファイル上書きとなり事前 `Read` を要求されて失敗する)。**どちらの経路を採ったかは Step 3 の報告に 1 行含める**。
 
 > かつてはここに「`compose-review` の Step 5-2 の fan-out (Agent ツール) が sub-agent コンテキストでは動かないため直接呼びが必須」と書かれていたが、**sub-agent のネスト起動は現在可能** (既定でメイン会話から数えて 3 階層まで) なので、その制約は前提として成立しない。深さ予算は 本 skill (メイン) → `compose-review` (1 階層目) → `scan-diff-findings` の finder / verifier (2 階層目) で既定の 3 に収まる。
 
@@ -44,7 +45,12 @@ sub-agent 経路を既定にするのは、(1) sub-agent の完了が Agent ツ�
 
 `compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼ぶ (詳細は plugin README「外部レビューの手動併用」)。
 
-**検出と転送は本 skill の責務** (sub-agent 経路では `compose-review` から本セッションのコンテキストが見えないため)。手順は `run-pr-review` Step 3-2 と同じ: (1) コンテキストに findings が残っているか確認し、無ければ `PRIOR_CODE_REVIEW` 行を省略、(2) 残っていれば **本 skill のレビュー対象と同じ範囲に対して実行されたものか確認** し、確認できなければ転送しない、(3) 確認できたら 1 行 JSON (`{"target":"…","findings":[…]}`、改行禁止) として `PRIOR_CODE_REVIEW` に渡す。本 skill 側で `code-review` を呼ぶ実装は持たない (`compose-review` 5-2 の責務)。
+**検出と転送は本 skill の責務** (sub-agent 経路では `compose-review` から本セッションのコンテキストが見えないため)。手順:
+
+1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 1-3 の `PRIOR_CODE_REVIEW` 行を **省略** する。
+2. 残っていれば **1 行 JSON** にシリアライズして渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / uncommitted 差分の別など観測できたまま>","head":"<git rev-parse HEAD の値。特定できなければ null>","findings":[…]}`。**改行を含めてはならない**。1 行に収まらない規模なら転送を諦めて行ごと省略する。
+
+**レビュー対象が一致するかの採否判定は `compose-review` の責務** (5-2 解決順 1)。本 skill は `BASE_BRANCH` を転送するだけで、比較対象や差分モード (`commit` / `staged` / `worktree`) を確定するのは `compose-review` Step 1 であり、本 skill にはそれを判定する手段も情報も無い (本 skill が使う git は `git rev-parse` / `git remote get-url` のみ)。したがって本 skill 側で範囲の一致確認を判定条件にしない — 観測できた `target` / `head` をそのまま添えて渡し、`compose-review` が自身で確定した範囲と突き合わせて採否を決める。本 skill 側で `code-review` を呼ぶ実装は持たない (`compose-review` 5-2 の責務)。
 
 #### 1-3. 渡す引数
 

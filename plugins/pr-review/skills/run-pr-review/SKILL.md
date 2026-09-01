@@ -82,12 +82,15 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 - `subagent_type` は **汎用エージェント** (Claude Code なら `general-purpose`) を使う。`compose-review` は `HANDOFF_PATH` への `Write`・`Bash`・`Skill`・`Agent` (呼び先の `scan-diff-findings` が使う) を必要とするため、**read-only / one-shot の探索用エージェント (`Explore` / `Plan` 等) を選んではならない** (`Write` が無いとハンドオフ JSON を書けず必ず失敗する)。
 - **`model` を必ず明示指定する** (未指定で起動しない)。`compose-review` はレビュー方針の解釈・指摘の重要度判定・エスカレーション判定といった判断の重いタスクなので、既定は **ホストで利用可能な上位モデル**を選ぶ。
 - **`run_in_background: false` を明示指定する**。本 skill は結果を同一応答内で必要とする。
-- sub-agent への prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示 + 下記「渡す引数」ブロックにする (本 skill が `compose-review` の手順を prompt に書き写さない — 手順の正典は `compose-review/SKILL.md`)。
+- sub-agent への prompt は「`Skill` ツールで `compose-review` skill を呼び、下記の `KEY=VALUE` 引数を渡して手順を最後まで実行せよ。完了したら `HANDOFF_PATH` に書き出したパスを報告せよ」という指示にする (本 skill が `compose-review` の手順を prompt に書き写さない — 手順の正典は `compose-review/SKILL.md`)。
 - prompt に **read-only 制約を明記する**: 「`HANDOFF_PATH` への書き出し以外のファイル編集をしない」「GitHub 投稿系ツール (`gh pr review` / `gh pr comment` / `gh api .../reviews` / `mcp__github__*` の投稿系) を使わない」「working tree / ローカル ref を変える git 操作をしない」。`compose-review` 自体が同じ制約を持つが、**sub-agent が投稿してしまうと Step 4 の `post-pr-review` と二重投稿になる** ため prompt でも重ねて明示する (`scan-diff-findings` が finder に同じ制約を課しているのと同じ方針)。
+- **引数ブロック (3-3) は prompt の末尾に置く**。指示文・read-only 制約・その他の注意書きは **すべて引数ブロックより前** に書き、引数ブロックの後ろには何も足さない。`compose-review` の `KEY=VALUE` parser は長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) を「次の `^[A-Z_]+=` 行または prompt 末尾まで」として読むため、引数ブロックの後ろに文を置くと **それが最後の長文 value に飲み込まれ**、汚染された値がレビュー本文の CI / 既存スレッド文脈として PR に投稿される (3-3 の `PRIOR_CODE_REVIEW` の配置制約と同じ理由)。
 
 **Agent ツールが当コンテキストで使えない場合のみ**、`Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す (従来経路)。この場合は下記「3-4. 戻り値の扱い」の ⚠️ 警告が該当するので特に注意する。**どちらの経路を採ったかは Step 6 の報告に 1 行含める** (直接呼びに落ちたことを黙って隠さない)。
 
-sub-agent 起動に失敗した / sub-agent が `HANDOFF_PATH` を書かずに終わった場合は、**1 回だけ直接呼びにフォールバックしてよい** (同じ引数で `Skill` ツール経由。2 回目の sub-agent 起動リトライはしない)。フォールバックした事実も Step 6 で報告する。
+sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わった場合は、**フォールバックの前にまず `HANDOFF_PATH` を `Read` する** — sub-agent が JSON を書き出した後に (報告前に) 落ちただけなら、その内容をそのまま採用して 3-4 へ進める (レビューをやり直す必要はない)。
+
+`Read` が失敗する / 中身が JSON として読めない場合に限り、**1 回だけ直接呼びにフォールバックしてよい** (2 回目の sub-agent 起動リトライはしない)。このとき **`HANDOFF_PATH` は新しいパスを生成して渡す** — 前回のパスを再利用すると、sub-agent が壊れた JSON や空ファイルを残していた場合に `compose-review` の `Write` が既存ファイルへの上書きとなり、事前 `Read` を要求されて書き出しに失敗する (`compose-review` の `HANDOFF_PATH` は「未作成のパス」が前提)。他の引数は同じでよい。フォールバックした事実は Step 6 で報告する。
 
 #### 3-2. 手動 `/code-review` findings の検出と転送 (任意)
 
@@ -96,8 +99,9 @@ sub-agent 起動に失敗した / sub-agent が `HANDOFF_PATH` を書かずに�
 この運用を成立させる **検出と転送は本 skill の責務**: `compose-review` を sub-agent として起動すると `compose-review` からは本セッションのコンテキストが見えず、先行実行された `/code-review` の findings を自力では拾えないため。手順:
 
 1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 3-3 の `PRIOR_CODE_REVIEW` 行を **省略** する (それだけ。`code-review` を本 skill から呼ぶ実装は持たない)。
-2. 残っていれば、**その findings がどの範囲を対象に実行されたものかを確認する** (`/code-review` は target を任意に取れるため、セッション前半に別ブランチや数コミット前の状態で実行されたものが混ざりうる)。Step 2 で取得した `headRefOid` に対するレビューだと確認できなければ **転送しない** (古い findings を本 PR の外部レビュー結果として通すより安全側に倒す)。
-3. 確認できたら **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…"}, …]}`。**改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が壊れる)。1 行に収まらない規模なら転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
+2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<Step 2 で取得した headRefOid。その code-review が別の head を対象にしていたと分かるならその SHA。特定できなければ null>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…"}, …]}`。**改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が壊れる)。1 行に収まらない規模なら転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
+
+**レビュー対象が一致するかの採否判定は `compose-review` の責務** (5-2 解決順 1)。diff 範囲 (`<BASE_SHA>...<HEAD_SHA>`) を確定するのは `compose-review` Step 1 であって本 skill ではないため、本 skill 側で「一致すると確認できたか」を判定条件にしない (`BASE_SHA` を持たない本 skill では常に判定不能になり、この経路が死ぬ)。本 skill は観測できた `target` / `head` をそのまま添えて渡し、`compose-review` が `head` と自身の `HEAD_SHA` を突き合わせて採否を決める。ただし **明らかに別 PR / 別ブランチを対象にしたと分かる findings は転送しない** (その足切りだけは本 skill で行う)。
 
 #### 3-3. 渡す引数
 

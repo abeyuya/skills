@@ -28,7 +28,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 経路の違いが表に出るのは 2 点だけ:
 
-- **手動 `/code-review` findings の扱い**: sub-agent からは orchestrator のセッションコンテキストが見えないため、検出と転送 (`PRIOR_CODE_REVIEW`) は orchestrator の責務 (前述「外部レビューの手動併用」)。
+- **手動 `/code-review` findings の扱い**: sub-agent からは orchestrator のセッションコンテキストが見えないため、検出と転送 (`PRIOR_CODE_REVIEW` = 対象表現 / head SHA / findings の 1 行 JSON) は orchestrator の責務。採否の判定は従来どおり `compose-review` が行う (後述「外部レビューの手動併用」)。
 - **報告**: どちらの経路を採ったかを orchestrator が必ず 1 行報告する (既定の sub-agent 経路から落ちた回を黙って隠さないため)。
 
 ## 外部レビュースキルの併用 (自前レビュー + 外部スキル → マージ)
@@ -74,7 +74,7 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 
 1 の findings はセッションのコンテキストに残っているため、orchestrator (`run-pr-review` Step 3-2 / `run-local-review` Step 1-2) がそれを検出し、**`PRIOR_CODE_REVIEW` (1 行 JSON) として `compose-review` に転送する**。`compose-review` Step 5-2 はこれを外部レビュー結果として採用するので、実質的に「自前レビュー + `code-review`」の併用になる。この運用を取らない場合は優先順 2 の `scan-diff-findings` が自動で使われる。
 
-検出・転送を orchestrator の責務にしているのは、`compose-review` が **sub-agent として起動される**と本セッションのコンテキストが見えず、先行実行された findings を自力では拾えないため (後述「`compose-review` の呼び出し経路」)。転送前に orchestrator と `compose-review` の双方で「その findings が今回のレビュー対象と同じ範囲に対して実行されたか」を確認し、確認できなければ採用しない (古い findings を本 PR の外部レビュー結果として通さないため)。
+検出・転送を orchestrator の責務にしているのは、`compose-review` が **sub-agent として起動される**と本セッションのコンテキストが見えず、先行実行された findings を自力では拾えないため (前述「`compose-review` の呼び出し経路」)。一方 **「その findings が今回のレビュー対象と同じ範囲に対して実行されたか」の採否判定は `compose-review` の責務** — diff 範囲を確定するのは `compose-review` 自身 (Step 1) で orchestrator はそれを知らないため、orchestrator は観測できた対象表現 (`target`) と head SHA (`head`) をそのまま添えて転送し、`compose-review` が突き合わせて決める。判定できなければ採用せず `scan-diff-findings` に落ちる (古い findings を本 PR の外部レビュー結果として通さないため)。
 
 ## caller プロジェクトのレビュー方針の置き方
 
