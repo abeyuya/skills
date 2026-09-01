@@ -105,7 +105,7 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 この運用を成立させる **検出と転送は本 skill の責務**: `compose-review` を sub-agent として起動すると `compose-review` からは本セッションのコンテキストが見えず、先行実行された `/code-review` の findings を自力では拾えないため。手順:
 
 1. 本セッションのコンテキストに `/code-review` の findings が残っているか確認する。無ければ 3-3 の `PRIOR_CODE_REVIEW` 行を **省略** する (それだけ。`code-review` を本 skill から呼ぶ実装は持たない)。
-2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…"}, …]}`。**改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が壊れる)。1 行に収まらない規模なら転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
+2. 残っていれば **1 行 JSON** にシリアライズして `PRIOR_CODE_REVIEW` として渡す: `{"target":"<その code-review が対象にした範囲の表現。ブランチ名 / ref range / PR 番号など観測できたまま>","head":"<**その `/code-review` が対象にした時点の** head SHA。特定できなければ null (Step 2 の headRefOid を機械的に入れない — 下記参照)>","findings":[{"file":"…","line":N,"summary":"…","failure_scenario":"…","verdict":"CONFIRMED"|"PLAUSIBLE"|null}, …]}`。**`verdict` (`code-review` が finding ごとに返す検証結果) は取れる限り必ず転送する** — 落とすと `compose-review` 側で未検証の指摘が 1 段下げ処理なしに `[must]` へ計上され、`AI-REVIEW-RESULT` を required check にしている運用でマージを不当にブロックする。出力に無ければ `null` か省略。**改行を含めてはならない** (`compose-review` の `KEY=VALUE` parser が壊れる)。1 行に収まらない規模なら転送を諦めて行ごと省略する (`scan-diff-findings` が自動で使われるだけで、レビュー自体は成立する)。
 
 **レビュー対象が一致するかの採否判定は `compose-review` の責務** (5-2 解決順 1)。diff 範囲 (`<BASE_SHA>...<HEAD_SHA>`) を確定するのは `compose-review` Step 1 であって本 skill ではないため、本 skill 側で「一致すると確認できたか」を判定条件にしない (`BASE_SHA` を持たない本 skill では常に判定不能になり、この経路が死ぬ)。本 skill は観測できた `target` / `head` をそのまま添えて渡し、`compose-review` が `head` と自身の `HEAD_SHA` を突き合わせて採否を決める。ただし **明らかに別 PR / 別ブランチを対象にしたと分かる findings は転送しない** (その足切りだけは本 skill で行う)。
 
@@ -113,8 +113,9 @@ sub-agent 起動に失敗した / sub-agent がパスを報告せずに終わっ
 
 - **機械的に現 `headRefOid` を入れてはならない** — 条件が恒真になり **古い findings を弾く手段が消える** (`/code-review` 実行後に PR へ push した場合、修正済みの指摘が「現 head への外部レビュー結果」として全件採用され PR に再掲される)。
 - **一方、分からないから常に `null`、でも経路が死ぬ** — `/code-review` は自分がレビューした head SHA を出力しないため、「出力から SHA を読み取れたときだけ入れる」運用だと実務上ほぼ常に `null` になり、この手動併用フローが PR モードで一度も成立しない。
-- したがって **`headRefOid` を入れてよい条件を、次のいずれかが確認できたときに限る**: (a) `/code-review` の出力にレビュー対象の SHA / ref range が含まれ、それが `headRefOid` と一致する。(b) **`/code-review` を実行した後、本 skill 呼び出しまでの間にこの PR へ新しい push が無いと確認できる** (同一セッション内で自分が push していない、かつ Step 2 で取得した `headRefOid` が `/code-review` 実行時点から変わっていないと言える)。この (b) が実務上の主経路になる。
-- どちらも確認できなければ `null` にする (`scan-diff-findings` に落ちる = 安全側)。
+- したがって **PR モードで `head` に SHA を入れてよいのは、`/code-review` の出力にレビュー対象の SHA / ref range が含まれ、それが Step 2 の `headRefOid` と一致すると確認できたときだけ**。確認できなければ `null` にする (`scan-diff-findings` に落ちる = 安全側)。
+- **「自分が push していないから現 head のままのはず」という推定で入れてはならない** — PR には **他者や CI が push しうる**ため、同一セッション内で自分が push していないことは head 不変の証明にならない。旧 head の findings を新 head へのレビューとして投稿すると、行 anchor がずれて誤った箇所を指すか、投稿自体が 422 になる。GitHub に投稿する経路なので、ローカルモード (`run-local-review` Step 1-2) より厳しく倒す。
+- 結果として PR モードの手動併用は「`/code-review` が対象 SHA を出力していた回」に限られ、多くの回は `scan-diff-findings` が使われる。これは意図した安全側の縮退であり、`external_review` に記録されるので黙って劣化することはない。
 
 #### 3-3. 渡す引数
 
