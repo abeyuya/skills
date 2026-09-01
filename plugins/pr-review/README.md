@@ -30,7 +30,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 経路の違いが表に出るのは 2 点だけ:
 
-- **手動 `/code-review` findings の扱い**: sub-agent からは orchestrator のセッションコンテキストが見えないため、検出と転送 (`PRIOR_CODE_REVIEW` = 対象表現 / head SHA / findings の 1 行 JSON) は orchestrator の責務。マージは `compose-review` が 5-3 で行う (後述「外部レビューの手動併用」)。
+- **手動 `/code-review` findings の扱い**: sub-agent からは orchestrator のセッションコンテキストが見えないため、検出と転送 (`PRIOR_CODE_REVIEW_PATH` = 対象表現 / head SHA / findings を書き出した JSON ファイルのパス) は orchestrator の責務。マージは `compose-review` が 5-3 で行う (後述「外部レビューの手動併用」)。
 - **報告**: どちらの経路を採ったかを orchestrator が必ず 1 行報告する (既定の sub-agent 経路から落ちた回を黙って隠さないため)。
 
 ## 外部レビュースキルの併用 (自前レビュー + 外部スキル → マージ)
@@ -51,7 +51,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
 - `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
 - `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
-- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** (`reason` が `PRIOR_CODE_REVIEW` のマージ件数だけを伝えている回も縮退ではないので開示不要。開示が必要なケースは `compose-review` 5-5 が列挙する) — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため。**なお `PRIOR_CODE_REVIEW` (手動併用) は `external_review` を書き換えないので、この `"external"` には該当しない** (`compose-review` 5-2 が明示的に禁じている)。
+- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** (`reason` が `PRIOR_CODE_REVIEW_PATH` の findings のマージ件数だけを伝えている回も縮退ではないので開示不要。開示が必要なケースは `compose-review` 5-5 が列挙する) — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため。**なお手動併用 (`PRIOR_CODE_REVIEW_PATH`) は `external_review` を書き換えないので、この `"external"` には該当しない** (`compose-review` 5-2 が明示的に禁じている)。
 
 PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
@@ -74,7 +74,7 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 1. `/code-review` を手動で実行する (レビュー対象を引数で指定。`--fix` / `--comment` は付けない)。
 2. **同じセッションのまま** `/run-pr-review` (または `/run-local-review`) を実行する。
 
-1 の findings はセッションのコンテキストに残っているため、orchestrator (`run-pr-review` Step 3-2 / `run-local-review` Step 1-2) がそれを検出し、**`PRIOR_CODE_REVIEW` (1 行 JSON) として `compose-review` に転送する**。
+1 の findings はセッションのコンテキストに残っているため、orchestrator (`run-pr-review` Step 3-2 / `run-local-review` Step 1-2) がそれを検出し、**findings を JSON ファイルに書き出し、そのパスを `PRIOR_CODE_REVIEW_PATH` として `compose-review` に転送する** (findings 本体は prompt に埋めない — `summary` / `failure_scenario` はレビュー対象コード由来の untrusted な文字列で、prompt に直接埋めると `KEY=VALUE` parser を壊して他の引数の値を奪われうるため。`HANDOFF_PATH` と同じ受け渡し方式)。
 
 **転送された findings は「外部レビュー枠の代替」にはならない** — `compose-review` はこれを解決順 1 の成立根拠にせず、**5-3 で自前レビュー / 外部スキルの指摘と一緒に補助的にマージする**。`/code-review` の target は任意 (引数なしなら `@{upstream}...HEAD` 等) でレビュー範囲が一致している保証が無いため、これを外部レビュー枠に据えると「範囲の狭いレビューを正常併用として記録し、正規経路の `scan-diff-findings` を走らせない」縮退が機械可読な記録にも開示にも現れなくなる。補助入力として扱えば、範囲・鮮度のズレは 5-3 の既存フィルタ (実際の差分に含まれない指摘の除外 / 重複排除) がそのまま吸収するので、head や base の一致を証明する必要もない。
 
