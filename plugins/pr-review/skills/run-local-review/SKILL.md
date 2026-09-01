@@ -62,7 +62,7 @@ sub-agent 経路を既定にするのは、(1) sub-agent の完了が Agent ツ�
    - **`head` が `null` でも findings があるなら転送する** (行ごと省略しない)。`compose-review` 側でマージ結果が記録・開示されるので、握り潰すとユーザーが先に回した `/code-review` の findings の行方が分からなくなる。
 
 
-**転送された findings の扱いは `compose-review` の責務**: 「外部レビュー枠の代替」にはせず 5-3 で補助的にマージし、範囲・鮮度のズレは 5-3 の「範囲外の指摘の除外」と「重複排除」が吸収する (詳細は `compose-review` 5-2「`PRIOR_CODE_REVIEW` の扱い」)。したがって本 skill 側で範囲一致や staleness を証明する必要はなく、観測できた `target` / `head` を添えて素直に転送すればよい。本 skill 側で `code-review` を呼ぶ実装は持たない。
+**転送された findings の扱いは `compose-review` の責務**: 「外部レビュー枠の代替」にはせず 5-3 で補助的にマージし、範囲・鮮度のズレは 5-3 の「範囲外の指摘の除外」と「重複排除」が吸収する (詳細は `compose-review` 5-2「`PRIOR_CODE_REVIEW` の扱い」)。したがって本 skill 側で範囲一致や staleness を証明する必要はなく、観測できた `target` / `head` を添えて素直に転送すればよい。ただし **明らかに別ブランチ / 別リポジトリを対象にしたと分かる findings は転送しない** (`run-pr-review` Step 3-2 と同じ足切り。`compose-review` の係留前チェックは行ズレを完全には防げないため、明白な対象違いは caller 側で落とす)。本 skill 側で `code-review` を呼ぶ実装は持たない。
 
 #### 1-3. 渡す引数
 
