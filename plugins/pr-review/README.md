@@ -19,7 +19,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 両 orchestrator (`run-pr-review` / `run-local-review`) は `compose-review` を **sub-agent として起動するのを既定** とし、Agent ツールが使えない環境ではその場で現在コンテキストの直接呼びにフォールバックする。sub-agent 経路を既定にする理由:
 
-1. **停止バグが構造的に起きない**: `compose-review` は完成 JSON を `HANDOFF_PATH` に書き出し、最終メッセージには継続指示文だけを返す設計だが、直接呼びではその継続指示文をそのまま orchestrator の最終メッセージにして応答を打ち切る事故が起きやすかった (レビュー本文を作っただけで投稿 / markdown 出力に進まない、この plugin で最頻の失敗)。sub-agent の完了は Agent ツールの結果として返る = 明示的な制御戻り境界があるため、この事故が設計上発生しない。
+1. **停止バグが構造的に起きない**: `compose-review` は完成 JSON を `HANDOFF_PATH` に書き出し、最終メッセージには継続指示文だけを返す設計だが、直接呼びではその継続指示文をそのまま orchestrator の最終メッセージにして応答を打ち切る事故が起きやすかった (レビュー本文を作っただけで投稿 / markdown 出力に進まない、この plugin で最頻の失敗)。sub-agent の完了は Agent ツールの結果として返る = 明示的な制御戻り境界があるため、この事故が起きにくい (ホストが background 実行に回した回はターンが終わりうるので、orchestrator 側に待ち合わせと再開の規定がある)。
 2. **コンテキストが膨らまない**: 大きい PR 差分の読解や外部レビューの中間出力が sub-agent 側に閉じ、orchestrator には `HANDOFF_PATH` のパスと短い完了報告だけが返る。
 
 ハンドオフ方式 (JSON をファイルに書き、最終メッセージは継続指示文) は **両経路で共通** なので、`compose-review` 側は経路を判別する必要がなく、orchestrator も戻り後は同じく `HANDOFF_PATH` を `Read` するだけでよい。
@@ -76,7 +76,7 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 
 1 の findings はセッションのコンテキストに残っているため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用でき、実質的に「自前レビュー + `code-review`」の併用になる。この運用を取らない場合は優先順 2 の `scan-diff-findings` が自動で使われる。
 
-**ただしこの運用は `compose-review` が直接呼びで動く回に限られる** (前述「`compose-review` の呼び出し経路」)。既定の sub-agent 経路では `compose-review` から orchestrator のセッションコンテキストが見えず、先行実行された findings を観測できないため。**既知の制限**として受け入れており、sub-agent 経路では優先順 2 の `scan-diff-findings` が使われる — 外部レビュー併用そのものは成立するので、失われるのは「手動 `code-review` の findings が加わる」分だけで、自前レビュー単独への黙った退化にはならない。手動併用をどうしても効かせたい場合は、Agent ツールが使えない環境で実行するか、`compose-review` を直接呼ぶ (`/compose-review` を手で叩く) ことになる。
+**ただしこの運用は `compose-review` が直接呼びで動く回に限られる** (前述「`compose-review` の呼び出し経路」)。既定の sub-agent 経路では `compose-review` から orchestrator のセッションコンテキストが見えず、先行実行された findings を観測できないため。**既知の制限**として受け入れており、sub-agent 経路では優先順 2 の `scan-diff-findings` が使われる — 外部レビュー併用そのものは成立するので、失われるのは「手動 `code-review` の findings が加わる」分だけで、自前レビュー単独への黙った退化にはならない。手動併用が効くのは、Agent ツールが使えず orchestrator が直接呼びにフォールバックした回に限られる。
 
 
 ## caller プロジェクトのレビュー方針の置き方

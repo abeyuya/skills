@@ -9,7 +9,7 @@ PR レビュー一式 (PR 情報取得 → compose-review でレビュー本文�
 
 `compose-review` は **sub-agent として起動するのを既定** とし、Agent ツールが使えない環境ではその場で現在コンテキストの直接呼びにフォールバックする (Step 3 参照)。sub-agent 経路を既定にする理由は 2 つ:
 
-1. **停止バグが構造的に起きない**: sub-agent の最終メッセージは Agent ツールの結果として本 skill に返るので、明示的な制御戻り境界がある。直接呼び経路の最頻の失敗 (レビュー本文を生成しただけで Step 4 の投稿前にターンが終わる) が設計上発生しない。
+1. **停止バグが起きにくい**: sub-agent の最終メッセージは Agent ツールの結果として本 skill に返るので、明示的な制御戻り境界がある。直接呼び経路の最頻の失敗 (レビュー本文を生成しただけで Step 4 の投稿前にターンが終わる) は、この境界がある限り起きない。**ただし完全な保証ではない** — ホストが `run_in_background: false` を無視して sub-agent を background 実行に回すことがあり、その回はターンがいったん終わる。対処は 3-1 の「background 化された場合」に従う (同一応答内での待ち合わせ → 完了通知での再開)。
 2. **コンテキストが膨らまない**: 大きい PR 差分の読解・外部レビューの中間出力が sub-agent 側に閉じ、本 skill には `HANDOFF_PATH` のパスと短い完了報告だけが返る。
 
 > かつてはここに「`compose-review` の Step 5-2 の fan-out (Agent ツール) が sub-agent コンテキストでは動かないため直接呼びが必須」と書かれていたが、**sub-agent のネスト起動は現在可能** (既定でメイン会話から数えて 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可) なので、その制約は前提として成立しない。深さ予算は本 skill (メイン) → `compose-review` (1 階層目) → `scan-diff-findings` の finder / verifier (2 階層目) で既定の 3 に収まる (`compose-review` → `scan-diff-findings` は Skill 呼びで同一コンテキストのため段を消費しない)。
@@ -134,7 +134,7 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 
 **どちらの経路でも受け取り方は同じ**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。sub-agent 経路ではその継続指示文が Agent ツールの結果として本 skill に返る。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 3 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行する**。
 
-> ⚠️ **直接呼び経路 (3-1 の fallback) では特に: ターンを終了しない (最頻の停止バグ)**。現在コンテキスト直接呼びでは Agent ツールのような明示的な制御戻り境界が無いため、`compose-review` の継続指示文をそのまま自分の最終メッセージにして応答を打ち切りやすい。そうなると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この経路で最も起こりやすい失敗)。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。**sub-agent 経路ではこの事故は構造的に起きない** (sub-agent の完了は本 skill のターンの終わりではなくツール結果なので、そのまま Step 4 へ進める) — これが sub-agent 起動を既定にしている主目的。
+> ⚠️ **直接呼び経路 (3-1 の fallback) では特に: ターンを終了しない (最頻の停止バグ)**。現在コンテキスト直接呼びでは Agent ツールのような明示的な制御戻り境界が無いため、`compose-review` の継続指示文をそのまま自分の最終メッセージにして応答を打ち切りやすい。そうなると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この経路で最も起こりやすい失敗)。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。**sub-agent 経路ではこの事故は起きにくい** (sub-agent の完了は本 skill のターンの終わりではなくツール結果なので、そのまま Step 4 へ進める) — これが sub-agent 起動を既定にしている主目的。ただし background 化された回はターンが終わりうるので、3-1 の待ち合わせ / 再開の規定に従う。
 
 > ⚠️ **外部レビュー fan-out の待ちでターンを yield しない (直接呼び経路の変種)**: 直接呼び経路では `compose-review` → `scan-diff-findings` の finder / verifier が **本 skill と同じコンテキストで** 起動する。リモート実行環境では並列起動した Agent の一部が harness によって自動で background 実行に回されることがあるが、その完了を `Monitor` / background 完了通知待ち / sleep ループで待って応答 (ターン) を終了してはならない。**同期的に得られた結果だけで先へ進む** (recall は `compose-review` の 5-1 自前レビューが担保する)。sub-agent 経路ではこれらの Agent は sub-agent 側で完結するため、本 skill がこの判断を迫られること自体が無い。
 
@@ -185,7 +185,7 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
 - **`compose-review` の呼び出し経路** (1 行。`sub-agent` / `直接呼び (Agent ツール不可)` / `直接呼び (sub-agent 起動に失敗しフォールバック)` のいずれか)。既定である sub-agent 経路から落ちた回を caller が把握できるようにするため、**常に 1 行報告する**
 - インライン指摘件数 / ラベル別件数内訳 (優先度順、`[must]` / `[should]` 等、件数>0 のもの)
-- **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`fanout` 相当の内訳を返さない外部スキル (`mode="external"`) では `null` になり、`null/null` と描画すると取得不能なのか 0 観点なのか判別できないため)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。**`reason` が非 null ならその内容も添える** (縮退理由が入る)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
+- **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`fanout` 相当の内訳を返さない外部スキル (`mode="external"`) では `null` になり、`null/null` と描画すると取得不能なのか 0 観点なのか判別できないため)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。**`reason` が非 null なら (`未併用 (<reason>)` で既に出している場合を除き) その内容も添える** (縮退理由が入る)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
 - **エスカレーション判定の結果** (`compose-review` の `escalation` から 1 行。`escalate: true` なら `エスカレーション: 要 (理由 <reasons の件数> 件)`、`false` なら `エスカレーション: 不要`。フィールド欠落 / 壊れていた場合は `エスカレーション判定: 不明 (compose-review が escalation を返さず)` と明記する)。これは「その PR を人に見てもらうべきか」の信号なので、`escalate: true` の回を caller が見落とさないよう **常に 1 行報告する** (マージをブロックする判定ではない点も含意として変えない)
 - resolve したスレッド件数 (Step 5 の戻り値)
 - `label_counts` が欠落 / 壊れていて `LABEL_COUNTS` を渡せなかった場合はその旨 1 行 (機械可読サマリ行が `comments[]` 集計にフォールバックしたことの申告)
