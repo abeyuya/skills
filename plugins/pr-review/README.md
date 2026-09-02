@@ -19,7 +19,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 両 orchestrator (`run-pr-review` / `run-local-review`) は `compose-review` を **sub-agent として起動するのを既定** とし、Agent ツールが使えない環境ではその場で現在コンテキストの直接呼びにフォールバックする。sub-agent 経路を既定にする理由:
 
-1. **停止バグが構造的に起きない**: `compose-review` は完成 JSON を `HANDOFF_PATH` に書き出し、最終メッセージには継続指示文だけを返す設計だが、直接呼びではその継続指示文をそのまま orchestrator の最終メッセージにして応答を打ち切る事故が起きやすかった (レビュー本文を作っただけで投稿 / markdown 出力に進まない、この plugin で最頻の失敗)。sub-agent の完了は Agent ツールの結果として返る = 明示的な制御戻り境界があるため、この事故が起きにくい (ホストが background 実行に回した回はターンが終わりうるので、orchestrator 側に待ち合わせと再開の規定がある)。
+1. **停止バグが起きにくい**: `compose-review` は完成 JSON を `HANDOFF_PATH` に書き出し、最終メッセージには継続指示文だけを返す設計だが、直接呼びではその継続指示文をそのまま orchestrator の最終メッセージにして応答を打ち切る事故が起きやすかった (レビュー本文を作っただけで投稿 / markdown 出力に進まない、この plugin で最頻の失敗)。sub-agent の完了は Agent ツールの結果として返る = 明示的な制御戻り境界があるため、この事故が起きにくい。**ただし完全な保証ではない** — ホストが `run_in_background: false` を無視して background 実行に回すと、その回はターンがいったん終わる。orchestrator 側に待ち合わせ・完了通知での再開・冪等ガードの規定があるので、本 plugin を移植する場合はそれらも併せて実装する (正典は `run-pr-review` Step 3-1)。
 2. **コンテキストが膨らまない**: 大きい PR 差分の読解や外部レビューの中間出力が sub-agent 側に閉じ、orchestrator には `HANDOFF_PATH` のパスと短い完了報告だけが返る。
 
 ハンドオフ方式 (JSON をファイルに書き、最終メッセージは継続指示文) は **両経路で共通** なので、`compose-review` 側は経路を判別する必要がなく、orchestrator も戻り後は同じく `HANDOFF_PATH` を `Read` するだけでよい。
