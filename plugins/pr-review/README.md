@@ -26,6 +26,8 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 **トレードオフ**: ネスト起動が可能でも、`compose-review` sub-agent のコンテキストで Agent ツールが実際に提示されるとは限らない (深さ上限のほか、ホストや agent 定義がツールを絞る場合がある)。提示されなければ `scan-diff-findings` は inline フォールバックに落ち、外部レビューが自前レビューと同一コンテキストの逐次自己適用になる = **独立性が失われる**。併用自体は成立し縮退も `external_review` と開示に出るが、**「sub-agent 起動 = 独立した第 2 系統が常に得られる」ではない**。もう 1 点、sub-agent からは orchestrator のセッションコンテキストが見えないため、**手動 `/code-review` 併用は成立しない** (後述)。
 
+**Agent ツールが使えない環境は orchestrator の対象外**: フォールバックを持たないので、両 orchestrator はその環境では動かない (エラー停止)。`compose-review` / `scan-diff-findings` 自体は Agent ツール無しでも動く契約を保っている (`scan-diff-findings` は inline フォールバックを持つ) ので、その環境では **`compose-review` を直接呼ぶ** ことになる — ただし投稿・resolve・markdown 出力は行われないので、必要なら `post-pr-review` を別途呼ぶ。2 経路を documentation する負担 (停止バグの警告一式・経路ごとの場合分け) を避けるため、意図的に orchestrator を 1 経路に絞っている。
+
 ## 外部レビュースキルの併用 (自前レビュー + 外部スキル → マージ)
 
 `compose-review` は **自前レビューを必ず行った上で**、ホストの外部レビュースキルを **優先順で 1 つ** 併用し、両者の指摘をマージする (重複は同一 `path:line` + 同主旨で 1 件に集約、重要度競合は高い方を採用)。**外部スキル併用は通常常に実施**され、外部スキルが 1 つも使えないときだけ自前単独になる。
@@ -60,16 +62,13 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 
 つまり `code-review` を第 1 候補に置いた解決順だけでは、外部レビュー併用は多くの環境で構造的に不成立になる。`scan-diff-findings` (優先順 2) はこの枠を埋めるために用意されており、**`disable-model-invocation` を持たない** ことが要件そのもの。同種の自前レビュースキルを追加する場合も同様に付けてはならない。
 
-### 外部レビューの手動併用 (`/code-review` を先に実行する運用)
+### 外部レビューの手動併用 (同梱 orchestrator では成立しない)
 
-`code-review` は **ユーザーがスラッシュコマンドとして手で叩く分には制約を受けない**。そこで、`code-review` の findings をどうしても併用したい場合は次の順で実行する:
+`code-review` は **ユーザーがスラッシュコマンドとして手で叩く分には制約を受けない**ので、`/code-review` を先に実行しておけば、その findings は現在のコンテキストに残る。`compose-review` Step 5-2 はコンテキストに findings が見えていればそれを外部レビュー結果として採用できる。
 
-1. `/code-review` を手動で実行する (レビュー対象を引数で指定。`--fix` / `--comment` は付けない)。
-2. **同じセッションのまま** `/run-pr-review` (または `/run-local-review`) を実行する。
+**ただし同梱の orchestrator (`run-pr-review` / `run-local-review`) 経由では成立しない** — 両者は `compose-review` を sub-agent として起動し、sub-agent からは orchestrator のセッションコンテキストが見えないため、先行実行された findings を観測できない。したがって `/code-review` を先に叩いてから `/run-pr-review` を実行しても、その findings は使われない (無駄になる)。**既知の制限**として受け入れており、この場合は優先順 2 の `scan-diff-findings` が使われる。外部レビュー併用そのものは成立するので、失われるのは「手動 `code-review` の findings が加わる」分だけで、自前レビュー単独への黙った退化にはならない。
 
-1 の findings はセッションのコンテキストに残るため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用できる。
-
-**ただし両 orchestrator は `compose-review` を sub-agent として起動するので、この運用は成立しない** — sub-agent からは orchestrator のセッションコンテキストが見えず、先行実行された findings を観測できない。**既知の制限**として受け入れており、その場合は優先順 2 の `scan-diff-findings` が使われる。外部レビュー併用そのものは成立するので、失われるのは「手動 `code-review` の findings が加わる」分だけで、自前レビュー単独への黙った退化にはならない (この例外が効くのは、`compose-review` を直接呼ぶ他 caller の回だけ)。
+この例外が効くのは、`compose-review` を直接呼ぶ他 caller (Codex 等) の回だけ。
 
 ## caller プロジェクトのレビュー方針の置き方
 
@@ -230,7 +229,7 @@ claude --plugin-dir plugins/pr-review
 
 ### 別ブランチで新規 skill を追加した PR を試す場合 (`Unknown skill: <name>` エラー対処)
 
-ローカルでブランチをチェックアウトしても Claude Code は **自動的に plugin install を更新しない**。`/plugin install` 済みの main 版に compose-review が無ければ、本ブランチをチェックアウトしても `Skill ツール (skill: "compose-review")` 呼び出しが `Unknown skill: compose-review` で失敗する (`run-pr-review` / `run-local-review` のどちらから呼んでも、sub-agent 経路 / 直接呼び経路のどちらでも同じ)。対処:
+ローカルでブランチをチェックアウトしても Claude Code は **自動的に plugin install を更新しない**。`/plugin install` 済みの main 版に compose-review が無ければ、本ブランチをチェックアウトしても `Skill ツール (skill: "compose-review")` 呼び出しが `Unknown skill: compose-review` で失敗する (`run-pr-review` / `run-local-review` のどちらから呼んでも同じ。sub-agent 側でも同じ plugin install を参照するため)。対処:
 
 1. **推奨**: `claude --plugin-dir plugins/pr-review` で起動する。`--plugin-dir` 指定は同名の install 済み plugin より優先され、本ブランチの未コミット内容も含めてその場で読み込まれる。
 2. **代替**: `/plugin marketplace add abeyuya/skills && /plugin install pr-review@abeyuya-skills` を再実行する (marketplace の HEAD コミットを再 fetch して install を更新)。
