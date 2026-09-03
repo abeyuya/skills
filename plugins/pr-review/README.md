@@ -5,33 +5,26 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 ## 提供 skill / command
 
 - `skills/run-pr-review`: PR レビュー一式 (PR 取得 → `compose-review` でレビュー本文生成 → 投稿 → 過去スレッド resolve) を 1 コマンドで実行する thin orchestrator skill。caller はこれを呼ぶだけで済む。
-- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (caller が渡す書き出し先パス。省略時は `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`。ランダムサフィックスは同一秒の再呼び出しでの衝突回避用) にファイル書き出し**し、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示** を返す (caller はそのファイルを `Read` して JSON を使う)。自己完結 JSON を最終メッセージに出さないのは、それが「タスク完了」シグナルに見え、caller (orchestrator) が投稿 step を実行する前にターンを終了する停止バグを誘発するため。書き出す JSON には `body` / `event` / `comments[]` に加え、機械可読サマリ行の正典値になる `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。指摘は自前レビューを必ず行い、加えて外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → `scan-diff-findings` (本 plugin 同梱) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。1 つも使えなかったときだけ自前単独で、その場合は理由を総括 `body` に 1 文開示する)。`run-pr-review` / `run-local-review` のいずれからも **sub-agent として起動される** のが既定 (Agent ツールが使えない環境では現在コンテキストで直接呼ばれる)。手順は両経路で同一。
+- `skills/compose-review`: PR 差分 or ローカルブランチ差分に対してレビュー本文 (`body` / `event` / `comments[]`) を生成する skill。`/pr-review-style-reference` とプロジェクト指示ファイルを読み込んでレビュー方針を決め、`post-pr-review` のスキーマに揃った JSON を **`HANDOFF_PATH` (caller が渡す書き出し先パス。省略時は `/tmp/compose-review-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`。ランダムサフィックスは同一秒の再呼び出しでの衝突回避用) にファイル書き出し**し、最終メッセージでは **「そのファイルを `Read` して続行せよ」という継続指示** を返す (caller はそのファイルを `Read` して JSON を使う)。自己完結 JSON を最終メッセージに出さないのは、それが「タスク完了」シグナルに見え、caller (orchestrator) が投稿 step を実行する前にターンを終了する停止バグを誘発するため。書き出す JSON には `body` / `event` / `comments[]` に加え、機械可読サマリ行の正典値になる `label_counts` (ラベル別件数。`MAX_INLINE_COMMENTS` で省略した指摘も含む) を含める。指摘は自前レビューを必ず行い、加えて外部レビュースキル (優先順: `code-review` (Claude Code 組み込み) → `scan-diff-findings` (本 plugin 同梱) → ホスト標準レビュースキル例 Codex `/review` → 無し) を 1 つ併用して指摘をマージする (通常は常に併用。1 つも使えなかったときだけ自前単独で、その場合は理由を総括 `body` に 1 文開示する)。`run-pr-review` / `run-local-review` のいずれからも **sub-agent として起動される** (後述「`compose-review` の呼び出し方」)。
 - `skills/scan-diff-findings`: 差分 (ref range / ブランチ / staged / worktree) を対象に **観点別 finder の fan-out → 各 finding の adversarial verify → マージ** を行い、`path` / `line` / 要約 / 重大度 (`high` / `medium` / `low`) に正規化した findings JSON を `FINDINGS_PATH` にファイル書き出しする read-only レビュースキル。`compose-review` Step 5-2 が併用する外部レビュースキルの 1 つで、Claude Code 組み込みの `code-review` が `disable-model-invocation` によりモデルから呼べない環境でも外部レビュー併用を成立させるために用意している (後述「外部レビュースキルの併用」)。Agent ツールが使えない環境では観点リストを現在コンテキストで逐次自己適用するフォールバックを持つ。ファイル編集 / GitHub 投稿 / working tree を変える git 操作は行わない。
 - `skills/post-pr-review`: レビュー本文 + インラインコメント群を 1 つの GitHub Review として投稿する。投稿経路は 2 チャネル対応 (`CHANNEL=gh`: `gh api .../reviews` の 1 コール / `CHANNEL=mcp`: GitHub MCP ツールで pending review を組み立てて submit。詳細は後述「GitHub アクセスチャネル」)。Review body には AI 自動投稿マーカーと **機械可読サマリ行** (`<!-- AI-REVIEW-RESULT: must=0 should=1 ... -->`) を自動で付与する (後述「機械可読サマリ行 (CI からの機械判定)」)。
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
-- `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称で、両者とも `compose-review` を sub-agent として起動する (後述「`compose-review` の呼び出し経路」)。
+- `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称で、両者とも `compose-review` を sub-agent として起動する (後述「`compose-review` の呼び出し方」)。
 - `skills/distill-pr-reviews`: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を `proposals.md` として出力する skill。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する (`MAX_BUGFIX_DIFFS` で diff 取得上限を制御)。信号収集はスクリプト、最終的な採否分類 (`accept` / `hold` / `reject`) とクラスタリングは AI が行う。read-only で REVIEW.md 編集 / PR 作成は行わない。**収集スクリプトが `gh` CLI に依存するため gh チャネル専用** (gh が使えない環境では動かない。後述「GitHub アクセスチャネル」参照)。
 - `commands/pr-review-style-reference`: `/pr-review-style-reference` で呼び出す **スタイル参考ガイド** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。レビューコメントの書き方・体裁が対象で、技術観点 (何を見るか) は対象外。`compose-review` から内部的に呼ばれる。
 
 レビュー方針は caller (ユーザー) に委ねる前提。本スタイル参考ガイドは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。技術観点 (何をレビューするか) は caller 側で別途指定する想定。
 
-## `compose-review` の呼び出し経路 (sub-agent 起動 / 直接呼び)
+## `compose-review` の呼び出し方 (sub-agent 起動)
 
-両 orchestrator (`run-pr-review` / `run-local-review`) は `compose-review` を **sub-agent として起動するのを既定** とし、Agent ツールが使えない環境ではその場で現在コンテキストの直接呼びにフォールバックする。sub-agent 経路を既定にする理由:
+両 orchestrator (`run-pr-review` / `run-local-review`) は `compose-review` を **Agent ツールで sub-agent として起動する** (Agent ツールが使えなければエラー停止。直接呼びへのフォールバックは持たない)。理由:
 
-1. **停止バグが起きにくい**: `compose-review` は完成 JSON を `HANDOFF_PATH` に書き出し、最終メッセージには継続指示文だけを返す設計だが、直接呼びではその継続指示文をそのまま orchestrator の最終メッセージにして応答を打ち切る事故が起きやすかった (レビュー本文を作っただけで投稿 / markdown 出力に進まない、この plugin で最頻の失敗)。sub-agent の完了は Agent ツールの結果として返る = 明示的な制御戻り境界があるため、この事故が起きにくい。**ただし完全な保証ではない** — ホストが `run_in_background: false` を無視して background 実行に回すと、その回はターンがいったん終わる。orchestrator 側に待ち合わせ・完了通知での再開・冪等ガードの規定があるので、本 plugin を移植する場合はそれらも併せて実装する (正典は `run-pr-review` Step 3-1)。
+1. **停止バグが起きにくい**: `compose-review` は完成 JSON を `HANDOFF_PATH` に書き出し、最終メッセージには継続指示文だけを返す設計だが、直接呼びではその継続指示文をそのまま orchestrator の最終メッセージにして応答を打ち切る事故が起きやすかった (レビュー本文を作っただけで投稿 / markdown 出力に進まない、この plugin で最頻の失敗)。sub-agent の完了は Agent ツールの結果として返る = 明示的な制御戻り境界ができる。**ただし完全な保証ではない** — ホストが `run_in_background: false` を無視して background 実行に回すと、その回はターンがいったん終わる。orchestrator 側に待ち合わせ・完了通知での再開・冪等ガードの規定がある (正典は `run-pr-review` Step 3-1)。
 2. **コンテキストが膨らまない**: 大きい PR 差分の読解や外部レビューの中間出力が sub-agent 側に閉じ、orchestrator には `HANDOFF_PATH` のパスと短い完了報告だけが返る。
 
-ハンドオフ方式 (JSON をファイルに書き、最終メッセージは継続指示文) は **両経路で共通** なので、`compose-review` 側は経路を判別する必要がなく、orchestrator も戻り後は同じく `HANDOFF_PATH` を `Read` するだけでよい。
+> かつては「`compose-review` Step 5-2 の外部レビュー fan-out (Agent ツール) が sub-agent コンテキストでは動かない」ため直接呼びが必須だったが、**sub-agent のネスト起動がサポートされた** (既定でメイン会話から 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可) ため、この前提は成立しない。深さ予算は orchestrator (メイン) → `compose-review` (1 階層目) → `scan-diff-findings` の finder / verifier (2 階層目) で既定の 3 に収まる。
 
-> **かつて直接呼びが必須だった理由と、それが解消した経緯**: 以前は「`compose-review` Step 5-2 の外部レビュー fan-out (Agent ツール) が sub-agent コンテキストでは動かない」ため、直接呼びが任意の最適化ではなく必須だった。現在は **sub-agent のネスト起動がサポートされている** (既定でメイン会話から数えて 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可) ため、この制約は成立しない。深さ予算は orchestrator (メイン) → `compose-review` (1 階層目) → `scan-diff-findings` の finder / verifier (2 階層目) で既定の 3 に収まる (`compose-review` → `scan-diff-findings` は Skill 呼びで同一コンテキストのため段を消費しない)。深さ上限に当たった場合も `scan-diff-findings` の inline フォールバックで外部レビュー併用自体は成立し、縮退は `fanout.mode="inline"` として記録・開示される。
-
-**トレードオフ (既定経路の代償)**: ネスト起動が可能でも、`compose-review` sub-agent のコンテキストで Agent ツールが実際に提示されるとは限らない (深さ上限のほか、ホストや agent 定義がツールを絞る場合がある)。提示されなければ `scan-diff-findings` は inline フォールバックに落ち、外部レビューが `compose-review` 自身と同一コンテキストの逐次自己適用になる = **自前レビューとの独立性が失われる**。併用自体は成立し縮退も開示されるが、**「sub-agent 既定 = 独立した第 2 系統が常に得られる」ではない**。なお **経路を選ぶ引数は用意していない** — orchestrator が Agent ツールの可否だけで機械的に決める (停止バグの回避を、環境依存で起きる独立性縮退より優先する判断)。縮退した回は `external_review` と orchestrator の報告に必ず出る。
-
-経路の違いが表に出るのは 2 点だけ:
-
-- **手動 `/code-review` findings の扱い**: sub-agent からは orchestrator のセッションコンテキストが見えないため、**この運用は直接呼び経路でしか成立しない** (既知の制限。後述「外部レビューの手動併用」)。
-- **報告**: どちらの経路を採ったかを orchestrator が必ず 1 行報告する (既定の sub-agent 経路から落ちた回を黙って隠さないため)。
+**トレードオフ**: ネスト起動が可能でも、`compose-review` sub-agent のコンテキストで Agent ツールが実際に提示されるとは限らない (深さ上限のほか、ホストや agent 定義がツールを絞る場合がある)。提示されなければ `scan-diff-findings` は inline フォールバックに落ち、外部レビューが自前レビューと同一コンテキストの逐次自己適用になる = **独立性が失われる**。併用自体は成立し縮退も `external_review` と開示に出るが、**「sub-agent 起動 = 独立した第 2 系統が常に得られる」ではない**。もう 1 点、sub-agent からは orchestrator のセッションコンテキストが見えないため、**手動 `/code-review` 併用は成立しない** (後述)。
 
 ## 外部レビュースキルの併用 (自前レビュー + 外部スキル → マージ)
 
@@ -39,7 +32,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 優先順位:
 
-1. `code-review` (Claude Code 組み込み) — **多くの環境ではモデルから呼び出せない** (後述「`code-review` が呼べない問題」)。ユーザーが先に `/code-review` を手動実行した回に、直接呼び経路の `compose-review` がコンテキスト上の findings を採用する経路のみ実質的に成立する (後述「外部レビューの手動併用」)。
+1. `code-review` (Claude Code 組み込み) — **多くの環境ではモデルから呼び出せない** (後述「`code-review` が呼べない問題」)。かつ **同梱の orchestrator 経由では成立しない** (sub-agent からはセッションコンテキストが見えない。後述「外部レビューの手動併用」)。
 2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、`code-review` と同じ「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい。
 3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
 4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
@@ -74,10 +67,9 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 1. `/code-review` を手動で実行する (レビュー対象を引数で指定。`--fix` / `--comment` は付けない)。
 2. **同じセッションのまま** `/run-pr-review` (または `/run-local-review`) を実行する。
 
-1 の findings はセッションのコンテキストに残っているため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用でき、実質的に「自前レビュー + `code-review`」の併用になる。この運用を取らない場合は優先順 2 の `scan-diff-findings` が自動で使われる。
+1 の findings はセッションのコンテキストに残るため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用できる。
 
-**ただしこの運用は `compose-review` が直接呼びで動く回に限られる** (前述「`compose-review` の呼び出し経路」)。既定の sub-agent 経路では `compose-review` から orchestrator のセッションコンテキストが見えず、先行実行された findings を観測できないため。**既知の制限**として受け入れており、sub-agent 経路では優先順 2 の `scan-diff-findings` が使われる — 外部レビュー併用そのものは成立するので、失われるのは「手動 `code-review` の findings が加わる」分だけで、自前レビュー単独への黙った退化にはならない。手動併用が効くのは、Agent ツールが使えず orchestrator が直接呼びにフォールバックした回に限られる。
-
+**ただし両 orchestrator は `compose-review` を sub-agent として起動するので、この運用は成立しない** — sub-agent からは orchestrator のセッションコンテキストが見えず、先行実行された findings を観測できない。**既知の制限**として受け入れており、その場合は優先順 2 の `scan-diff-findings` が使われる。外部レビュー併用そのものは成立するので、失われるのは「手動 `code-review` の findings が加わる」分だけで、自前レビュー単独への黙った退化にはならない (この例外が効くのは、`compose-review` を直接呼ぶ他 caller の回だけ)。
 
 ## caller プロジェクトのレビュー方針の置き方
 
