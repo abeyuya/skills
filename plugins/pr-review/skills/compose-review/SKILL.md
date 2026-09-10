@@ -70,7 +70,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   - **`BASE_SHA` で代用してはならない**。base ブランチ先端の tree は読めてしまうので、代用すると「変更前が読めない」ことに気づけず、この規定が排除しようとしている base 進行由来の誤検知 (他者が base 側で行った基準の追加・削除を本 PR の変更として `escalate: true` に倒す / 逆に取りこぼす) がそのまま走る。**`MERGE_BASE_SHA` が確定できない回は下記のとおり復旧か停止で決着させ、別の SHA で代用したまま続行する分岐は設けない**。
     - **`MERGE_BASE_SHA` は確定できたが個別の path が読めない** (該当ディレクトリに当時 `REVIEW.md` が無かった等) は別の話で、3-2 の「不在と取得失敗を区別する」に従い **その path を skip して続行する** (error 停止しない)。5-4 の突き合わせも、変更前側で読めた候補だけで行い、読めなかった旨があれば総括 `body` に 1 文開示する。
   - `git merge-base` が失敗する場合、**同じ理由で Step 4 の三点記法 `git diff <BASE_SHA>...<HEAD_SHA>` も `fatal: no merge base` で失敗する** (共通祖先が無いと三点記法は成立しない)。これは shallow clone (`actions/checkout` の既定 `fetch-depth: 1`) で起きる。したがって **merge-base の失敗は 3-2 の「変更前が読めない」case ではなく、差分そのものが取れない状態**として次の順で解決する:
-    1. **read-only fetch で共通祖先を materialize し直す**。手順は 2 段構成で、段ごとに使うコマンドが違う。いずれも read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。**`<remote>` は本 step の他の fetch と同じ解決に揃える** (通常は `origin`、cross-repo は explicit URL `https://github.com/<OWNER>/<REPO>.git`。`origin` 決め打ちにすると cross-repo で別リポジトリを deepen してしまう)。**refspec は必ず明示する** (explicit URL には設定済み refspec が無く、省略すると remote HEAD しか取得されない)。
+    1. **read-only fetch で共通祖先を materialize し直す**。手順は 2 段構成で、段ごとに使うコマンドが違う。いずれも read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。**`<remote>` は本 step の他の fetch と同じ解決に揃える** (通常は `origin`、cross-repo は explicit URL `https://github.com/<OWNER>/<REPO>.git`。`origin` 決め打ちにすると cross-repo で別リポジトリを deepen してしまう)。**refspec は必ず明示する** — explicit URL には設定済み refspec が無いのはもちろん、**`origin` 経路でも省略してはならない**。`actions/checkout` の shallow clone は `remote.origin.fetch` を単一 ref に絞るため、refspec を省いた `git fetch --unshallow origin` は **exit 0 かつ `--is-shallow-repository` が `false` になるのに `refs/pull/<PR_NUMBER>/head` と非 default base は取得されない** (merge-base は失敗のまま、第 2 段も「まだ shallow」条件を満たさず skip されて error 停止に落ちる)。
 
        **第 1 段: `--unshallow` を 1 回だけ試す**
 
@@ -86,13 +86,15 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
        git merge-base <BASE_SHA> <HEAD_SHA>   # 成功すれば MERGE_BASE_SHA を退避して復旧完了
        ```
 
-       - **各 fetch の終了コードを確認してから `git rev-parse FETCH_HEAD` を実行する**。`FETCH_HEAD` は fetch が失敗しても前回の値が残るため、確認せずに読むと **head として base の SHA を掴み、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す**。
+       - **各 fetch の終了コードを確認してから `git rev-parse FETCH_HEAD` を実行する**。`FETCH_HEAD` は fetch が失敗しても前回の値が残るため、確認せずに読むと **head として base の SHA を掴み、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す**。**fetch が失敗したら退避せず、下記 2 の error 停止へ進む** (「既に complete」で失敗した場合を含め、第 1 段のどの fetch 失敗もここに合流する。第 2 段の発火条件は「まだ shallow」なので、complete 化した後の base fetch 失敗は第 2 段では拾えない)。
+       - **`HEAD_SHA` を退避し直したら `COMMIT_ID` との整合を Step 1 冒頭の規定どおり取り直す**: 渡された `COMMIT_ID` と一致すればそのまま、**不一致なら復旧中に force-push が起きた**ことを意味するので `HEAD_SHA` を fetch した現 head に更新し、**Step 6 出力の `commit_id` もこの値にする**。これを怠ると diff は新 head 基準・コメント anchor は旧 `COMMIT_ID` となり、インラインコメントの行位置がズレる。
        - **base 側で `--unshallow` を付けるかを `--is-shallow-repository` で分岐する**理由: complete な repository に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して base の fetch 自体が飛び、まだ shallow な状態では付けられる。1 回目が exit 0 でも **fetch 元自体が shallow (CI のミラー / キャッシュ経由) なら complete にならない**ので、どちらかに決め打ちすると片方のケースを壊す。
        - **head 側の `--unshallow` が「既に complete」で失敗した場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等)。git はこの fatal を complete のときにだけ出すので、第 2 段に進まず下記 2 の error 停止へ進む。
 
        **第 2 段: それでも merge-base が得られず、まだ shallow な場合だけ `--deepen` を反復する**
 
        - **このループでは `--unshallow` を使わない** (第 1 段で complete 化していれば fatal になるだけ)。両側を同じ幅で deepen する: `git fetch --deepen=<幅> <remote> refs/pull/<PR_NUMBER>/head` と `git fetch --deepen=<幅> <remote> <BASE_REF>`。**幅は `100` → `200` → `400` … と巡ごとに倍にする**。
+       - **各巡の末尾で `git merge-base <BASE_SHA> <HEAD_SHA>` を再試行する。成功したらその時点で `MERGE_BASE_SHA` を退避してループを抜け、復旧完了とする** (下記の打ち切り判定より優先)。これを省くと、1 巡目で共通祖先が materialize されたのに 2 巡目で fetch 元の境界に当たって「進捗なし」と判定され、**復旧済みなのに error 停止する**。
        - **`HEAD_SHA` / `BASE_SHA` はこのループで再代入しない**。deepen は祖先を追加するだけで、レビュー対象として確定した tip を動かす必要はない。再代入すると、base ブランチが他者の push で進んだだけで count が増えて「進捗あり」と誤判定し、**進捗ベースの打ち切りが機能しなくなる** (head 側が境界に到達していても 5 巡回り切ってしまう)。
        - **打ち切りは「進捗」と「巡数」の両方で判定する**。
          - **進捗**: 各巡の前後で `git rev-list --count <HEAD_SHA>` と `git rev-list --count <BASE_SHA>` を取り (SHA は上記のとおり固定値)、**どちらか一方でも増えていれば継続、両方とも増えなければ打ち切る**。**両側を別々に記録する**のは、1 巡が **2 つの異なる履歴に対する 2 回の fetch** で構成されるため — 片側だけ既に materialize 済みで反対側が fork 点まで遠い clone では、合算や片側だけの観測では進捗を取り違える。
