@@ -89,10 +89,8 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
        - **各 fetch の終了コードを確認してから `git rev-parse FETCH_HEAD` を実行する**。`FETCH_HEAD` は fetch が失敗しても前回の値が残るため、確認せずに読むと **head として base の SHA を掴み、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す**。**fetch が失敗したら SHA を退避せず** (Step 1 で確定済みの値をそのまま保つ)、失敗の種類で遷移先を分ける。
          - **「既に complete」の fatal** → shallow が原因ではないので下記 2 の error 停止へ。
          - **それ以外の失敗で `--is-shallow-repository` が `true`** (巨大 pack でのサーバ切断 / connection reset 等) → **第 2 段へ進む**。段階的な `--deepen` なら 1 回の転送量が小さく、同じ失敗を回避して復旧できることがある。
-         - **それ以外の失敗で `--is-shallow-repository` が `false`** → deepen する余地がないので下記 2 の error 停止へ。
-       - **`COMMIT_ID` が渡されている場合、復旧 fetch で得た head と不一致になったら「旧 head object が残っているか」で扱いを分ける** (Step 1 冒頭の `COMMIT_ID` 規定と同じ判定)。不一致は force-push だけでなく **通常の追加 push でも起きる**ため、一律に現 head へ差し替えてはならない。
-         - `git cat-file -e <COMMIT_ID>^{commit}` が成功する (= 旧 head object がローカルにある) → **`HEAD_SHA` は `COMMIT_ID` のまま**にする。caller が指定した commit を対象に据え続けることで、レビュー範囲が追加 push 分まで広がるのを防ぎ、コメント anchor も workflow run と同じ commit に保てる (別 run との重複コメントも避けられる)。
-         - 旧 head object が取れない (= force-push で消えている) → `HEAD_SHA` を fetch した現 head に更新し、**Step 6 出力の `commit_id` もこの値にする**。diff 範囲とコメント anchor を一致させるため。
+         - **それ以外の失敗で `--is-shallow-repository` が `false`** → deepen する余地はないが、**error 停止の前に `git merge-base <BASE_SHA> <HEAD_SHA>` を 1 回試す**。head 側の deepen が成功して complete 化した直後に base 側 fetch だけが一時的に失敗した回は、head の全祖先が既に materialize されているため merge-base が通ることがある。通れば復旧完了、通らなければ下記 2 の error 停止へ。
+       - **`COMMIT_ID` が渡されている場合の整合は、本節で別の規則を作らず Step 1 冒頭の `COMMIT_ID` 規定に従う** (fetch した head と不一致なら現 head を `HEAD_SHA` として採用し、Step 6 出力の `commit_id` もその値にする)。復旧 fetch は `refs/pull/<PR_NUMBER>/head` を引き直すので、この間に force-push が起きれば同じ不一致として現れる。**`git cat-file -e <COMMIT_ID>` の成否で force-push を判定してはならない** — read-only fetch は既存 object を削除しないため、force-push 後も旧 head の object はローカルに残り、この判定は常に「残っている」に倒れて force-push 対策が無効化される (`HEAD_SHA` が破棄済み commit に固定され、第 2 段の進捗判定が増えず error 停止する / PR に存在しない commit を基準に `commit_id` を作ってインラインコメントが宛先不明になる)。
        - **base 側で `--unshallow` を付けるかを `--is-shallow-repository` で分岐する**理由: complete な repository に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して base の fetch 自体が飛び、まだ shallow な状態では付けられる。1 回目が exit 0 でも **fetch 元自体が shallow (CI のミラー / キャッシュ経由) なら complete にならない**ので、どちらかに決め打ちすると片方のケースを壊す。
        - **head 側の `--unshallow` が「既に complete」で失敗した場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等)。git はこの fatal を complete のときにだけ出すので、第 2 段に進まず下記 2 の error 停止へ進む。
 
