@@ -74,7 +74,7 @@ type ReviewComment =
     };
 ```
 
-`commit_id` は caller 側で PR の head SHA (`headRefOid`) を取得して渡すと、force-push / rebase で行ズレが起きた際の誤コメントを防げる (`run-pr-review` Step 2 が CHANNEL に応じて `gh pr view --json headRefOid` または `mcp__github__pull_request_read` method=`get` で取得済みの値を流用する想定)。加えて **CI が「現在の head SHA に対するレビューか」を review の `commit_id` で判定する** 運用では、`commit_id` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため照合が不確実になる。機械判定を前提にするなら caller は常に `COMMIT_ID` を渡すこと (詳細は「機械可読サマリ行」節の「CI 側の使い方」)。
+`commit_id` は caller 側で PR の head SHA (`headRefOid`) を取得して渡すと、force-push / rebase で行ズレが起きた際の誤コメントを防げる (`run-pr-review` 経路では **`compose-review` が返した `commit_id`** を転送する想定。Step 2 で CHANNEL に応じて取得する `headRefOid` は、それが欠落していた場合の fallback)。加えて **CI が「現在の head SHA に対するレビューか」を review の `commit_id` で判定する** 運用では、`commit_id` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため照合が不確実になる。機械判定を前提にするなら caller は常に `COMMIT_ID` を渡すこと (詳細は「機械可読サマリ行」節の「CI 側の使い方」)。
 
 `label_counts` は **`MAX_INLINE_COMMENTS` による省略分やラベル体系の独自定義を正しくサマリ行へ反映したい caller 向けの任意入力**。prompt 経由では 1 行の JSON (`LABEL_COUNTS: {"must":1,"should":2,"nit":0,"question":0,"pre_existing":0,"other":0}`) として渡す (key と値の区切りは `:` / `=` のどちらでもよく、同一 prompt 内の他キーの書き方に揃えればよい。ただし **値に改行を含めない** — 複数行に折り返すと後続行が別 key として解釈され parse が壊れる)。渡されなければ本 skill が `comments[]` から集計する (集計ルールと精度上の注意は「機械可読サマリ行」節)。
 
