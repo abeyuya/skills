@@ -80,11 +80,11 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
        #                                              (Step 1 冒頭の COMMIT_ID 突き合わせもここで行う)
 
        # --- base 側 ---
-       # 付ける引数を先に決める (この判定は fetch ではないので終了コードを見ない)
-       #   git rev-parse --is-shallow-repository が false (complete)  → UNSHALLOW=""
-       #                                            true  (shallow)   → UNSHALLOW="--unshallow"
-       git fetch $UNSHALLOW <remote> <BASE_REF>
-       # この fetch の終了コードを、他のコマンドを挟まずに判定する
+       git rev-parse --is-shallow-repository   # どちらの結果でも exit 0。これは判定対象ではない
+       # 結果に応じて、次のどちらか 1 行を実行する
+       #   false (complete)  → git fetch <remote> <BASE_REF>
+       #   true  (shallow)   → git fetch --unshallow <remote> <BASE_REF>
+       # 実行した base fetch の終了コードを、他のコマンドを挟まずに判定する
        #   0 以外 → 下記 2 の error 停止へ
        #   0      → BASE_SHA=$(git rev-parse FETCH_HEAD)
 
