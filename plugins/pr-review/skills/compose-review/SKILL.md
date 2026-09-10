@@ -84,8 +84,11 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
        - **2 回目に `--unshallow` を付けるかは `git rev-parse --is-shallow-repository` で分岐する**。complete になっている状態で付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して base 側の fetch 自体が飛ぶ一方、まだ shallow な状態では付けられる。1 回目の `--unshallow` が exit 0 でも **complete になるとは限らない** ため (fetch 元自体が shallow な CI のミラー / キャッシュ経由では履歴が truncate されたままで `true` を返す)、どちらかに決め打ちすると片方のケースを壊す。
        - 段階的に深めたい場合は 2 回とも `--deepen=100` を使ってよい (complete な repository でも exit 0 で、複数回実行できる)。
-       - **再試行の打ち切りは回数ではなく「進捗」で判定する**: `--deepen` を繰り返すなら、各回の前後で `git rev-list --count <ref>` 等により **materialize 済み commit 数が増えたか**を確認し、**増えなかった回で打ち切って**下記 2 の error 停止へ進む。`--deepen` は **fetch 元の境界に到達した後も exit 0 を返す** (fetch 元自体が shallow な CI のミラー / キャッシュ経由では、その境界より深くは取れない) ため、**終了コードは打ち切り条件にならない**。逆に merge-base が 100 commit より前にある PR では deepen の反復で実際に復旧できるので、回数で打ち切ると復旧可能な回まで諦めることになる。
-       - 進捗が止まった時点で **`{"error":...}` の書き出しに必ず到達させる**。ここで無限に再試行すると、caller (`run-pr-review`) が `HANDOFF_PATH` の `Read` を待って空転する。
+       - **再試行 (`--deepen` / `--unshallow` のいずれも) は「進捗」と「回数」の 2 つで打ち切る**。どちらか一方だけでは止まらない / 早すぎる。
+         - **進捗の判定は head 側と base 側を別々に記録する**: 各回の前後で `git rev-list --count <HEAD_SHA>` と `git rev-list --count <BASE_SHA>` を取り、**どちらか一方でも増えていれば継続、両方とも増えなければ打ち切る**。1 巡で 2 回 fetch し、更新されるのは毎回上書きの `FETCH_HEAD` だけ (refspec 指定の fetch は remote-tracking ref を作らず、cross-repo の explicit URL では何も残らない) なので、単一 ref の前後比較では片側の進捗を観測できず、**base だけ既に materialize 済みで head が fork 点まで遠い clone を「進捗なし」と誤判定して復旧可能な回で止めてしまう**。
+         - **終了コードは打ち切り条件にならない**: `--deepen` は **fetch 元の境界に到達した後も exit 0 を返す** (fetch 元自体が shallow な CI のミラー / キャッシュ経由では、その境界より深くは取れない)。
+         - **回数のバックストップを併せて置く**: **最大 5 巡**まで、deepen 幅は `100` → `200` → `400` … と倍にしていく。進捗だけを条件にすると、complete な fetch 元 + 数万 commit の repository を `fetch-depth: 1` で checkout した CI や、head / base が無関係な root を持つケースで **毎回進捗が出続けて全履歴を materialize するまで反復する** (無関係 root では最後まで merge-base が得られず全反復が無駄になる)。
+       - 打ち切った時点で **`{"error":...}` の書き出しに必ず到達させる**。ここで反復が止まらないと、caller (`run-pr-review`) が `HANDOFF_PATH` の `Read` を待って空転する。
        - **1 回目の `--unshallow` が「既に complete」で失敗した場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等)。git はこの fatal を complete のときにだけ出すので、それ以上の確認は要らず、下記 2 の error 停止へ進む。
        - **各 fetch の終了コードを確認してから `git rev-parse FETCH_HEAD` を実行する**。`FETCH_HEAD` は fetch が失敗しても前回の値が残るため、確認せずに読むと **head として base の SHA を掴み、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す**。fetch が失敗したら退避せず下記 2 へ進む。
        - **refspec を省略しない**: cross-repo の explicit URL には設定済み refspec が無く、省略すると remote HEAD しか取得されない。`refs/pull/<PR_NUMBER>/head` と非 default の base ブランチはこの経路では deepen されず、merge-base は復旧しない (本 step の他の fetch が必ず refspec を明示しているのと同じ理由)。
