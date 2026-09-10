@@ -70,9 +70,17 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   - **`BASE_SHA` で代用してはならない**。base ブランチ先端の tree は読めてしまうので、代用すると「変更前が読めない」ことに気づけず、この規定が排除しようとしている base 進行由来の誤検知 (他者が base 側で行った基準の追加・削除を本 PR の変更として `escalate: true` に倒す / 逆に取りこぼす) がそのまま走る。**`MERGE_BASE_SHA` が確定できない回は下記のとおり復旧か停止で決着させ、別の SHA で代用したまま続行する分岐は設けない**。
     - **`MERGE_BASE_SHA` は確定できたが個別の path が読めない** (該当ディレクトリに当時 `REVIEW.md` が無かった等) は別の話で、3-2 の「不在と取得失敗を区別する」に従い **その path を skip して続行する** (error 停止しない)。5-4 の突き合わせも、変更前側で読めた候補だけで行い、読めなかった旨があれば総括 `body` に 1 文開示する。
   - `git merge-base` が失敗する場合、**同じ理由で Step 4 の三点記法 `git diff <BASE_SHA>...<HEAD_SHA>` も `fatal: no merge base` で失敗する** (共通祖先が無いと三点記法は成立しない)。これは shallow clone (`actions/checkout` の既定 `fetch-depth: 1`) で起きる。したがって **merge-base の失敗は 3-2 の「変更前が読めない」case ではなく、差分そのものが取れない状態**として次の順で解決する:
-    1. **read-only fetch で共通祖先を materialize し直す**。`git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head` を実行し、成功したら `git rev-parse --is-shallow-repository` を見て base 側を fetch する (`false` = complete なら `git fetch <remote> <BASE_REF>`、`true` = まだ shallow なら `git fetch --unshallow <remote> <BASE_REF>`)。その後 `git merge-base <BASE_SHA> <HEAD_SHA>` を再試行し、成功したら `MERGE_BASE_SHA` を退避して復旧完了とする。read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。
-       - **各 fetch の終了コードを確認してから `git rev-parse FETCH_HEAD` を実行する**。`FETCH_HEAD` は fetch が失敗しても前回の値が残るため、確認せずに読むと **head として base の SHA を掴み、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す**。fetch が失敗したら退避せず下記 2 へ進む。
-       - **`--unshallow` を付けるかは `--is-shallow-repository` で決める**: complete な repository に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して fetch 自体が飛び、shallow な状態では付けられる。1 回目が exit 0 でも **fetch 元自体が shallow (CI のミラー / キャッシュ経由) なら complete にならない**ので、どちらかに決め打ちすると片方のケースを壊す。head 側の `--unshallow` が「既に complete」で失敗した場合は shallow が原因ではない (履歴が無関係な 2 つの root を持つ等) ので下記 2 へ進む。
+    1. **read-only fetch で共通祖先を materialize し直す**。目的は **履歴を深めることだけ**で、`HEAD_SHA` / `BASE_SHA` は本 step で既に確定済みなので **再代入しない** (`FETCH_HEAD` も読まない)。
+       ```
+       git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head   # head 側。既に complete なら fatal になるので下記 2 へ
+       git rev-parse --is-shallow-repository                       # ← base 側に --unshallow を付けるかを決める
+       #   false (complete になった) → git fetch <remote> <BASE_REF>              (付けない)
+       #   true  (まだ shallow)      → git fetch --unshallow <remote> <BASE_REF>  (付ける)
+       git merge-base <BASE_SHA> <HEAD_SHA>   # 成功したら MERGE_BASE_SHA を退避して復旧完了
+       ```
+       read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。**`HEAD_SHA` を再代入しない**ことで、caller が `COMMIT_ID` で pin した commit が復旧の副作用で現 head に置き換わるのを防ぎ、`MERGE_BASE_SHA` も確定済みの 2 つの SHA から計算できる。
+       - **いずれかの fetch が失敗したら下記 2 へ進む** (退避する変数は無いので、失敗時にやることは遷移だけ)。head 側の `--unshallow` が **「既に complete」で失敗した場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等) ので、同じく下記 2 へ進む。
+       - **base 側で `--unshallow` を付けるかを `--is-shallow-repository` で分岐する**理由: complete な repository に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して base の fetch 自体が飛び、まだ shallow な状態では付けられる。head 側の `--unshallow` が exit 0 でも **fetch 元自体が shallow (CI のミラー / キャッシュ経由) なら complete にならない**ので、どちらかに決め打ちすると片方のケースを壊す。
        - **`<remote>` は本 step の他の fetch と同じ解決に揃える** (通常は `origin`、cross-repo は explicit URL `https://github.com/<OWNER>/<REPO>.git`)。`origin` 決め打ちにすると cross-repo で別リポジトリを deepen してしまう。**refspec は必ず明示する** — explicit URL には設定済み refspec が無いのはもちろん、**`origin` 経路でも省略してはならない**。`actions/checkout` の shallow clone は `remote.origin.fetch` を単一 ref に絞るため、refspec を省いた `git fetch --unshallow origin` は **exit 0 かつ `--is-shallow-repository` が `false` になるのに `refs/pull/<PR_NUMBER>/head` と非 default base は取得されない**。
        - **復旧は 1 回だけ試す**。段階的に深める (`--deepen=<幅>` の反復) 経路は本 skill では持たない — 打ち切り条件 (`--deepen` は fetch 元の境界に到達した後も exit 0 を返すため終了コードでは判定できない) と `COMMIT_ID` 整合の再判定が絡んで手順が複雑になり、**復旧できない回に error 書き出しへ到達しないまま caller を待たせる**リスクが上限の利得を上回る。恒久対策は caller 側の `fetch-depth: 0` (README の GitHub Actions 節に記載)。
     2. それでも共通祖先が得られない場合は、差分範囲を確定できないので「失敗時」に従い `{"error":"..."}` を書き出して停止する。**BASE_SHA での代用や二点記法への切り替えで無言に続行しない** (base 進行分を本 PR の差分として全部レビューしてしまう)。
