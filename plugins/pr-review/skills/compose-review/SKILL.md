@@ -73,11 +73,14 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
     1. **read-only fetch で共通祖先を materialize し直す**。この fetch は **本 step 冒頭の head / base 確定手順をもう一度通す**ものとして扱い、`HEAD_SHA` / `BASE_SHA` の確定は **Step 1 冒頭の規定 (`COMMIT_ID` との突き合わせを含む) に従う** — 本節で独自の規則を作らない。**ただし本節では `git cat-file -e` による object 存在確認で fetch を省略しない**: 復旧時点では head object は既に materialize 済みなので、その短絡に従うと `--unshallow` fetch を実行しないまま pin 値を保持し、**merge-base が再失敗して shallow の回が丸ごと error 停止 (無レビュー終了) する**。本節の目的は object の有無ではなく履歴の深さなので、object があっても必ず fetch し、`FETCH_HEAD` と突き合わせる。**base 側の短絡 (「base ブランチが既にローカルにあればその ref を直接使ってもよい」) も本節では適用しない** — ローカル ref があっても祖先 object が未取得なら merge-base は再失敗するので、head 側と同じく必ず fetch する。
        ```
        # --- head 側 ---
-       git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head
-       # この fetch の終了コードを、他のコマンドを挟まずに判定する
-       #   0 以外 (「既に complete」の fatal を含む) → 下記 2 の error 停止へ
-       #   0                                       → HEAD_SHA=$(git rev-parse FETCH_HEAD)
-       #                                              (Step 1 冒頭の COMMIT_ID 突き合わせもここで行う)
+       git rev-parse --is-shallow-repository   # 先に判定する (どちらの結果でも exit 0)
+       # 結果に応じて、次のどちらか 1 行を実行する
+       #   true  (shallow)   → git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head
+       #   false (complete)  → git fetch <remote> refs/pull/<PR_NUMBER>/head   (--unshallow は付けない)
+       # 実行した head fetch の終了コードを、他のコマンドを挟まずに判定する
+       #   0 以外 → 下記 2 の error 停止へ
+       #   0      → HEAD_SHA=$(git rev-parse FETCH_HEAD)
+       #             (Step 1 冒頭の COMMIT_ID 突き合わせもここで行う)
 
        # --- base 側 ---
        git rev-parse --is-shallow-repository   # どちらの結果でも exit 0。これは判定対象ではない
@@ -92,7 +95,8 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
        ```
        read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。
        - **`HEAD_SHA` / `BASE_SHA` は各 fetch の直後に Step 1 冒頭の規定どおり確定する**。対応は **head ref の fetch → `HEAD_SHA`、`<BASE_REF>` の fetch → `BASE_SHA`** で、**fetch の直後に (他のコマンドを挟まず) 終了コードを判定し、0 のときだけ `git rev-parse FETCH_HEAD` を実行する** — `git rev-parse` 自体がコマンド置換で `$?` を上書きするので、退避した後に `$?` を見ても fetch の結果は分からない (rev-parse は前回の `FETCH_HEAD` を解決して 0 を返すため、失敗した fetch をすり抜けて `HEAD_SHA` に base の SHA が入る) (`COMMIT_ID` が渡されていれば同規定の突き合わせも行う)。`FETCH_HEAD` は fetch のたびに上書きされ、失敗しても前回の値が残るため、**base 側 fetch の後に `HEAD_SHA` を読み直すと head に base の SHA が入り、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す** (実変更のある PR に「指摘なし」のレビューを投稿してしまう)。復旧 fetch までの間に force-push が入った回は、**新 head の履歴だけが深まり旧 `HEAD_SHA` の祖先経路は切れたまま**なので、pin した値を保持すると `git merge-base` が再び失敗して error 停止する (新 head を採れば復旧できる)。`HEAD_SHA` を差し替えた場合は **`MERGE_BASE_SHA` を差し替え後の値で計算し、Step 6 出力の `commit_id` も揃える**。
-       - **いずれかの fetch が失敗したら、その fetch に対応する変数は更新せず下記 2 へ進む** (失敗した fetch の `FETCH_HEAD` は前回の値なので読まない)。head 側の `--unshallow` が **「既に complete」で失敗した場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等) ので、同じく下記 2 へ進む。
+       - **いずれかの fetch が失敗したら、その fetch に対応する変数は更新せず下記 2 へ進む** (失敗した fetch の `FETCH_HEAD` は前回の値なので読まない)。
+       - **head 側も `--is-shallow-repository` で分岐する (base 側と同じ理由)**。complete な repository に `--unshallow` を付けると `fatal: --unshallow on a complete repository does not make sense` で必ず失敗するので、**それを error 停止条件にすると complete な回は base 側の re-fetch に到達できない**。complete でも merge-base が失敗するケースはある — 例えば cross-repo (fork) PR で Step 1 が「base ブランチが既にローカルにあればその ref を直接使ってもよい」の短絡を採り、cwd 側リポジトリの同名ブランチを `BASE_SHA` にしてしまった回は、**explicit URL から base ref を 1 回 fetch し直すだけで復旧できる**。そのため complete な回も `--unshallow` 無しの plain fetch で両側を引き直し、merge-base を再試行する。
        - **base 側で `--unshallow` を付けるかを `--is-shallow-repository` で分岐する**理由: complete な repository に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して base の fetch 自体が飛び、まだ shallow な状態では付けられる。head 側の `--unshallow` が exit 0 でも **fetch 元自体が shallow (CI のミラー / キャッシュ経由) なら complete にならない**ので、どちらかに決め打ちすると片方のケースを壊す。
        - **`<remote>` は本 step の他の fetch と同じ解決に揃える** (通常は `origin`、cross-repo は explicit URL `https://github.com/<OWNER>/<REPO>.git`)。`origin` 決め打ちにすると cross-repo で別リポジトリを deepen してしまう。**refspec は必ず明示する** — explicit URL には設定済み refspec が無いのはもちろん、**`origin` 経路でも省略してはならない**。`actions/checkout` の shallow clone は `remote.origin.fetch` を単一 ref に絞るため、refspec を省いた `git fetch --unshallow origin` は **exit 0 かつ `--is-shallow-repository` が `false` になるのに `refs/pull/<PR_NUMBER>/head` と非 default base は取得されない**。
        - **復旧は 1 回だけ試す**。段階的に深める (`--deepen=<幅>` の反復) 経路は本 skill では持たない — 打ち切り条件 (`--deepen` は fetch 元の境界に到達した後も exit 0 を返すため終了コードでは判定できない) と `COMMIT_ID` 整合の再判定が絡んで手順が複雑になり、**復旧できない回に error 書き出しへ到達しないまま caller を待たせる**リスクが上限の利得を上回る。恒久対策は caller 側の `fetch-depth: 0` (README の GitHub Actions 節に記載)。
@@ -136,6 +140,13 @@ Step 4 の差分本体より先に、**同じ差分範囲のファイル一覧**
 
 追加・変更は現在パス、削除は旧パス、rename は旧・新の両パスを保持する。**一覧が空なら Step 4 の差分なし処理へ進む**。
 
+**パスの取り扱い (必須。本 step で新設された攻撃面)**: ここで得るパスは **レビュー対象の PR 作成者が自由に決められる文字列** であり、`git` のパス名は `/` と NUL 以外の任意のバイト (空白 / `;` / `$` / `` ` `` / 改行 / `:` を含む) を持てる。従来の Step 3 は root 固定の 4 パスしか使わなかったのでこの問題が無かったが、本 step 以降は取得したパスを `git show` / `git cat-file` / `git grep` に渡すため、次を守る。
+
+- **シェルコマンド文字列にパスを裸で埋めない**。必ず **シングルクォートで囲み、パス中の `'` を `'\''` に置換**してから渡す (例: `git cat-file -e '<SHA>:<quoted path>'`)。埋め込みを怠ると、`x;id>/tmp/pwn/a.ts` のような **全て印字可能 ASCII で quotePath のクォートすら掛からないパス** 1 つを PR に追加するだけで、`;` 以降が別コマンドとして実行される (GitHub Actions では token を持つコンテナ上で fork PR の作者が任意コマンドを実行できることになる)。
+- **改行・制御文字を含むパスは復号した結果をコマンドに渡さない**。3-1 の C エスケープ復号で `\n` を復元すると **コマンド文字列が 2 行になり 2 行目が独立コマンドになる**。改行やその他の制御文字を含むパスは、**そのパスの祖先方針の読み込みを skip し、総括 `body` に 1 文開示する** (方針 1 つを落とす方が安全。差分本体のレビュー対象からは外さない)。
+- **pathspec として渡すときは各要素に `:(literal)` を付ける** (下記 5-4 の `git grep` を含む)。付けないと `:(exclude,glob)**/x.ts` のようなパスが **pathspec magic として解釈される** (詳細と攻撃例は 5-4)。
+- **`git show <SHA>:<path>` の `<path>` は pathspec ではなくパスなので magic の解釈は受けない**が、シェルクォートは同様に必須。
+
 #### 3-2. root の fallback と祖先の REVIEW.md を収集する
 
 1. **root の共通方針**: 以下を優先順で存在確認し、最初に見つかった **1 つだけ** を読む。この選択は root 内に限り、下位候補を連結しない。
@@ -151,13 +162,15 @@ Step 4 の差分本体より先に、**同じ差分範囲のファイル一覧**
    - **基準を持つファイルは本節の 2 つの上限の外**: `エスカレーション基準` 見出しを持つファイルは開く上限・採用上限のどちらにも数えず、**基準セクションだけを常に採用する** (観点本文は上限の対象に含めてよい)。上限が基準の取りこぼしになると、**「基準の無いディレクトリに些末な変更を大量に入れて基準ファイルを上限外へ押し出す」だけで判定を回避できてしまう**ため。特定方法は 5-4 の「基準の集合は本 step で独立に解決する」に従い、`git grep -l` でファイル名だけを絞ってから開く。**ただし 5-4 側に別途「基準ファイル 50 個」の上限がある** (本節の上限とは別枠。超過時は開示 + `escalate: true` の fail-safe)。
 5. **除外**: `node_modules/` / `vendor/` / `third_party/` / `.git/` 配下の `REVIEW.md` は階層探索の対象にしない (取り込んだ依存物に同梱された方針を、リポジトリ所有者の方針として読まないため)。加えて **root の共通方針が除外を宣言している場合はそれに従う** — 見出しタイトルに `方針ファイルの除外` を含むセクションがあれば、その配下に列挙されたパス / glob 配下の `REVIEW.md` を探索対象から外す。`配下の REVIEW.md を読み込まない` 旨の記述があれば階層探索自体を無効化し、root だけで従来どおり動作する (**opt-out**)。この宣言を読むのは **root の共通方針だけ** — 子ファイルが自身や他ディレクトリの探索可否を書き換えられると、下記 untrusted 規定の抜け道になる。
    - **除外・opt-out はレビュー観点にだけ効く。5-4 のエスカレーション判定には効かない** (重要)。PR モードの root 共通方針は `HEAD_SHA` = **レビュー対象の作成者が書き換えられる tree** から読むため、同じ PR で除外宣言や opt-out を追記すれば、配下の `エスカレーション基準` を自分の PR に対してだけ無効化できてしまう。したがって 5-4 の基準解決 (head 側 / 変更前側の両方) は **除外・opt-out を適用せず** 祖先の `REVIEW.md` を通常どおり辿る (`node_modules/` 等の固定除外だけは 5-4 でも適用する。依存物の同梱ファイルは所有者の方針ではないため)。
-   - **除外宣言・opt-out の追加・変更・削除そのものは 5-4 の変更検知の対象**とし、`escalate: true` にする (適用範囲の変更に当たる)。これで「PR で opt-out を足して基準を回避する」経路は、回避ではなくエスカレーションになる。
+   - **除外宣言・opt-out の追加・変更・削除そのものは 5-4 の変更検知の対象**とし、**base / head のいずれかに `エスカレーション基準` が存在する場合は `escalate: true`** にする (適用範囲の変更に当たる)。これで「PR で opt-out を足して基準を回避する」経路は、回避ではなくエスカレーションになる。基準がどこにも無いリポジトリで `escalate: true` にしないのは、この機能を使っていない caller の出力を従来と同一に保つため (5-4 の後方互換の前提)。
+   - **除外・opt-out が効いている回は、基準の有無に関わらず総括 `body` に 1 文開示する** (必須。例: `root の方針が配下の REVIEW.md の読み込みを無効化しているため、ディレクトリ別方針は適用していない。`)。開示を省くと、**PR で root に opt-out を 1 行足すだけで階層方針を全廃でき、その事実が人にも CI にも残らない** (他の脱落経路 — 上限超過 / 取得失敗 / `scope` 落とし — はいずれも 1 文開示を要求しているのに、ここだけ抜けていると無言の退化になる)。
 
 **取得元を混ぜない**: 候補の存在確認と本文取得の両方に 3-1 の取得元を使う。PR では cwd の remote が一致していても作業ツリーを先に読まず、必ず確定した `HEAD_SHA` の tree を参照する (cross-repo も同じ)。commit / staged でも未コミット・未ステージの方針を混ぜない。
 
 **不在と取得失敗を区別する (重要)**: `git show <SHA>:<path>` は **候補が存在しない場合も、object が materialize されていない場合も、同じ `fatal:` + 非 0 終了** を返し、出力からは区別できない。両者を取り違えると (a) 不在を失敗とみなして error 停止し、本来レビューを返せた回に `body` / `comments[]` / `label_counts` が 1 件も出ない、(b) 失敗を不在とみなして方針を黙って落とす、のどちらかが起きる。したがって:
 
-- **不在の確定には `git cat-file -e <SHA>:<path>` を使う**。非 0 で終了し、かつ `<SHA>` 自体の tree が読める (`git cat-file -e <SHA>^{tree}` が 0) なら **候補不在**として次の候補へ進む (エラー停止しない)。
+- **不在の確定には `git cat-file -e <SHA>:<path>` を使い、非 0 だったら「そのパスの親ディレクトリの tree が読めるか」まで確認する**。親 tree が読めて (root 直下なら `git cat-file -e <SHA>^{tree}`、それ以外は `git cat-file -e '<SHA>:<親ディレクトリ>'` が 0)、かつそこに当該パスが列挙されない (`git ls-tree <SHA> -- '<path>'` が空) なら **候補不在**として次の候補へ進む (エラー停止しない)。
+  - **root tree の存在確認だけで済ませてはならない**: partial clone (`actions/checkout` の `filter: blob:none` / `tree:0` や promisor fetch の失敗) では **中間 tree / blob だけが欠落**し、`git cat-file -e <SHA>:<path>` は 128、`git cat-file -e <SHA>^{tree}` は 0 を返す (エラー文も真の不在と区別できない)。root tree だけを見ると **この欠落を「候補不在」に誤分類して方針を無言で落とす** (下記 (b) の失敗そのもの)。5-4 の変更前側の読み出しで起きると **基準の消失を検知できないまま `escalate: false`** に化ける。
 - `<SHA>` 自体が読めない (object 不足) / 権限エラーなど、**tree にアクセスできない失敗だけを取得失敗**として扱う。この場合も **即 error 停止はしない**: その取得元から読めなかった旨を総括 `body` に 1 文開示し、読めた範囲の方針でレビューを続行する。`HEAD_SHA` の tree 自体が読めず変更後の方針を 1 つも解決できない場合に限り「失敗時」に従い `{"error":"..."}` を返す。
 - ローカル `worktree` モードの `Read` も同様に、ファイル不在と読み取り権限エラーを区別する。
 - **shallow clone は本節の対象外**: `MERGE_BASE_SHA` そのものが確定できない (= 三点記法の差分も取れない) 状態は Step 1 の merge-base 節で `--unshallow` / error として決着させている。本節が扱うのは **SHA は確定しているが個別の tree / path が読めない**場合だけ。
@@ -343,7 +356,9 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - **判定基準は本 skill が持たない**。各変更パスに適用される指示ファイルの **見出し行 (`#`〜`######`) のタイトルに `エスカレーション基準` を含むセクション** だけを基準とする。見出し外の「重要な変更は相談して」等の一般的な要請は基準にしない。
 - **基準の集合は Step 3 の採用結果を流用せず、本 step で独立に解決する (重要)**。Step 3 の方針集合には **3-2 の除外宣言・opt-out と読み込み上限が適用済み**で、いずれも **レビュー対象の PR が head 側で書き換えられる**ため、それを基準の集合として使うと「同じ PR で opt-out を足す / 上限を溢れさせる」だけで基準を自分の PR にだけ無効化できてしまう。したがって基準の解決は次のとおり行う (レビュー観点としての Step 3 の採用結果は変えない)。
   - **除外宣言・opt-out を適用しない** (`node_modules/` / `vendor/` / `third_party/` / `.git/` の固定除外だけは適用する。依存物の同梱ファイルは所有者の方針ではないため)。
-  - **読み込み上限 (3-2 の 4) を適用しない**。ただし全候補を本文ごと読むとコンテキストを消費するので、**基準見出しを持つ候補だけを先に特定する**: `git grep -l -e 'エスカレーション基準' <SHA> -- <候補パス...>` (対象側 / 変更前側それぞれの `<SHA>`。ローカル `worktree` は `git grep -l` を作業ツリーに対して実行) はファイル名だけを返すので、本文をコンテキストに載せずに絞り込める。ここで挙がったファイルは **開く上限の外で必ず開き**、**そのファイルの基準セクションだけを読む** (観点本文まで読み込まない。基準以外は 3-2 の上限に従う)。
+  - **読み込み上限 (3-2 の 4) を適用しない**。ただし全候補を本文ごと読むとコンテキストを消費するので、**基準見出しを持つ候補だけを先に特定する**: `git grep -l -e 'エスカレーション基準' <SHA> -- ':(literal)<候補パス>' ...` (**各候補パスに `:(literal)` を前置し、シングルクォートで囲む**) (対象側 / 変更前側それぞれの `<SHA>`)。**取得元が index / 作業ツリーのモードは `<SHA>` を持たないので rev を渡さない**: index を見るときは **`git grep -l --cached -e ... -- ...`** (`:` / `:0` は rev として解決できず `fatal: unable to resolve revision` になる)、作業ツリーを見るときは **rev 無しの `git grep -l -e ... -- ...`**。対応は 3-1 の表と同じで、ローカル `staged` の対象側と `worktree` の変更前側が index、`worktree` の対象側が作業ツリー はファイル名だけを返すので、本文をコンテキストに載せずに絞り込める。ここで挙がったファイルは **開く上限の外で必ず開き**、**そのファイルの基準セクションだけを読む** (観点本文まで読み込まない。基準以外は 3-2 の上限に従う)。
+    - **`:(literal)` の前置は必須 (回避経路を塞ぐため)**: 候補パスは 3-1 の変更パスの祖先から機械的に組み立てられ、その元になるパスは PR 作成者が決められる。`:(literal)` を付けないと、**`:(exclude,glob)**/dummy.ts` というパスのダミーファイルを 1 つ PR に入れるだけで、祖先候補に `:(exclude,glob)**/REVIEW.md` が混ざり、git がこれを exclude magic として解釈して全 `REVIEW.md` を grep 対象から除外する** (`:!apps/REVIEW.md` 形式でも同じ)。この場合 `git grep` は一致なしの `1` を返すため、下記のとおり「基準なし」と扱われて **オーナーが書いた基準を一度も読まずに `escalate: false`** になる。`REVIEW.md` 自体は触っていないので自己回避防止も発火せず、fail-safe も通らない。**正当な pathspec magic は「不正な pathspec」ではないので、終了コードでは検知できない** — 前置で防ぐしかない。
+      - `git --literal-pathspecs grep` / `GIT_LITERAL_PATHSPECS=1` でも同じ効果が得られるが、前者は `git grep` で始まらないため接頭辞パターンの `--allowedTools` で拒否される (Step 1 の注意と同じ理由)。`:(literal)` 前置を既定とする。
     - **`git grep` の終了コードを区別する**: `1` は **一致なし** (= 基準を持つファイルが無い) なので、そのまま「基準なし」として扱ってよい。`1` より大きい終了コード (許可拒否、pathspec 不正、object 不足等) は **実行失敗**なので「一致なし」に丸めない — 丸めると未判定のまま `escalate: false` を返すことになる。失敗時は下記フォールバックへ進む。
     - **絞り込み後も件数が多い場合の上限**: 基準見出しを持つファイルが **50 個** を超えた場合は、変更ファイル数が多いディレクトリ → 同数なら深いディレクトリの順に 50 個まで読み、**残りを読まなかった旨を総括 `body` に 1 文開示し、`reasons[]` に `エスカレーション基準の未判定: 基準を持つ方針ファイルが上限 (50) を超えたため <path> ほか N 件を判定していない` を 1 行積んで `escalate: true`** とする (基準を持つと分かっているファイルを見ずに `escalate: false` を返さない。無言の未判定を作らないための fail-safe)。**`reasons[]` を空のままにしない** — Step 6 の契約は `escalate: true` なら `reasons` 1 件以上で、`post-pr-review` は `escalate=1 reasons=0` を異常状態として扱う。
       - この上限は 3-2 の 4 (レビュー観点の読み込み上限) とは **別枠**で、基準の解決にだけ適用される。3-2 が「基準を持つファイルは上限の外」と述べているのは 3-2 自身の上限のことで、本上限を打ち消さない。
