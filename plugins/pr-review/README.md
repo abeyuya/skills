@@ -37,7 +37,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
-外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は `code-review` / ホスト標準スキルには渡さない (scope 引数専用で free-text 非対応) が、`scan-diff-findings` は `EXTRA_FOCUS` で出典・適用ディレクトリ・親子の優先順位を伴う観点を受け取れる。いずれの経路でも最終的なラベル付け・正規化は `compose-review` 側の責務。
+外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は `code-review` / ホスト標準スキルには渡さない (scope 引数専用で free-text 非対応) が、`scan-diff-findings` は `EXTRA_FOCUS` で観点を free text で受け取れる。いずれの経路でも最終的なラベル付け・正規化は `compose-review` 側の責務。
 
 ### `code-review` が呼べない問題 (`disable-model-invocation`)
 
@@ -67,43 +67,30 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 3. `.claude/CLAUDE.md` — Claude Code 全般向けの fallback (`.claude/` 配下に置く流儀)
 4. `CLAUDE.md` — Claude Code 全般向けの fallback (リポジトリ root に置く流儀)
 
-この root の共通方針に加え、**変更ファイルの祖先ディレクトリにある `REVIEW.md` を root → 親 → 子の順に読み込む**。親のルールを継承し、矛盾する通常観点だけ子を優先する。各ルールは配置先の配下にだけ適用し、無関係な兄弟ディレクトリには適用しない。配下の `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` は階層探索しない。
+個別ファイルパスを skill 引数で渡す方式は持たない。Claude Code 全般指示が `.claude/CLAUDE.md` と `CLAUDE.md` の両方に存在する場合は `.claude/CLAUDE.md` のみが採用される (連結はしない)。
+
+### ディレクトリ別方針 (monorepo 向け)
+
+root の共通方針に加え、**変更ファイルの祖先ディレクトリにある `REVIEW.md`** が root → 親 → 子の順に読み込まれる。パッケージごとに方針を分けたい monorepo では、root を触らずに各ディレクトリへ `REVIEW.md` を置けばよい。
 
 ```text
 REVIEW.md                       # 全体共通
-apps/web/REVIEW.md               # Web 配下
-apps/web/src/auth/REVIEW.md      # 認証まわり
-apps/api/REVIEW.md               # API 配下
+apps/web/REVIEW.md              # apps/web/ 配下
+apps/web/src/auth/REVIEW.md     # 認証まわり
+apps/api/REVIEW.md              # apps/api/ 配下
 ```
 
-- `apps/web/src/auth/login.ts`: root → web → auth の方針を適用。
-- `apps/web/src/home.ts`: root → web の方針を適用。
-- `apps/api/src/users.ts`: root → api の方針を適用。web / auth の方針は適用しない。
+- `apps/web/src/auth/login.ts` の指摘 → root → web → auth の方針を適用
+- `apps/api/src/users.ts` の指摘 → root → api を適用 (web / auth は適用しない)
 
-`REVIEW.md` 自体が差分に含まれていなくても参照する。root の候補がなくても配下の `REVIEW.md` だけで利用できる。レビュー全体の書式・言語・総括の構成は root の共通方針に従い、指定がなければスタイル参考ガイドを使う。
+補足:
 
-PR は確定した head、ローカルの commit は HEAD、staged は index、worktree は作業ツリーから方針を読む。サブディレクトリから実行しても root を起点にする。削除・rename 元の削除側は旧パスと差分の変更前の方針 (PR / commit は merge-base)、rename 先は新パスと変更後の方針を使う。詳細は `compose-review` Step 3 を参照。
-
-個別ファイルパス指定の引数や事前のファイル連結は不要。root の fallback 優先順位と入出力 JSON のスキーマは従来どおり。
-
-#### 読み込み量の上限と除外
-
-階層探索の読み込み量は PR のディレクトリ構造に比例するため、上限を設けている (詳細は `compose-review` Step 3-2)。
-
-- **開く上限**: レビュー観点として内容を読む祖先候補は **30 個**まで (変更ファイル数が多いディレクトリ → 同数なら深い方を優先)。それを超える候補は開かない。
-- **採用上限**: 開いたもののうち **root の共通方針 1 つ + 祖先の `REVIEW.md` 10 個**、合計 **概ね 40,000 文字** まで。不採用の出典は総括 `body` に 1 文開示する。
-- **`エスカレーション基準` を持つファイルは上記 2 つの上限の外**で必ず読まれる (`git grep -l` でファイル名だけを絞り、該当ファイルの基準セクションだけを読む)。上限が基準の取りこぼしになると、些末な変更を大量に混ぜて基準ファイルを上限外へ押し出す回避が成立するため。
-- ただし **基準見出しを持つファイルが 50 個を超えた回**は、変更ファイル数が多いディレクトリを優先して 50 個まで読み、**残りを読まなかった旨を開示して `escalate: true`** にする (基準を持つと分かっているファイルを見ずに「エスカレーション不要」を返さないための fail-safe)。`git grep` の対象は変更パスの祖先候補だけなので通常は数個で収まり、これは 1 PR が極端に広い範囲に跨った回だけの動作。**恒常的に超えるなら、基準を上位ディレクトリへ集約するか PR を分割する**。上限が基準の取りこぼしになると、些末な変更を大量に混ぜて基準ファイルを上限外へ押し出す回避が成立するため。
-- `node_modules/` / `vendor/` / `third_party/` / `.git/` 配下の `REVIEW.md` は読まない。
-- root の共通方針に **`方針ファイルの除外`** 見出しのセクションを置くと、その配下に列挙したパス / glob を探索対象から外せる。`配下の REVIEW.md を読み込まない` 旨を書けば **階層探索自体を無効化** して root だけの従来動作に戻せる (opt-out)。この宣言を読むのは root の共通方針だけで、子ファイルからは変更できない。
-- **除外・opt-out が効くのはレビュー観点だけ**。エスカレーション基準の解決と変更検知には効かず (`node_modules/` 等の固定除外を除く)、**除外宣言・opt-out の追加や変更そのものが `escalate: true` になる**。PR で opt-out を足して基準を回避する経路を塞ぐため。
-
-#### 既存リポジトリへの影響
-
-- **root にだけ指示ファイルを置いているリポジトリでは、階層探索による追加適用は起きない** (祖先に `REVIEW.md` が無ければ対象がゼロ)。エスカレーション理由の文面も、基準が root だけにある回は従来の書式のまま。
-  - ただし **方針ファイルの取得元とエスカレーション変更検知の基準点は、root 単独のリポジトリでも変わる**: (1) PR モードの方針は cwd の作業ツリーを先に読まず必ず PR head の tree から読む (以前は cwd 一致時に作業ツリーを優先し、`run-pr-review` は checkout しないため実質 base 相当の内容を読んでいた)、(2) 変更前側の参照が base ブランチ先端から merge-base に変わる (PR 分岐後の base 進行を本 PR の変更として誤検知しないため)。いずれも従来より正確な方向の変更だが、**同じ PR で結果が変わりうる**点は意図した挙動として明示しておく。
-- **root に候補が無く、サブディレクトリにだけ `REVIEW.md` がある monorepo は挙動が変わる**。従来は「指示なし」だったものが読み込まれ、レビュー観点として反映される (意図した変更)。その `REVIEW.md` に `エスカレーション基準` 見出しがあれば、エスカレーション判定も新たに走る。読ませたくない場合は上記の除外・opt-out を使う。
-- `compose-review` を **root 以外のディレクトリから呼ぶ場合**、内部で `git -C <root> ...` を使うため `--allowedTools` に `Bash(git -C:*)` が必要になる。cwd = root (CI の通常ケース) では従来の `Bash(git diff:*)` 形式の許可のままで動く。
+- 各方針は **出典ディレクトリの配下にだけ** 適用される。親の方針は子に継承され、矛盾する論点だけ子が優先される。
+- レビュー全体の書式・言語・総括の構成は root の共通方針に従う。
+- 階層探索の対象は `REVIEW.md` だけ (配下の `AGENTS.md` / `CLAUDE.md` は読まれない)。`node_modules/` / `vendor/` 配下も読まれない。
+- `エスカレーション基準` 見出しは各階層に置ける。root の基準は差分全体、`apps/web/REVIEW.md` の基準は `apps/web/` 配下に照らされ、どれか 1 件でも該当すれば `escalate: true` になる。
+- 読み込む方針が多すぎるとコンテキストを圧迫するため、祖先の `REVIEW.md` は **10 個程度まで** が目安。超えた分は総括 `body` に 1 文開示される。
+- root に候補が無く配下の `REVIEW.md` だけを置いた場合も動く。**この構成の monorepo は、これまで「方針なし」だったものが読まれるようになる**点に注意。
 
 ### `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` を fallback として使う際の注意
 
@@ -138,7 +125,7 @@ Payload (caller が渡す JSON 相当) の概要:
 - 挿入位置は AI 自動投稿マーカーの直後 (区切り線 `---` の前) に固定。キーは 6 つを固定順で常に全出力し、値は 0 以上の整数。
 - 件数の正典は caller から渡される `label_counts`。`run-pr-review` 経路では `compose-review` が **`MAX_INLINE_COMMENTS` で省略した指摘も含めた** 件数を算出して引き回すため常に正確。`label_counts` が無い場合は `post-pr-review` が `comments[]` の先頭ラベルから集計する (省略分は数えられないため個々の件数は実際より小さくなりうる。安全側に倒れるのは **「`must=0` かつ `should=0`」という複合条件**のみで、`should` 単独では倒れない — 例えば `MAX_INLINE_COMMENTS=1` で `[must]` 1 件 + `[should]` 2 件なら結果は `must=1 should=0` になるため、`should` 単独の条件を組むと実在する should 指摘を「なし」と扱ってしまう)。
 - 標準 5 ラベル以外 / ラベル無しの指摘は `other` に合算する。ラベル体系を独自定義している caller は、`label_counts` で標準ラベルへマッピングして渡す (でなければ CI 側の合格条件に `other=0` も加える)。
-- CI が「PR の現在の head SHA に対するレビューか」を判定する場合は review の `commit_id` を head SHA と比較する。`post-pr-review` は `COMMIT_ID` が渡されたときだけ `commit_id` を送るため (未指定時は GitHub が投稿時点の最新 commit を採用)、`run-pr-review` は `compose-review` が確定した `commit_id` を転送する (Step 2 で取得した `headRefOid` はそれが欠落していた場合の fallback)。
+- CI が「PR の現在の head SHA に対するレビューか」を判定する場合は review の `commit_id` を head SHA と比較する。`post-pr-review` は `COMMIT_ID` が渡されたときだけ `commit_id` を送るため (未指定時は GitHub が投稿時点の最新 commit を採用)、`run-pr-review` は取得済みの `headRefOid` を常時転送する。
 - caller が `EXTERNAL_REVIEW` を渡した場合、サマリ行の直後に **外部レビュー行** も 1 行埋め込まれる。こちらは「レビュー体制が健全だったか (外部レビューを併用できたか / 縮退したか)」を機械判定するための行で、`run-pr-review` 経路では常に付く。
 
   ```
@@ -155,7 +142,7 @@ Payload (caller が渡す JSON 相当) の概要:
 
   `escalate` は `1` / `0`、`reasons` は理由の **件数** (人間向けの理由本文はレビュー本文の `## エスカレーション` セクションに出る)。用途は **CI が該当者をレビュアーに追加するためのルーティング**で、マージをブロックするゲートではない (`event` は常に `COMMENT`)。required status check にするかは利用側の判断。
 
-  **判定基準は当 plugin 側に持たない** — `compose-review` は各変更パスに適用されるプロジェクト指示ファイル (root の優先順で選んだ 1 つ + 祖先ディレクトリの `REVIEW.md`) に **見出しタイトルが `エスカレーション基準` を含むセクション** があるときだけ判定し、そのセクション配下の記述だけを基準として扱う (opt-in の閾値を自由文の解釈に委ねると、`CLAUDE.md` によくある「破壊的変更は相談して」の一文でこの機能を使う気のないリポジトリまで判定が走ってしまうため)。**親子の基準は累積し、それぞれの配下だけを評価する**。1 件でも該当すればレビュー全体をエスカレーションする。子に見出しがなくても親の基準は残る。**opt-out = 適用される全ファイルに見出しを置かない**。ただし PR で root 候補や任意階層の `REVIEW.md` を追加・変更・削除・移動した場合は base / head の基準も比較し、基準の削除・緩和・適用範囲の変更もエスカレーションする。基準がなくこの変更検知にも該当しない利用側では判定を行わず `escalate: false` になり、`run-pr-review` は **`escalate: true` の回だけ `ESCALATION` を転送する**ため **この行自体が出ない** (= 従来と同じ出力)。したがって CI が見るべきは `escalate=1` の存在だけで、行が無い状態は「エスカレーション不要」と「基準が無く判定なし」の両方を含む。**本行は常在しないため、パースは body 冒頭のマーカー行から最初の `---` までの範囲に限る** (総括本文中のフォーマット例を拾わないため)。利用側は (1) プロジェクト指示ファイルへの `## エスカレーション基準` セクションの記述、(2) この行をパースしてレビュアーを追加する workflow を自前で用意する (誰をアサインするかはプロジェクト固有なので plugin 側では行わない)。
+  **判定基準は当 plugin 側に持たない** — `compose-review` はプロジェクト指示ファイル (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` の優先順で最初の 1 つ) に **見出しタイトルが `エスカレーション基準` を含むセクション** があるときだけ判定し、そのセクション配下の記述だけを基準として扱う (opt-in の閾値を自由文の解釈に委ねると、`CLAUDE.md` によくある「破壊的変更は相談して」の一文でこの機能を使う気のないリポジトリまで判定が走ってしまうため)。**opt-out = 見出しを置かない**。見出しが無い利用側では判定を行わず `escalate: false` になり、`run-pr-review` は **`escalate: true` の回だけ `ESCALATION` を転送する**ため **この行自体が出ない** (= 従来と同じ出力)。したがって CI が見るべきは `escalate=1` の存在だけで、行が無い状態は「エスカレーション不要」と「基準が無く判定なし」の両方を含む。**本行は常在しないため、パースは body 冒頭のマーカー行から最初の `---` までの範囲に限る** (総括本文中のフォーマット例を拾わないため)。利用側は (1) プロジェクト指示ファイルへの `## エスカレーション基準` セクションの記述、(2) この行をパースしてレビュアーを追加する workflow を自前で用意する (誰をアサインするかはプロジェクト固有なので plugin 側では行わない)。
 
 ## 重要度ラベル
 
@@ -189,17 +176,13 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 
 ```yaml
 permissions:
-  contents: read         # PR 差分 / 各階層のレビュー方針ファイル参照
+  contents: read         # PR 差分 / リポジトリ root のレビュー方針ファイル参照
   pull-requests: write   # Review 投稿 / 過去スレッドへの reply / resolve (GraphQL)
 ```
 
 > 本 skill 群はトップレベル PR コメント (`POST /repos/.../issues/{n}/comments` 経路) を投稿しないため `issues: write` は不要。caller が `claude-code-action` 等を経由している場合は action 側の要件で `issues: write` が要求されることがあるため、その場合のみ caller が追加する。
 
 ```yaml
-- uses: actions/checkout@v4
-  with:
-    fetch-depth: 0   # 必須。既定の 1 (shallow) では merge-base が無く三点記法の差分が取れない
-
 - uses: anthropics/claude-code-action@v1
   with:
     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -214,14 +197,12 @@ permissions:
       THREAD_RESOLVE_SCOPE: all
 
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
-      caller プロジェクトの共通方針は root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md から優先順で 1 つ読みます。加えて変更パスの祖先ディレクトリにある REVIEW.md を継承し、それぞれの配下にだけ適用します。
+      caller プロジェクトの共通方針はリポジトリ root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。加えて変更ファイルの祖先ディレクトリにある REVIEW.md が読み込まれ、それぞれの配下にだけ適用されます。
     claude_args: |
-      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git cat-file:*),Bash(git merge-base:*),Bash(git fetch:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*),Bash(git grep:*),Bash(mkdir:*),Bash(date:*)"
+      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
 ```
 
 > 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
-
-> **`fetch-depth: 0` は必須。** PR モードの差分は三点記法 (`<BASE_SHA>...<HEAD_SHA>` = merge-base 基準) で取るため共通祖先が必要で、既定の `fetch-depth: 1` (shallow clone) では merge-base が計算できず差分そのものが取れない。`compose-review` は Step 1 で `git fetch --unshallow` による復旧を試みるが、追加のネットワーク往復になるうえ復旧できなければ `{"error":...}` で停止するので、上記のとおり checkout 側で指定する (`claude-code-action` に checkout を任せる構成では、先に `actions/checkout` を置いてこの指定を効かせる)。
 
 ## 利用方法 (ローカル Claude Code)
 

@@ -74,7 +74,7 @@ type ReviewComment =
     };
 ```
 
-`commit_id` は caller 側で PR の head SHA (`headRefOid`) を取得して渡すと、force-push / rebase で行ズレが起きた際の誤コメントを防げる (`run-pr-review` 経路では **`compose-review` が返した `commit_id`** を転送する想定。Step 2 で CHANNEL に応じて取得する `headRefOid` は、それが欠落していた場合の fallback)。加えて **CI が「現在の head SHA に対するレビューか」を review の `commit_id` で判定する** 運用では、`commit_id` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため照合が不確実になる。機械判定を前提にするなら caller は常に `COMMIT_ID` を渡すこと (詳細は「機械可読サマリ行」節の「CI 側の使い方」)。
+`commit_id` は caller 側で PR の head SHA (`headRefOid`) を取得して渡すと、force-push / rebase で行ズレが起きた際の誤コメントを防げる (`run-pr-review` Step 2 が CHANNEL に応じて `gh pr view --json headRefOid` または `mcp__github__pull_request_read` method=`get` で取得済みの値を流用する想定)。加えて **CI が「現在の head SHA に対するレビューか」を review の `commit_id` で判定する** 運用では、`commit_id` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため照合が不確実になる。機械判定を前提にするなら caller は常に `COMMIT_ID` を渡すこと (詳細は「機械可読サマリ行」節の「CI 側の使い方」)。
 
 `label_counts` は **`MAX_INLINE_COMMENTS` による省略分やラベル体系の独自定義を正しくサマリ行へ反映したい caller 向けの任意入力**。prompt 経由では 1 行の JSON (`LABEL_COUNTS: {"must":1,"should":2,"nit":0,"question":0,"pre_existing":0,"other":0}`) として渡す (key と値の区切りは `:` / `=` のどちらでもよく、同一 prompt 内の他キーの書き方に揃えればよい。ただし **値に改行を含めない** — 複数行に折り返すと後続行が別 key として解釈され parse が壊れる)。渡されなければ本 skill が `comments[]` から集計する (集計ルールと精度上の注意は「機械可読サマリ行」節)。
 
@@ -194,7 +194,7 @@ caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON) �
   ```
 
 - **合格条件の例**: 「PR の現在の head SHA に対して AI レビューが投稿済み、かつ `must` / `should` が 0 件」→ サマリ行を含む review が head SHA に対して存在し、その `must=0` かつ `should=0`。
-- **head SHA に対するレビューかの判定** は review の `commit_id` を PR の head SHA と比較する (本 skill は `COMMIT_ID` が渡された場合のみ `commit_id` を送るため、機械判定を前提にするなら caller は常に `COMMIT_ID` を渡す。`run-pr-review` は `compose-review` が確定した `commit_id` を転送するので、その経路なら常に付く)。`COMMIT_ID` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため、force-push と競合したときに照合が不確実になる。本改修で `COMMIT_ID` まわりの挙動自体は変更していない。
+- **head SHA に対するレビューかの判定** は review の `commit_id` を PR の head SHA と比較する (本 skill は `COMMIT_ID` が渡された場合のみ `commit_id` を送るため、機械判定を前提にするなら caller は常に `COMMIT_ID` を渡す。`run-pr-review` は Step 2 で取得した `headRefOid` を常時転送するので、その経路なら常に付く)。`COMMIT_ID` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため、force-push と競合したときに照合が不確実になる。本改修で `COMMIT_ID` まわりの挙動自体は変更していない。
 - 同一 head SHA に対してサマリ行を含む review が複数ある場合 (再レビュー等) は **最新の review** を採用する。
 - 1 つの review body 内に同形の文字列が複数現れた場合は **最初のマッチを採用する**。本 skill が prepend する 1 行は常に body の冒頭側 (マーカー直後) にあり、caller 由来の総括本文はその後ろに連結されるため、最初のマッチが必ず本 skill の出力になる (本 plugin のドキュメント自体をレビューして総括にフォーマット例を引用した場合など、caller 本文側に同形の文字列が混ざるケースの取り違え防止)。
 - サマリ行を含む review が 1 つも無い状態は「本 skill によるレビューが未投稿」(または本改修より前の版で投稿された review しかない) を意味する。CI は合格扱いにせず未実施 (不合格 / pending) として扱う。
