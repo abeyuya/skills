@@ -194,7 +194,7 @@ caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON) �
   ```
 
 - **合格条件の例**: 「PR の現在の head SHA に対して AI レビューが投稿済み、かつ `must` / `should` が 0 件」→ サマリ行を含む review が head SHA に対して存在し、その `must=0` かつ `should=0`。
-- **head SHA に対するレビューかの判定** は review の `commit_id` を PR の head SHA と比較する (本 skill は `COMMIT_ID` が渡された場合のみ `commit_id` を送るため、機械判定を前提にするなら caller は常に `COMMIT_ID` を渡す。`run-pr-review` は Step 2 で取得した `headRefOid` を常時転送するので、その経路なら常に付く)。`COMMIT_ID` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため、force-push と競合したときに照合が不確実になる。本改修で `COMMIT_ID` まわりの挙動自体は変更していない。
+- **head SHA に対するレビューかの判定** は review の `commit_id` を PR の head SHA と比較する (本 skill は `COMMIT_ID` が渡された場合のみ `commit_id` を送るため、機械判定を前提にするなら caller は常に `COMMIT_ID` を渡す。`run-pr-review` は Step 2 で取得した `compose-review` が確定した `commit_id` を転送するので、その経路なら常に付く)。`COMMIT_ID` を渡さないと GitHub 側が投稿時点の最新 commit を採用するため、force-push と競合したときに照合が不確実になる。本改修で `COMMIT_ID` まわりの挙動自体は変更していない。
 - 同一 head SHA に対してサマリ行を含む review が複数ある場合 (再レビュー等) は **最新の review** を採用する。
 - 1 つの review body 内に同形の文字列が複数現れた場合は **最初のマッチを採用する**。本 skill が prepend する 1 行は常に body の冒頭側 (マーカー直後) にあり、caller 由来の総括本文はその後ろに連結されるため、最初のマッチが必ず本 skill の出力になる (本 plugin のドキュメント自体をレビューして総括にフォーマット例を引用した場合など、caller 本文側に同形の文字列が混ざるケースの取り違え防止)。
 - サマリ行を含む review が 1 つも無い状態は「本 skill によるレビューが未投稿」(または本改修より前の版で投稿された review しかない) を意味する。CI は合格扱いにせず未実施 (不合格 / pending) として扱う。
