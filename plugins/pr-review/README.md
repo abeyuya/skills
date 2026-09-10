@@ -92,7 +92,7 @@ PR は確定した head、ローカルの commit は HEAD、staged は index、w
 
 - **開く上限**: レビュー観点として内容を読む祖先候補は **30 個**まで (変更ファイル数が多いディレクトリ → 同数なら深い方を優先)。それを超える候補は開かない。
 - **採用上限**: 開いたもののうち **root の共通方針 1 つ + 祖先の `REVIEW.md` 10 個**、合計 **概ね 40,000 文字** まで。不採用の出典は総括 `body` に 1 文開示する。
-- **`エスカレーション基準` を持つファイルは両方の上限の外**で必ず読まれる (`git grep -l` でファイル名だけを絞ってから開くため、コンテキストは消費しない)。上限が基準の取りこぼしになると、些末な変更を大量に混ぜて基準ファイルを上限外へ押し出す回避が成立するため。
+- **`エスカレーション基準` を持つファイルは両方の上限の外**で必ず読まれる (`git grep -l` でファイル名だけを絞り、該当ファイルの基準セクションだけを読む)。該当ファイルが 50 個を超える場合はそこで打ち切り、**打ち切った旨を開示して `escalate: true`** にする (未判定を無言にしない)。上限が基準の取りこぼしになると、些末な変更を大量に混ぜて基準ファイルを上限外へ押し出す回避が成立するため。
 - `node_modules/` / `vendor/` / `third_party/` / `.git/` 配下の `REVIEW.md` は読まない。
 - root の共通方針に **`方針ファイルの除外`** 見出しのセクションを置くと、その配下に列挙したパス / glob を探索対象から外せる。`配下の REVIEW.md を読み込まない` 旨を書けば **階層探索自体を無効化** して root だけの従来動作に戻せる (opt-out)。この宣言を読むのは root の共通方針だけで、子ファイルからは変更できない。
 - **除外・opt-out が効くのはレビュー観点だけ**。エスカレーション基準の解決と変更検知には効かず (`node_modules/` 等の固定除外を除く)、**除外宣言・opt-out の追加や変更そのものが `escalate: true` になる**。PR で opt-out を足して基準を回避する経路を塞ぐため。
@@ -214,7 +214,7 @@ permissions:
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
       caller プロジェクトの共通方針は root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md から優先順で 1 つ読みます。加えて変更パスの祖先ディレクトリにある REVIEW.md を継承し、それぞれの配下にだけ適用します。
     claude_args: |
-      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git cat-file:*),Bash(git merge-base:*),Bash(git fetch:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*),Bash(mkdir:*),Bash(date:*)"
+      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git cat-file:*),Bash(git merge-base:*),Bash(git fetch:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*),Bash(git grep:*),Bash(mkdir:*),Bash(date:*)"
 ```
 
 > 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
