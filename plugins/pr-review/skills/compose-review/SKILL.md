@@ -73,14 +73,18 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
     1. head 側と base 側を **それぞれ refspec を明示して deepen し直す**。次の順で実行してから `git merge-base` を再試行する。これは read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。
 
        ```
-       git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head   # 1 回目だけ --unshallow
+       git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head
        # 終了コードが 0 なら → HEAD_SHA=$(git rev-parse FETCH_HEAD)
-       git fetch <remote> <BASE_REF>                               # 2 回目は --unshallow を付けない
+
+       git rev-parse --is-shallow-repository   # ← この結果で 2 回目の形を決める
+       #   false (complete になった) → git fetch <remote> <BASE_REF>              (--unshallow を付けない)
+       #   true  (まだ shallow)      → git fetch --unshallow <remote> <BASE_REF>  (付ける)
        # 終了コードが 0 なら → BASE_SHA=$(git rev-parse FETCH_HEAD)
        ```
 
-       - **`--unshallow` は 1 回目だけに付ける**。1 回目が成功した時点で repository は complete になるため、2 回目に付けると `fatal: --unshallow on a complete repository does not make sense` で必ず失敗し、**base 側が deepen されないまま merge-base の復旧に失敗する**。complete になった後の通常 fetch は完全な履歴を取れるので `--unshallow` は不要。段階的に深めたい場合は 2 回とも `--deepen=100` を使う (こちらは複数回実行できる)。
-       - **1 回目の `--unshallow` が「既に complete」で失敗した場合は、shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等)。deepen を続けても解決しないので下記 2 の error 停止へ進む。
+       - **2 回目に `--unshallow` を付けるかは `git rev-parse --is-shallow-repository` で分岐する**。1 回目の `--unshallow` が成功しても **complete になるとは限らない** — fetch 元自体が shallow (CI のミラー / キャッシュ経由) だと exit 0 でも履歴は truncate されたままで、`--is-shallow-repository` は `true` を返す。この状態で `--unshallow` を省くと 2 回目の base fetch が depth 1 に留まり merge-base が復旧しない。逆に complete になっている場合に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗する。どちらの決め打ちも片方のケースを壊すので、分岐が必要。
+       - 段階的に深めたい場合は 2 回とも `--deepen=100` を使ってよい (complete な repository でも成功し、複数回実行できる)。**まだ shallow なまま merge-base が得られない場合は、error 停止の前に `--deepen` の再試行を挟む** (fetch 元が shallow な環境ではこれが唯一の復旧手段になる)。
+       - **1 回目の `--unshallow` が「既に complete」で失敗し、かつ `--is-shallow-repository` が `false` の場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等)。deepen を続けても解決しないので下記 2 の error 停止へ進む。
        - **各 fetch の終了コードを確認してから `git rev-parse FETCH_HEAD` を実行する**。`FETCH_HEAD` は fetch が失敗しても前回の値が残るため、確認せずに読むと **head として base の SHA を掴み、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す**。fetch が失敗したら退避せず下記 2 へ進む。
        - **refspec を省略しない**: cross-repo の explicit URL には設定済み refspec が無く、省略すると remote HEAD しか取得されない。`refs/pull/<PR_NUMBER>/head` と非 default の base ブランチはこの経路では deepen されず、merge-base は復旧しない (本 step の他の fetch が必ず refspec を明示しているのと同じ理由)。
        - **`<remote>` は本 step の他の fetch と同じ解決に揃える**: cwd の remote が PR 所属リポジトリと一致する通常ケースは `origin`、**cross-repo 実行では explicit URL `https://github.com/<OWNER>/<REPO>.git`**。`origin` 決め打ちにすると cross-repo + shallow で **別リポジトリを deepen することになり共通祖先が得られない**。deepen 対象は `HEAD_SHA` / `BASE_SHA` を fetch したのと同じ供給元でなければ意味がない。
