@@ -82,9 +82,23 @@ apps/api/REVIEW.md               # API 配下
 
 `REVIEW.md` 自体が差分に含まれていなくても参照する。root の候補がなくても配下の `REVIEW.md` だけで利用できる。レビュー全体の書式・言語・総括の構成は root の共通方針に従い、指定がなければスタイル参考ガイドを使う。
 
-PR は確定した head、ローカルの commit は HEAD、staged は index、worktree は作業ツリーから方針を読む。サブディレクトリから実行しても root を起点にする。削除・rename 元の削除側は旧パスと差分の変更前の方針、rename 先は新パスと変更後の方針を使う。詳細は `compose-review` Step 3 を参照。
+PR は確定した head、ローカルの commit は HEAD、staged は index、worktree は作業ツリーから方針を読む。サブディレクトリから実行しても root を起点にする。削除・rename 元の削除側は旧パスと差分の変更前の方針 (PR / commit は merge-base)、rename 先は新パスと変更後の方針を使う。詳細は `compose-review` Step 3 を参照。
 
-個別ファイルパス指定の引数や事前のファイル連結は不要。root の fallback 優先順位と入出力 JSON は従来どおり。
+個別ファイルパス指定の引数や事前のファイル連結は不要。root の fallback 優先順位と入出力 JSON のスキーマは従来どおり。
+
+#### 読み込み量の上限と除外
+
+階層探索の読み込み量は PR のディレクトリ構造に比例するため、上限を設けている (詳細は `compose-review` Step 3-2)。
+
+- 採用するのは **root の共通方針 1 つ + 祖先の `REVIEW.md` 10 個**、合計 **概ね 40,000 文字** まで。超えた分は変更ファイル数が多いディレクトリを優先して採用し、不採用の出典を総括 `body` に 1 文開示する (`エスカレーション基準` を持つファイルは上限より優先して採用する)。
+- `node_modules/` / `vendor/` / `third_party/` / `.git/` 配下の `REVIEW.md` は読まない。
+- root の共通方針に **`方針ファイルの除外`** 見出しのセクションを置くと、その配下に列挙したパス / glob を探索対象から外せる。`配下の REVIEW.md を読み込まない` 旨を書けば **階層探索自体を無効化** して root だけの従来動作に戻せる (opt-out)。この宣言を読むのは root の共通方針だけで、子ファイルからは変更できない。
+
+#### 既存リポジトリへの影響
+
+- **root にだけ指示ファイルを置いているリポジトリの挙動は変わらない** (祖先に `REVIEW.md` が無ければ追加適用の対象がゼロ)。エスカレーション理由の文面も、基準が root だけにある回は従来の書式のまま。
+- **root に候補が無く、サブディレクトリにだけ `REVIEW.md` がある monorepo は挙動が変わる**。従来は「指示なし」だったものが読み込まれ、レビュー観点として反映される (意図した変更)。その `REVIEW.md` に `エスカレーション基準` 見出しがあれば、エスカレーション判定も新たに走る。読ませたくない場合は上記の除外・opt-out を使う。
+- `compose-review` を **root 以外のディレクトリから呼ぶ場合**、内部で `git -C <root> ...` を使うため `--allowedTools` に `Bash(git -C:*)` が必要になる。cwd = root (CI の通常ケース) では従来の `Bash(git diff:*)` 形式の許可のままで動く。
 
 ### `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` を fallback として使う際の注意
 
@@ -170,7 +184,7 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 
 ```yaml
 permissions:
-  contents: read         # PR 差分 / リポジトリ root のレビュー方針ファイル参照
+  contents: read         # PR 差分 / 各階層のレビュー方針ファイル参照
   pull-requests: write   # Review 投稿 / 過去スレッドへの reply / resolve (GraphQL)
 ```
 
@@ -193,10 +207,12 @@ permissions:
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
       caller プロジェクトの共通方針は root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md から優先順で 1 つ読みます。加えて変更パスの祖先ディレクトリにある REVIEW.md を継承し、それぞれの配下にだけ適用します。
     claude_args: |
-      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git cat-file:*),Bash(git merge-base:*),Bash(git fetch:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
+      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git cat-file:*),Bash(git merge-base:*),Bash(git fetch:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*),Bash(mkdir:*),Bash(date:*)"
 ```
 
 > 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
+
+> `actions/checkout` の既定 (`fetch-depth: 1`) でも動作する。ただし shallow clone では merge-base の tree が materialize されず、**削除・rename 元に適用する「変更前の方針」と、エスカレーション基準の変更検知 (base 側突き合わせ) が skip される** (skip した旨は総括 `body` に 1 文出る。レビュー自体は通常どおり返る)。基準の削除・緩和を確実に検知したい場合は checkout に `fetch-depth: 0` を指定する。
 
 ## 利用方法 (ローカル Claude Code)
 
