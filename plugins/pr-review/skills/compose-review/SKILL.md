@@ -58,13 +58,17 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 - **head SHA (`HEAD_SHA` = 出力 `commit_id`)**:
   - `COMMIT_ID` が渡されていれば head SHA の**解決** (`gh pr view` 等での問い合わせ) を skip する (二重取得 / force-push race 回避)。**ただし `refs/pull/<PR_NUMBER>/head` の read-only fetch は `COMMIT_ID` の object がローカルにあるかどうかに関わらず必ず行う** — 現 head を知らないと下記の整合判定ができず、`git cat-file -e <COMMIT_ID>^{commit}` が成功したら fetch を省く形にすると、**force-push 検出が「head object がローカルに無い回」だけになって実質機能しない** (force-push 後も旧 head の object は残るため)。`git fetch origin refs/pull/<PR_NUMBER>/head` (cross-repo は explicit URL) を実行し、`FETCH_HEAD` と `COMMIT_ID` を比較する。git 主経路の `git diff <BASE_SHA>...<HEAD_SHA>` (Step 4) / `git show <HEAD_SHA>:<path>` (Step 3) は head object がローカルに存在することを前提とするため、この fetch は materialize も兼ねる。`gh` だけで差分を取る補助経路を使う場合はこの materialize は不要。
-    - **`--is-ancestor` が真 (`COMMIT_ID` が現 head の祖先) = 通常の追加 push** → **`HEAD_SHA=<COMMIT_ID>` のままにする**。caller が指定した commit を対象に据え続ける。現 head に進めると、差分範囲が追加 push 分まで広がり、その commit を head として起動する別 workflow run と同一箇所に重複インラインコメントが付く。
-    - **`--is-ancestor` が偽 = force-push / rebase で履歴が置き換わった** → fetch した現 head を採用して `HEAD_SHA=$(git rev-parse FETCH_HEAD)` に更新する (Step 6 出力の `commit_id` もこの値にする)。これで diff 範囲・コメント anchor が実 head と一致する (PR に存在しない commit を anchor にして投稿が 422 で失敗する / 別行に付くのを避ける)。
-    - **`--is-ancestor` の終了コードを取り違えない**: `0` = 祖先 (追加 push)、`1` = 祖先でない (force-push)、**`128` 等それ以外 = `COMMIT_ID` の object が無い / 不正**。shallow clone では追加 push 直後に `COMMIT_ID` が未 materialize で `128` になるため、これを `1` と同じに扱うと **通常の追加 push を force-push と誤判定して `HEAD_SHA` を現 head に差し替えてしまう** (防ぎたかった重複インラインコメントが起きる)。`128` の場合は次の順で扱う。
-      1. **再判定に使う現 head を先に退避する**: `CUR_HEAD=$(git rev-parse FETCH_HEAD)`。materialize 用の fetch は **`FETCH_HEAD` を `COMMIT_ID` 自身に上書きする**ので、退避せずに再判定すると `--is-ancestor <COMMIT_ID> FETCH_HEAD` が同一 commit の比較になって自明に真 = 追加 push と誤判定し、force-push を検出できない。
-      2. **`COMMIT_ID` 単体ではなく、head ref の履歴を掘って祖先経路を復元する**: `git fetch --deepen=100 <remote> refs/pull/<PR_NUMBER>/head` (幅は `100` → `200` → `400` と倍にし、**最大 5 巡 / `git rev-list --count <CUR_HEAD>` が増えなくなったら打ち切り**。判定基準は下記 merge-base 復旧の第 2 段と同じ)。**`COMMIT_ID` を単体で fetch するだけでは足りない** — object 1 つが手に入っても、現 head から `COMMIT_ID` へ至る経路が shallow boundary で切れていれば 3 の `--is-ancestor` は `1` (祖先でない) を返し、**`fetch-depth: 1` の CI での通常の追加 push が force-push と誤判定される** (この bullet が防ごうとしている事象そのもの)。**`--deepen` には必ず数値を付ける** (値なしの `--deepen` は `error: option 'deepen' expects a numerical value` で即失敗する)。**`<remote>` は本 step の他の fetch と同じ解決に揃える** (通常は `origin`、cross-repo は explicit URL)。`origin` 決め打ちにすると cross-repo で必ず失敗し、3 の「materialize できない = force-push」に落ちて追加 push を誤判定する。
-      3. 各巡の後に `git merge-base --is-ancestor <COMMIT_ID> <CUR_HEAD>` を再試行し、**`0` / `1` が返った時点でその結論を採用する** (`0` = 追加 push で `COMMIT_ID` を維持、`1` = force-push で `CUR_HEAD` を採用)。**打ち切りまで `128` のままで結論が出ないときだけ** remote から消えた = force-push として `CUR_HEAD` を採用する。
-    - **`git cat-file -e <COMMIT_ID>` の成否で force-push を判定してはならない**。read-only fetch は既存 object を削除しないため、force-push 後も旧 head の object はローカルに残り、この判定は常に「残っている」に倒れる (`cat-file` は上記 `128` の切り分けに使うだけ)。
+    - **判定は `CUR_HEAD` に対して行う**: head 側 fetch の直後に `CUR_HEAD=$(git rev-parse FETCH_HEAD)` として現 head を退避し、以降の再判定はこの変数に対して行う。`FETCH_HEAD` は後続の fetch で上書きされるため、直接比較対象にすると同一 commit の比較になって自明に「追加 push」と誤判定する。
+    - **`--is-ancestor` が `0` (`COMMIT_ID` が `CUR_HEAD` の祖先) = 通常の追加 push** → **`HEAD_SHA=<COMMIT_ID>` のままにする**。caller が指定した commit を対象に据え続ける。現 head に進めると、差分範囲が追加 push 分まで広がり、その commit を head として起動する別 workflow run と同一箇所に重複インラインコメントが付く。
+    - **`0` 以外のときは、repository が shallow かどうかで扱いが分かれる (重要)**。`1` (祖先でない) と `128` (object が無い / 不正) は、**shallow clone では「本当に履歴が置き換わった」のか「祖先経路が shallow boundary で切れているだけ」なのかを区別できない** — 単体 SHA を fetch して object を入れても経路が切れていれば `1` が返る。したがって終了コードだけで force-push と断定しない。
+      - **`git rev-parse --is-shallow-repository` が `false` (complete)** → 履歴は全て手元にあるので `0` 以外は **force-push / rebase で履歴が置き換わった**と確定できる。`HEAD_SHA=<CUR_HEAD>` に更新し、**Step 6 出力の `commit_id` もこの値にする** (PR に存在しない commit を anchor にして投稿が 422 で失敗する / 別行に付くのを避ける)。真の force-push はこの分岐で即決着するので、下記の deepen を空振りさせない。
+      - **`true` (まだ shallow)** → 結論を出さず、**head ref を掘りながら再判定する**: `git fetch --deepen=100 <remote> refs/pull/<PR_NUMBER>/head` (幅は `100` → `200` → `400` と倍にし、**最大 5 巡 / `git rev-list --count <CUR_HEAD>` が増えなくなったら打ち切り**) を実行し、**各巡の後に `git merge-base --is-ancestor <COMMIT_ID> <CUR_HEAD>` を再試行する**。
+        - **`0` が返った時点で追加 push と確定**し `COMMIT_ID` を維持する (以降の巡は行わない)。
+        - 掘った結果 complete になったら上記 complete 分岐で確定する。
+        - **各 fetch の終了コードを確認する**。fetch が失敗した巡は進捗判定に数えず、失敗が続く / 進捗が止まった場合に打ち切る (失敗を「進捗なし」と同一視して即打ち切ると、connection reset 1 回で通常の追加 push を force-push と誤判定する)。
+        - **打ち切りまで `0` が出なければ force-push として `CUR_HEAD` を採用する** (`commit_id` も同様)。掘り切れなかった可能性は残るが、**実 head を anchor にする方が投稿の失敗と行ズレを避けられる**。
+      - **`--deepen` には必ず数値を付ける** (値なしの `--deepen` は `error: option 'deepen' expects a numerical value` で即失敗する)。**`<remote>` は本 step の他の fetch と同じ解決に揃える** (通常は `origin`、cross-repo は explicit URL。`origin` 決め打ちにすると cross-repo で必ず失敗し、掘れないまま force-push 判定に落ちる)。
+    - **`git cat-file -e <COMMIT_ID>` の成否で force-push を判定してはならない**。read-only fetch は既存 object を削除しないため、force-push 後も旧 head の object はローカルに残り、この判定は常に「残っている」に倒れる。
   - 未指定なら **git 主経路**: `git fetch origin refs/pull/<PR_NUMBER>/head` (GitHub が公開する PR head ref。フォーク PR でも origin から取れる) の直後に `HEAD_SHA=$(git rev-parse FETCH_HEAD)` で退避。cwd の remote が PR 所属リポジトリと異なる cross-repo 実行では `git fetch https://github.com/<OWNER>/<REPO>.git refs/pull/<PR_NUMBER>/head` と explicit URL から fetch する。
   - 任意の補助 (使える環境のみ): `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid -q .headRefOid`。
   - git 経路も失敗し `HEAD_SHA` を確定できない場合のみ「失敗時」節に従い `{"error":"..."}` を書き出して停止する。
@@ -83,7 +87,10 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
        ```
        git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head
-       # 終了コードが 0 なら → HEAD_SHA=$(git rev-parse FETCH_HEAD)
+       # 終了コードが 0 なら → CUR_HEAD=$(git rev-parse FETCH_HEAD)
+       #   COMMIT_ID 未指定           → HEAD_SHA=<CUR_HEAD>
+       #   COMMIT_ID 指定かつ一致      → HEAD_SHA=<COMMIT_ID> のまま
+       #   COMMIT_ID 指定だが不一致    → Step 1 冒頭の --is-ancestor 判定で決める (下記)
 
        git rev-parse --is-shallow-repository   # ← この結果で base 側の形を決める
        #   false (complete になった) → git fetch <remote> <BASE_REF>              (--unshallow を付けない)
@@ -97,7 +104,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
          - **「既に complete」の fatal** → shallow が原因ではないので下記 2 の error 停止へ。
          - **それ以外の失敗で `--is-shallow-repository` が `true`** (巨大 pack でのサーバ切断 / connection reset 等) → **第 2 段へ進む**。段階的な `--deepen` なら 1 回の転送量が小さく、同じ失敗を回避して復旧できることがある。
          - **それ以外の失敗で `--is-shallow-repository` が `false`** → deepen する余地はないが、**error 停止の前に `git merge-base <BASE_SHA> <HEAD_SHA>` を 1 回試す**。head 側の `--unshallow` が成功して complete 化した直後に base 側 fetch だけが一時的に失敗した回は、head の全祖先が既に materialize されているため merge-base が通ることがある。**通れば `MERGE_BASE_SHA` を退避して復旧完了**、通らなければ下記 2 の error 停止へ。
-       - **`COMMIT_ID` が渡されている場合の整合は、本節で別の規則を作らず Step 1 冒頭の `COMMIT_ID` 規定に従う** — head 側 fetch の直後に現 head を `CUR_HEAD=$(git rev-parse FETCH_HEAD)` として退避し、`git merge-base --is-ancestor <COMMIT_ID> <CUR_HEAD>` で切り分けて、**追加 push なら `COMMIT_ID` を維持、force-push なら `CUR_HEAD` を採用**する (擬似コードの `HEAD_SHA=$(git rev-parse FETCH_HEAD)` は後者のケース)。**`FETCH_HEAD` を直接比較対象にしない** — 判定の途中で別の fetch が挟まると上書きされ、同一 commit の比較になって自明に「追加 push」と誤判定する。復旧 fetch は `refs/pull/<PR_NUMBER>/head` を引き直すので、この間の push は同じ不一致として現れる。
+       - **`COMMIT_ID` が渡されている場合の整合は、本節で別の規則を作らず Step 1 冒頭の `COMMIT_ID` 規定に従う** (`CUR_HEAD` を退避 → `--is-ancestor` → shallow かどうかで分岐)。復旧 fetch は `refs/pull/<PR_NUMBER>/head` を引き直すので、この間の push は同じ不一致として現れる。この節の第 2 段で head ref を deepen した後は `--is-ancestor` の結論が変わりうるので、**deepen 後に再判定する** (Step 1 冒頭の shallow 分岐がそのまま当てはまる)。復旧 fetch は `refs/pull/<PR_NUMBER>/head` を引き直すので、この間の push は同じ不一致として現れる。
        - **base 側で `--unshallow` を付けるかを `--is-shallow-repository` で分岐する**理由: complete な repository に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して base の fetch 自体が飛び、まだ shallow な状態では付けられる。1 回目が exit 0 でも **fetch 元自体が shallow (CI のミラー / キャッシュ経由) なら complete にならない**ので、どちらかに決め打ちすると片方のケースを壊す。
        - **head 側の `--unshallow` が「既に complete」で失敗した場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等)。git はこの fatal を complete のときにだけ出すので、第 2 段に進まず下記 2 の error 停止へ進む。
 
