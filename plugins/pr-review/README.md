@@ -67,7 +67,30 @@ Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `d
 3. `.claude/CLAUDE.md` — Claude Code 全般向けの fallback (`.claude/` 配下に置く流儀)
 4. `CLAUDE.md` — Claude Code 全般向けの fallback (リポジトリ root に置く流儀)
 
-個別ファイルパスを skill 引数で渡す方式は持たない。複数ファイルを束ねたい場合は caller 側 workflow で 1 ファイルに事前生成 (例: `cat docs/general.md docs/typescript.md > REVIEW.md`) してから skill を呼ぶ。Claude Code 全般指示が `.claude/CLAUDE.md` と `CLAUDE.md` の両方に存在する場合は `.claude/CLAUDE.md` のみが採用される (連結はしない)。
+個別ファイルパスを skill 引数で渡す方式は持たない。Claude Code 全般指示が `.claude/CLAUDE.md` と `CLAUDE.md` の両方に存在する場合は `.claude/CLAUDE.md` のみが採用される (連結はしない)。
+
+### ディレクトリ別方針 (monorepo 向け)
+
+root の共通方針に加え、**変更ファイルの祖先ディレクトリにある `REVIEW.md`** が root → 親 → 子の順に読み込まれる。パッケージごとに方針を分けたい monorepo では、root を触らずに各ディレクトリへ `REVIEW.md` を置けばよい。
+
+```text
+REVIEW.md                       # 全体共通
+apps/web/REVIEW.md              # apps/web/ 配下
+apps/web/src/auth/REVIEW.md     # 認証まわり
+apps/api/REVIEW.md              # apps/api/ 配下
+```
+
+- `apps/web/src/auth/login.ts` の指摘 → root → web → auth の方針を適用
+- `apps/api/src/users.ts` の指摘 → root → api を適用 (web / auth は適用しない)
+
+補足:
+
+- 各方針は **出典ディレクトリの配下にだけ** 適用される。親の方針は子に継承され、矛盾する論点だけ子が優先される。
+- レビュー全体の書式・言語・総括の構成は root の共通方針に従う。
+- 階層探索の対象は `REVIEW.md` だけ (配下の `AGENTS.md` / `CLAUDE.md` は読まれない)。`node_modules/` / `vendor/` 配下も読まれない。
+- `エスカレーション基準` 見出しは各階層に置ける。root の基準は差分全体、`apps/web/REVIEW.md` の基準は `apps/web/` 配下に照らされ、どれか 1 件でも該当すれば `escalate: true` になる。
+- 読み込む方針が多すぎるとコンテキストを圧迫するため、祖先の `REVIEW.md` は **10 個程度まで** が目安。超えた分は総括 `body` に 1 文開示される。
+- root に候補が無く配下の `REVIEW.md` だけを置いた場合も動く。**この構成の monorepo は、これまで「方針なし」だったものが読まれるようになる**点に注意。
 
 ### `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` を fallback として使う際の注意
 
@@ -119,7 +142,7 @@ Payload (caller が渡す JSON 相当) の概要:
 
   `escalate` は `1` / `0`、`reasons` は理由の **件数** (人間向けの理由本文はレビュー本文の `## エスカレーション` セクションに出る)。用途は **CI が該当者をレビュアーに追加するためのルーティング**で、マージをブロックするゲートではない (`event` は常に `COMMENT`)。required status check にするかは利用側の判断。
 
-  **判定基準は当 plugin 側に持たない** — `compose-review` はプロジェクト指示ファイル (`REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` の優先順で最初の 1 つ) に **見出しタイトルが `エスカレーション基準` を含むセクション** があるときだけ判定し、そのセクション配下の記述だけを基準として扱う (opt-in の閾値を自由文の解釈に委ねると、`CLAUDE.md` によくある「破壊的変更は相談して」の一文でこの機能を使う気のないリポジトリまで判定が走ってしまうため)。**opt-out = 見出しを置かない**。見出しが無い利用側では判定を行わず `escalate: false` になり、`run-pr-review` は **`escalate: true` の回だけ `ESCALATION` を転送する**ため **この行自体が出ない** (= 従来と同じ出力)。したがって CI が見るべきは `escalate=1` の存在だけで、行が無い状態は「エスカレーション不要」と「基準が無く判定なし」の両方を含む。**本行は常在しないため、パースは body 冒頭のマーカー行から最初の `---` までの範囲に限る** (総括本文中のフォーマット例を拾わないため)。利用側は (1) プロジェクト指示ファイルへの `## エスカレーション基準` セクションの記述、(2) この行をパースしてレビュアーを追加する workflow を自前で用意する (誰をアサインするかはプロジェクト固有なので plugin 側では行わない)。
+  **判定基準は当 plugin 側に持たない** — `compose-review` はプロジェクト指示ファイル (root は `REVIEW.md` / `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` の優先順で最初の 1 つ、加えて変更パスの祖先の `REVIEW.md`) に **見出しタイトルが `エスカレーション基準` を含むセクション** があるときだけ判定し、そのセクション配下の記述だけを基準として扱う (各階層の基準は積み増され、それぞれの配下の変更に照らされる) (opt-in の閾値を自由文の解釈に委ねると、`CLAUDE.md` によくある「破壊的変更は相談して」の一文でこの機能を使う気のないリポジトリまで判定が走ってしまうため)。**opt-out = 見出しを置かない**。見出しが無い利用側では判定を行わず `escalate: false` になり、`run-pr-review` は **`escalate: true` の回だけ `ESCALATION` を転送する**ため **この行自体が出ない** (= 従来と同じ出力)。したがって CI が見るべきは `escalate=1` の存在だけで、行が無い状態は「エスカレーション不要」と「基準が無く判定なし」の両方を含む。**本行は常在しないため、パースは body 冒頭のマーカー行から最初の `---` までの範囲に限る** (総括本文中のフォーマット例を拾わないため)。利用側は (1) プロジェクト指示ファイルへの `## エスカレーション基準` セクションの記述、(2) この行をパースしてレビュアーを追加する workflow を自前で用意する (誰をアサインするかはプロジェクト固有なので plugin 側では行わない)。
 
 ## 重要度ラベル
 
@@ -174,7 +197,7 @@ permissions:
       THREAD_RESOLVE_SCOPE: all
 
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
-      caller プロジェクトのレビュー方針はリポジトリ root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。
+      caller プロジェクトの共通方針はリポジトリ root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。加えて変更ファイルの祖先ディレクトリにある REVIEW.md が読み込まれ、それぞれの配下にだけ適用されます。
     claude_args: |
       --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
 ```
