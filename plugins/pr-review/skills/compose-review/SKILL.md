@@ -72,20 +72,26 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   - `git merge-base` が失敗する場合、**同じ理由で Step 4 の三点記法 `git diff <BASE_SHA>...<HEAD_SHA>` も `fatal: no merge base` で失敗する** (共通祖先が無いと三点記法は成立しない)。これは shallow clone (`actions/checkout` の既定 `fetch-depth: 1`) で起きる。したがって **merge-base の失敗は 3-2 の「変更前が読めない」case ではなく、差分そのものが取れない状態**として次の順で解決する:
     1. **read-only fetch で共通祖先を materialize し直す**。この fetch は **本 step 冒頭の head / base 確定手順をもう一度通す**ものとして扱い、`HEAD_SHA` / `BASE_SHA` の確定は **Step 1 冒頭の規定 (`COMMIT_ID` との突き合わせを含む) に従う** — 本節で独自の規則を作らない。**ただし本節では `git cat-file -e` による object 存在確認で fetch を省略しない**: 復旧時点では head object は既に materialize 済みなので、その短絡に従うと `--unshallow` fetch を実行しないまま pin 値を保持し、**merge-base が再失敗して shallow の回が丸ごと error 停止 (無レビュー終了) する**。本節の目的は object の有無ではなく履歴の深さなので、object があっても必ず fetch し、`FETCH_HEAD` と突き合わせる。**base 側の短絡 (「base ブランチが既にローカルにあればその ref を直接使ってもよい」) も本節では適用しない** — ローカル ref があっても祖先 object が未取得なら merge-base は再失敗するので、head 側と同じく必ず fetch する。
        ```
-       git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head   # head 側。既に complete なら fatal になるので下記 2 へ
-       # ↑ の終了コードを先に判定する。0 以外なら下記 2 へ。0 なら:
-       HEAD_SHA=$(git rev-parse FETCH_HEAD)   # Step 1 冒頭の COMMIT_ID 突き合わせもここで行う
+       # --- head 側 ---
+       git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head
+       # この fetch の終了コードを、他のコマンドを挟まずに判定する
+       #   0 以外 (「既に complete」の fatal を含む) → 下記 2 の error 停止へ
+       #   0                                       → HEAD_SHA=$(git rev-parse FETCH_HEAD)
+       #                                              (Step 1 冒頭の COMMIT_ID 突き合わせもここで行う)
 
-       git rev-parse --is-shallow-repository  # ← base 側に --unshallow を付けるかを決める (HEAD_SHA 退避の後に置く)
-       #   false (complete になった) → git fetch <remote> <BASE_REF>              (付けない)
-       #   true  (まだ shallow)      → git fetch --unshallow <remote> <BASE_REF>  (付ける)
-       # ↑ の終了コードを判定する。0 以外なら下記 2 へ。0 なら:
-       BASE_SHA=$(git rev-parse FETCH_HEAD)
+       # --- base 側 ---
+       # 付ける引数を先に決める (この判定は fetch ではないので終了コードを見ない)
+       #   git rev-parse --is-shallow-repository が false (complete)  → UNSHALLOW=""
+       #                                            true  (shallow)   → UNSHALLOW="--unshallow"
+       git fetch $UNSHALLOW <remote> <BASE_REF>
+       # この fetch の終了コードを、他のコマンドを挟まずに判定する
+       #   0 以外 → 下記 2 の error 停止へ
+       #   0      → BASE_SHA=$(git rev-parse FETCH_HEAD)
 
        git merge-base <BASE_SHA> <HEAD_SHA>   # 成功したら MERGE_BASE_SHA を退避して復旧完了
        ```
        read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。
-       - **`HEAD_SHA` / `BASE_SHA` は各 fetch の直後に Step 1 冒頭の規定どおり確定する**。対応は **head ref の fetch → `HEAD_SHA`、`<BASE_REF>` の fetch → `BASE_SHA`** で、**必ず終了コードを確認してから `git rev-parse FETCH_HEAD`** を実行する (`$?` を上書きする別コマンドを間に挟まない。上記擬似コードが `--is-shallow-repository` を `HEAD_SHA` 退避の後に置いているのはこのため) (`COMMIT_ID` が渡されていれば同規定の突き合わせも行う)。`FETCH_HEAD` は fetch のたびに上書きされ、失敗しても前回の値が残るため、**base 側 fetch の後に `HEAD_SHA` を読み直すと head に base の SHA が入り、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す** (実変更のある PR に「指摘なし」のレビューを投稿してしまう)。復旧 fetch までの間に force-push が入った回は、**新 head の履歴だけが深まり旧 `HEAD_SHA` の祖先経路は切れたまま**なので、pin した値を保持すると `git merge-base` が再び失敗して error 停止する (新 head を採れば復旧できる)。`HEAD_SHA` を差し替えた場合は **`MERGE_BASE_SHA` を差し替え後の値で計算し、Step 6 出力の `commit_id` も揃える**。
+       - **`HEAD_SHA` / `BASE_SHA` は各 fetch の直後に Step 1 冒頭の規定どおり確定する**。対応は **head ref の fetch → `HEAD_SHA`、`<BASE_REF>` の fetch → `BASE_SHA`** で、**fetch の直後に (他のコマンドを挟まず) 終了コードを判定し、0 のときだけ `git rev-parse FETCH_HEAD` を実行する** — `git rev-parse` 自体がコマンド置換で `$?` を上書きするので、退避した後に `$?` を見ても fetch の結果は分からない (rev-parse は前回の `FETCH_HEAD` を解決して 0 を返すため、失敗した fetch をすり抜けて `HEAD_SHA` に base の SHA が入る) (`COMMIT_ID` が渡されていれば同規定の突き合わせも行う)。`FETCH_HEAD` は fetch のたびに上書きされ、失敗しても前回の値が残るため、**base 側 fetch の後に `HEAD_SHA` を読み直すと head に base の SHA が入り、差分範囲が `<BASE_SHA>...<BASE_SHA>` = 空になって「対象差分なし」を無言で返す** (実変更のある PR に「指摘なし」のレビューを投稿してしまう)。復旧 fetch までの間に force-push が入った回は、**新 head の履歴だけが深まり旧 `HEAD_SHA` の祖先経路は切れたまま**なので、pin した値を保持すると `git merge-base` が再び失敗して error 停止する (新 head を採れば復旧できる)。`HEAD_SHA` を差し替えた場合は **`MERGE_BASE_SHA` を差し替え後の値で計算し、Step 6 出力の `commit_id` も揃える**。
        - **いずれかの fetch が失敗したら、その fetch に対応する変数は更新せず下記 2 へ進む** (失敗した fetch の `FETCH_HEAD` は前回の値なので読まない)。head 側の `--unshallow` が **「既に complete」で失敗した場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等) ので、同じく下記 2 へ進む。
        - **base 側で `--unshallow` を付けるかを `--is-shallow-repository` で分岐する**理由: complete な repository に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して base の fetch 自体が飛び、まだ shallow な状態では付けられる。head 側の `--unshallow` が exit 0 でも **fetch 元自体が shallow (CI のミラー / キャッシュ経由) なら complete にならない**ので、どちらかに決め打ちすると片方のケースを壊す。
        - **`<remote>` は本 step の他の fetch と同じ解決に揃える** (通常は `origin`、cross-repo は explicit URL `https://github.com/<OWNER>/<REPO>.git`)。`origin` 決め打ちにすると cross-repo で別リポジトリを deepen してしまう。**refspec は必ず明示する** — explicit URL には設定済み refspec が無いのはもちろん、**`origin` 経路でも省略してはならない**。`actions/checkout` の shallow clone は `remote.origin.fetch` を単一 ref に絞るため、refspec を省いた `git fetch --unshallow origin` は **exit 0 かつ `--is-shallow-repository` が `false` になるのに `refs/pull/<PR_NUMBER>/head` と非 default base は取得されない**。
