@@ -90,9 +90,9 @@ PR は確定した head、ローカルの commit は HEAD、staged は index、w
 
 階層探索の読み込み量は PR のディレクトリ構造に比例するため、上限を設けている (詳細は `compose-review` Step 3-2)。
 
-- **開く上限**: 内容を読む祖先候補は **30 個**まで (変更ファイル数が多いディレクトリ → 同数なら深い方を優先)。それを超える候補は開かない。
-- **採用上限**: 開いたもののうち **root の共通方針 1 つ + 祖先の `REVIEW.md` 10 個**、合計 **概ね 40,000 文字** まで。不採用の出典は総括 `body` に 1 文開示する (`エスカレーション基準` を持つファイルは採用上限より優先されるが、**開く上限で打ち切られた候補には適用できない**)。
-- したがって **基準を持つ `REVIEW.md` が多階層に散る monorepo では、基準を root 側に集約するか PR の変更範囲を分割する**のが安全。
+- **開く上限**: レビュー観点として内容を読む祖先候補は **30 個**まで (変更ファイル数が多いディレクトリ → 同数なら深い方を優先)。それを超える候補は開かない。
+- **採用上限**: 開いたもののうち **root の共通方針 1 つ + 祖先の `REVIEW.md` 10 個**、合計 **概ね 40,000 文字** まで。不採用の出典は総括 `body` に 1 文開示する。
+- **`エスカレーション基準` を持つファイルは両方の上限の外**で必ず読まれる (`git grep -l` でファイル名だけを絞ってから開くため、コンテキストは消費しない)。上限が基準の取りこぼしになると、些末な変更を大量に混ぜて基準ファイルを上限外へ押し出す回避が成立するため。
 - `node_modules/` / `vendor/` / `third_party/` / `.git/` 配下の `REVIEW.md` は読まない。
 - root の共通方針に **`方針ファイルの除外`** 見出しのセクションを置くと、その配下に列挙したパス / glob を探索対象から外せる。`配下の REVIEW.md を読み込まない` 旨を書けば **階層探索自体を無効化** して root だけの従来動作に戻せる (opt-out)。この宣言を読むのは root の共通方針だけで、子ファイルからは変更できない。
 - **除外・opt-out が効くのはレビュー観点だけ**。エスカレーション基準の解決と変更検知には効かず (`node_modules/` 等の固定除外を除く)、**除外宣言・opt-out の追加や変更そのものが `escalate: true` になる**。PR で opt-out を足して基準を回避する経路を塞ぐため。
@@ -194,6 +194,10 @@ permissions:
 > 本 skill 群はトップレベル PR コメント (`POST /repos/.../issues/{n}/comments` 経路) を投稿しないため `issues: write` は不要。caller が `claude-code-action` 等を経由している場合は action 側の要件で `issues: write` が要求されることがあるため、その場合のみ caller が追加する。
 
 ```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0   # 必須。既定の 1 (shallow) では merge-base が無く三点記法の差分が取れない
+
 - uses: anthropics/claude-code-action@v1
   with:
     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -215,7 +219,7 @@ permissions:
 
 > 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
 
-> **checkout には `fetch-depth: 0` を指定する。** PR モードの差分は三点記法 (`<BASE_SHA>...<HEAD_SHA>` = merge-base 基準) で取るため共通祖先が必要で、既定の `fetch-depth: 1` (shallow clone) では merge-base が計算できず差分そのものが取れない。`compose-review` は Step 1 で `git fetch --unshallow` による復旧を試みるが、これは追加のネットワーク往復になるので CI 側で `fetch-depth: 0` を指定するのが確実 (`claude-code-action` が内部で checkout する構成でも同様。復旧もできない場合は `{"error":...}` で停止する)。
+> **`fetch-depth: 0` は必須。** PR モードの差分は三点記法 (`<BASE_SHA>...<HEAD_SHA>` = merge-base 基準) で取るため共通祖先が必要で、既定の `fetch-depth: 1` (shallow clone) では merge-base が計算できず差分そのものが取れない。`compose-review` は Step 1 で `git fetch --unshallow` による復旧を試みるが、追加のネットワーク往復になるうえ復旧できなければ `{"error":...}` で停止するので、上記のとおり checkout 側で指定する (`claude-code-action` に checkout を任せる構成では、先に `actions/checkout` を置いてこの指定を効かせる)。
 
 ## 利用方法 (ローカル Claude Code)
 
