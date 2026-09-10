@@ -26,7 +26,7 @@ description: PR 差分またはローカルブランチ・staged・worktree 差�
 
 ### PR モードのみ (任意)
 
-- `COMMIT_ID`: caller (orchestrator) が既に取得した head SHA。渡されればそのまま Step 6 の `commit_id` として使い、Step 1 の head SHA 取得 (`git fetch` / `gh pr view`) を skip する (二重取得回避 + force-push race 防止)。
+- `COMMIT_ID`: caller (orchestrator) が既に取得した head SHA。渡されれば **head SHA の「解決」(`gh pr view` 等での問い合わせ) を skip** する (二重取得回避 + force-push race 防止)。**Step 6 の `commit_id` は Step 1 で確定した `HEAD_SHA`** であり、`COMMIT_ID` と fetch した head が不一致だった回は差し替え後の値になる (Step 1 / Step 6 参照)。object の materialize は skip しない。
 - `BASE_BRANCH`: PR の base ブランチ名。渡されれば非 default base の PR でも正しい diff 範囲 (`<base>...HEAD`) を取れる。未指定なら Step 1 が `git ls-remote --symref origin HEAD` で判定した default branch を base と仮定する (base ref 名を pure-git で引く標準手段が無いための既定。詳細は Step 1)。`COMMIT_ID` と同様、caller が既知なら渡す前提。
 - `EXISTING_THREADS_CONTEXT`: caller が既に取得した既存 reviewThreads の主旨サマリ (各スレッドの `path:line` 併記 1〜2 文要約)。Step 5 の重複指摘抑制に使う。
 - `CI_FAILURE_CONTEXT`: caller が既に収集した CI 失敗ログのサマリ。Step 5 で `[must]` 指摘の根拠として使う (失敗ジョブがあれば必ず `[must]` 扱いに昇格)。
@@ -70,7 +70,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   - **`BASE_SHA` で代用してはならない**。base ブランチ先端の tree は読めてしまうので、代用すると「変更前が読めない」ことに気づけず、この規定が排除しようとしている base 進行由来の誤検知 (他者が base 側で行った基準の追加・削除を本 PR の変更として `escalate: true` に倒す / 逆に取りこぼす) がそのまま走る。**`MERGE_BASE_SHA` が確定できない回は下記のとおり復旧か停止で決着させ、別の SHA で代用したまま続行する分岐は設けない**。
     - **`MERGE_BASE_SHA` は確定できたが個別の path が読めない** (該当ディレクトリに当時 `REVIEW.md` が無かった等) は別の話で、3-2 の「不在と取得失敗を区別する」に従い **その path を skip して続行する** (error 停止しない)。5-4 の突き合わせも、変更前側で読めた候補だけで行い、読めなかった旨があれば総括 `body` に 1 文開示する。
   - `git merge-base` が失敗する場合、**同じ理由で Step 4 の三点記法 `git diff <BASE_SHA>...<HEAD_SHA>` も `fatal: no merge base` で失敗する** (共通祖先が無いと三点記法は成立しない)。これは shallow clone (`actions/checkout` の既定 `fetch-depth: 1`) で起きる。したがって **merge-base の失敗は 3-2 の「変更前が読めない」case ではなく、差分そのものが取れない状態**として次の順で解決する:
-    1. **read-only fetch で共通祖先を materialize し直す**。目的は **履歴を深めることだけ**で、`HEAD_SHA` / `BASE_SHA` は本 step で既に確定済みなので **再代入しない** (`FETCH_HEAD` も読まない)。
+    1. **read-only fetch で共通祖先を materialize し直す**。この fetch は **本 step 冒頭の head / base 確定手順をもう一度通す**ものとして扱い、`HEAD_SHA` / `BASE_SHA` の確定は **Step 1 冒頭の規定 (`COMMIT_ID` との突き合わせを含む) に従う** — 本節で独自の規則を作らない。
        ```
        git fetch --unshallow <remote> refs/pull/<PR_NUMBER>/head   # head 側。既に complete なら fatal になるので下記 2 へ
        git rev-parse --is-shallow-repository                       # ← base 側に --unshallow を付けるかを決める
@@ -78,7 +78,8 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
        #   true  (まだ shallow)      → git fetch --unshallow <remote> <BASE_REF>  (付ける)
        git merge-base <BASE_SHA> <HEAD_SHA>   # 成功したら MERGE_BASE_SHA を退避して復旧完了
        ```
-       read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。**`HEAD_SHA` を再代入しない**ことで、caller が `COMMIT_ID` で pin した commit が復旧の副作用で現 head に置き換わるのを防ぎ、`MERGE_BASE_SHA` も確定済みの 2 つの SHA から計算できる。
+       read-only fetch なので「守ること」の例外内 (作業ツリー / ローカル ref を書き換えない)。
+       - **`HEAD_SHA` / `BASE_SHA` は各 fetch の直後に Step 1 冒頭の規定どおり確定する** (終了コードを確認してから `git rev-parse FETCH_HEAD`。`COMMIT_ID` が渡されていれば同規定の突き合わせを行う)。復旧 fetch までの間に force-push が入った回は、**新 head の履歴だけが深まり旧 `HEAD_SHA` の祖先経路は切れたまま**なので、pin した値を保持すると `git merge-base` が再び失敗して error 停止する (新 head を採れば復旧できる)。`HEAD_SHA` を差し替えた場合は **`MERGE_BASE_SHA` を差し替え後の値で計算し、Step 6 出力の `commit_id` も揃える**。
        - **いずれかの fetch が失敗したら下記 2 へ進む** (退避する変数は無いので、失敗時にやることは遷移だけ)。head 側の `--unshallow` が **「既に complete」で失敗した場合は shallow が原因ではない** (履歴が無関係な 2 つの root を持つ等) ので、同じく下記 2 へ進む。
        - **base 側で `--unshallow` を付けるかを `--is-shallow-repository` で分岐する**理由: complete な repository に付けると `fatal: --unshallow on a complete repository does not make sense` で失敗して base の fetch 自体が飛び、まだ shallow な状態では付けられる。head 側の `--unshallow` が exit 0 でも **fetch 元自体が shallow (CI のミラー / キャッシュ経由) なら complete にならない**ので、どちらかに決め打ちすると片方のケースを壊す。
        - **`<remote>` は本 step の他の fetch と同じ解決に揃える** (通常は `origin`、cross-repo は explicit URL `https://github.com/<OWNER>/<REPO>.git`)。`origin` 決め打ちにすると cross-repo で別リポジトリを deepen してしまう。**refspec は必ず明示する** — explicit URL には設定済み refspec が無いのはもちろん、**`origin` 経路でも省略してはならない**。`actions/checkout` の shallow clone は `remote.origin.fetch` を単一 ref に絞るため、refspec を省いた `git fetch --unshallow origin` は **exit 0 かつ `--is-shallow-repository` が `false` になるのに `refs/pull/<PR_NUMBER>/head` と非 default base は取得されない**。
