@@ -61,7 +61,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   - `BASE_BRANCH` 指定時は `git fetch origin <BASE_BRANCH>` (cross-repo は head と同じ explicit URL `git fetch https://github.com/<OWNER>/<REPO>.git <BASE_BRANCH>` から。base ref は PR 所属リポジトリのものを指すため、cwd の origin から引くと別リポジトリの同名ブランチを掴む) 直後に `BASE_SHA=$(git rev-parse FETCH_HEAD)` で退避 (この fetch は head 用 FETCH_HEAD を上書きするので、必ず `HEAD_SHA` 退避後に行う)。base ブランチが既にローカルにあればその ref を直接使ってもよい。
   - 未指定時は `git ls-remote --symref origin HEAD` の `ref: refs/heads/<name>` 行から default branch 名を抽出 (cross-repo は explicit URL に対して同コマンド) し、それを上記同様 fetch して `BASE_SHA` を退避。任意の補助として `gh pr view ... --json baseRefName` で base 名を得てもよい。
   - default branch 仮定で解決した場合、PR が非 default base を対象にしていると diff 範囲がズレうる。その懸念があるときは caller に `BASE_BRANCH` 明示を促す。
-- **完了条件: `HEAD_SHA` / `BASE_SHA` が両方とも非空であること**。空のまま Step 3 / Step 4 に進むと `git diff <BASE_SHA>...<HEAD_SHA>` や `--name-only` が三点記法の省略側を `HEAD` で補って **fatal にならず成功し**、cwd の HEAD 次第で空差分・空の変更ファイル一覧になる (指摘ゼロのレビューを黙って投稿する)。git で解決できなければ `gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER> --jq .head.sha` / `--jq .base.sha` (または `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid,baseRefOid`) で埋める。どちらでも埋まらなければ「失敗時」に従い error 停止する。
+- **完了条件: `HEAD_SHA` / `BASE_SHA` が両方とも非空であること**。空のまま Step 3 / Step 4 に進むと `git diff <BASE_SHA>...<HEAD_SHA>` や `--name-only` が三点記法の省略側を `HEAD` で補って **fatal にならず成功し**、cwd の HEAD 次第で空差分・空の変更ファイル一覧になる (指摘ゼロのレビューを黙って投稿する)。git で解決できなければ `gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER> --jq .head.sha` / `--jq .base.sha` で埋める (head だけなら `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json headRefOid` でもよい。`gh pr view` に base の SHA を返すフィールドは無いので、base は pulls API から取る)。どちらでも埋まらなければ「失敗時」に従い error 停止する。
 
 #### ローカルモード
 
@@ -390,7 +390,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 ### 失敗時
 
-致命エラー (Step 1 で head SHA 取得失敗、`HEAD` detached、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空、Step 3 の PR モードで head 側を `git show` / `gh api` のどちらでも読めない、Step 4 の PR モードで差分取得不能など) は `{"error":"<人間向けメッセージ>"}` を Step 6 と同じ手順で `HANDOFF_PATH` に書き出し、最終メッセージでは「`<書き出し先パス>` を `Read` して error 分岐に従え」という継続指示を返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `label_counts` / `external_review` / `escalation` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は読み込んだ JSON に `error` フィールドがあれば caller に転送して停止する。
+致命エラー (Step 1 で head SHA 取得失敗、ローカルモードで `HEAD` detached (PR モードは作業ツリーを見ないので detached でも続行する。Actions の `actions/checkout` は `refs/pull/<N>/merge` を detached で置くのが通常)、ベースブランチ解決失敗、PR モードで `OWNER` / `REPO` / `PR_NUMBER` が空、Step 3 の PR モードで head 側を `git show` / `gh api` のどちらでも読めない、Step 4 の PR モードで差分取得不能など) は `{"error":"<人間向けメッセージ>"}` を Step 6 と同じ手順で `HANDOFF_PATH` に書き出し、最終メッセージでは「`<書き出し先パス>` を `Read` して error 分岐に従え」という継続指示を返す。**error 時は他フィールド (`mode` / `body` / `event` / `comments` / `label_counts` / `external_review` / `escalation` / `commit_id` / `base_branch` / `diff_mode` / `commit_count`) を含めない** (orchestrator が `error` 判定を `mode` 判定より先に評価する前提と整合させる)。orchestrator は読み込んだ JSON に `error` フィールドがあれば caller に転送して停止する。
 
 ## 守ること
 
