@@ -91,7 +91,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 #### ディレクトリ別方針 (monorepo 向け)
 
-root の共通方針に加え、**変更ファイルの祖先ディレクトリにある `REVIEW.md`** を root → 親 → 子の順にすべて読み込む。変更ファイル一覧は Step 4 と同じ差分範囲を `--name-only` で取って使う (PR モードは `git diff --name-only <BASE_SHA>...<HEAD_SHA>`、ローカルは `diff_mode` に合わせて `git diff --name-only <base>...HEAD` / `--cached` / 引数なし)。
+root の共通方針に加え、**変更ファイルの祖先ディレクトリにある `REVIEW.md`** を root → 親 → 子の順にすべて読み込む。変更ファイル一覧は Step 4 と同じ差分範囲を `--name-only` で取って使う (PR モードは `git diff --name-only <BASE_SHA>...<HEAD_SHA>`。fatal になったら空リストと読まず `gh pr diff --name-only <PR_NUMBER> --repo <OWNER>/<REPO>` / `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` から取り直す (Step 4 / 5-4 と同じ扱い)、ローカルは `diff_mode` に合わせて `git diff --name-only <base>...HEAD` / `--cached` / 引数なし)。
 
 ```text
 REVIEW.md                       # 全体共通
@@ -152,8 +152,8 @@ apps/api/REVIEW.md              # apps/api/ 配下
 
 - **PR モード**: **git 主経路** — Step 1 で退避した SHA を使い `git diff <BASE_SHA>...<HEAD_SHA>` (三点記法 = merge-base 基準で base 進行を除外。GitHub の "Files changed" と一致) を差分ソースにする。head/base の object は Step 1 で read-only fetch 済みなので `gh` は不要。ローカルの作業ツリー・ローカルブランチは一切変えない (「守ること」の read-only fetch 例外)。git 経路では出力打ち切りが起きないため truncation 検知 / ファイル単位の追い読みは不要。
   - **任意の補助 (使える環境のみ)**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>`。この場合 **truncation 検知** (`gh pr diff --name-only` の件数と patch hunk header (`diff --git a/...`) の出現件数の突合、末尾 `... (truncated)` の有無) を行い、疑わしければ `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) で追い読みする (`--paginate` 必須。`per_page=30` デフォルトで 30 ファイル超が落ちる事故防止)。ただし git 経路が使えるなら上記主経路を優先する。
-  - **`HEAD_SHA` / `BASE_SHA` は確定しているが object がローカルに無い場合** (`git fetch` が拒否・失敗した等) は `git diff <BASE_SHA>...<HEAD_SHA>` が fatal になる。これを **空差分と解釈してはならない** (「対象差分なし」で指摘ゼロのレビューを黙って投稿することになる)。上記の `gh` 補助経路に切り替え、それも使えなければ **差分取得不能として「失敗時」に従い `{"error":"..."}` を書き出して停止する** (空差分の分岐へ落とさない)。
-  - git 経路でも SHA を確定できず差分を取れないときに限り差分取得不能として扱う (Step 1 で既に `HEAD_SHA` を確定しているのが前提)。
+  - **`git diff <BASE_SHA>...<HEAD_SHA>` が fatal を返したら、理由を問わず空差分と解釈してはならない** (object がローカルに無い / shallow checkout で共通祖先が無く `fatal: no merge base` 等) (「対象差分なし」で指摘ゼロのレビューを黙って投稿することになる)。上記の `gh` 補助経路に切り替え、それも使えなければ **差分取得不能として「失敗時」に従い `{"error":"..."}` を書き出して停止する** (空差分の分岐へ落とさない)。
+  - 差分取得不能として扱うのは、SHA を確定できない場合と、上記のとおり git / `gh` のどちらでも差分を取れない場合 (Step 1 で既に `HEAD_SHA` を確定しているのが前提)。**空差分の分岐に入ってよいのは、差分取得に成功したうえで結果が空だったときだけ**。
   - 差分が空なら Step 5 のレビュー生成 (5-1〜5-4) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]`、`label_counts` を全キー `0`、`escalation` を `{"escalate": false, "reasons": []}` で返す (ローカルモードの `diff_mode="none"` と同様、5-3 / 5-4 を skip してもこれらのフィールドは省略しない)。
 - **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` でファイル一覧を取りファイル単位で追い読み。`commit` モードでは差分本体とは別に **`commit_count = git rev-list --count <base>..HEAD` で件数を取得** し Step 6 出力に含める (`--oneline | wc -l` ではなく `rev-list --count` を使う。コミットメッセージ改行等で値ズレしない正準コマンド)。`staged` / `worktree` / `none` モードでは `commit_count = 0` 固定。
   - `commit`: `git diff <base>...HEAD` (三点記法でベース進行を除外)

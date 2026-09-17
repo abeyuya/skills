@@ -26,7 +26,7 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 #### 1-1. OWNER / REPO (pure-git)
 
-caller から渡されていればそれを使う。未指定なら `git remote get-url origin` の URL から抽出する (SSH 形式 / HTTPS 形式の両対応: `git remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'`。先に末尾 `.git` を除去してから最後の 2 セグメントを取る。1 段で `(\.git)?` を末尾任意にすると貪欲マッチで `repo.git` ごと拾い `.git` が残るため 2 段に分ける)。gh が使える環境では `gh repo view --json nameWithOwner -q .nameWithOwner` を補助に使ってもよい。
+caller から渡されていればそれを使う。未指定なら `git remote get-url origin` の URL から抽出する (SSH 形式 / HTTPS 形式の両対応: `git remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'`。先に末尾 `.git` を除去してから最後の 2 セグメントを取る。1 段で `(\.git)?` を末尾任意にすると貪欲マッチで `repo.git` ごと拾い `.git` が残るため 2 段に分ける)。**抽出結果が `^[^/]+/[^/]+$` に一致するか検証する** — 末尾スラッシュ付き URL 等では sed が非マッチで URL 全体をそのまま返し、それを `OWNER`/`REPO` として後続に渡すと `gh api repos/<URL>` が失敗して CHANNEL 判定や停止理由を誤らせる。一致しなければ caller に `OWNER`/`REPO` の明示を促してエラー停止する。gh が使える環境では `gh repo view --json nameWithOwner -q .nameWithOwner` を補助に使ってもよい。
 
 #### 1-2. GitHub アクセスチャネル (`CHANNEL`) の解決
 
