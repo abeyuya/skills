@@ -27,7 +27,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 - `FILTER_AUTHOR`: PR 作成者で絞り込む (例: `dependabot[bot]` を除外したい場合は `-author:dependabot[bot]` 形式で渡す)。省略時はフィルタなし。`gh pr list --search` の検索式にそのまま連結する。
 - `FILTER_LABEL`: PR ラベルで絞り込む (例: `label:bug`)。省略時はフィルタなし。同上、`--search` に連結する。
 - `INCLUDE_AI_AUTHORED`: `> **[AI 自動投稿]**` プレフィックス付きのコメントを採否候補に含めるか。省略時 `true`。`false` の場合でも信号 (`is_ai_authored`) は付与するが、Phase C で AI が一律 reject に倒す。値は `true` / `false` を推奨するが、scripts/collect-signals.sh では大文字小文字 / 周辺空白を正規化し `1` / `yes` / `y` / `0` / `no` / `n` も受け入れる (それ以外は `exit 2`)。
-- `OUTPUT_DIR`: 出力先ディレクトリ。省略時は `/tmp/distill-pr-reviews/{repo}/{timestamp}` (例: `/tmp/distill-pr-reviews/skills/20260524T120000Z`)。caller が明示パスを指定した場合は既存ファイルがあれば上書きする。
+- `OUTPUT_DIR`: 出力先ディレクトリ。省略時は `/tmp/distill-pr-reviews/{repo}/{timestamp}` (例: `/tmp/distill-pr-reviews/skills/20260524T120000Z`)。caller が明示パスを指定した場合は既存ファイルがあれば上書きする。**リポジトリの作業ツリー外を指定すること** — Step 3.5 が `review-md/**/REVIEW.md` という実ファイル名の断片を書くため、リポジトリ配下に出すと `compose-review` の祖先 `REVIEW.md` 探索や次回蒸留の既存パス一覧に混入する。リポジトリ配下のパスが渡された場合は既定の `/tmp` 配下にフォールバックし、その旨を caller への報告に 1 行添える。
   - `{repo}`: `OWNER/REPO` の `REPO` 部分 (取得失敗時は `local`)
   - `{timestamp}`: `date -u +%Y%m%dT%H%M%SZ` の出力
 
@@ -238,10 +238,10 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
     2. **起点 = 最長共通ディレクトリ (LCD)**: 出典が単一ファイルならそのファイルのディレクトリ。root 直下のファイル (`README.md` / `package.json` 等) を含むなら LCD は root。
     3. **ルールの適用範囲まで上げる**: LCD から、そのルールが実際に成立する範囲 (パッケージ / アプリ / 機能領域の境界) まで祖先方向へ上げる。ツリー構造は `signals.json` 全 PR の `files` から推定してよい。言語 / フレームワークに依らない汎用ルール (null 安全、テスト追加、セキュリティ一般、コミット規約等) だけを root に置く。**迷ったらディレクトリ側に倒す** (分割が方針。root に積むと無関係なパッケージにまで効いてしまう)。
     4. **既存 `REVIEW.md` へ寄せる**: 3 で決めたディレクトリ D から root へ辿り、`meta.existing_review_md_paths` に含まれる **最も近い祖先** (D 自身を含む) の `REVIEW.md` を探す。見つかったファイルの担当範囲全体でもそのルールが成立するならそこを配置先にし (`target_is_new=false`)、成立しない (既存が広すぎる) / 既存が D より深い位置にしか無い場合は D に新規ファイルを提案する (`target_is_new=true`)。既存に寄せるのは、新規ファイルの乱立と祖先 `REVIEW.md` 数の無駄な増加を避けるため。
-       - `existing_review_md_paths=null` (取得失敗) のときは 4 を丸ごとスキップし、全件 `target_is_new=null` にした上で proposals.md 冒頭にその旨を 1 行明記する。
+       - `existing_review_md_paths=null` (取得失敗) のとき、および **`meta` に当該キー自体が無いとき** (本機能より前に生成した `signals.json` を再判定に使った場合) は 4 を丸ごとスキップし、全件 `target_is_new=null` にした上で proposals.md 冒頭にその旨を 1 行明記する。**キーの不在を「空配列 = 既存 REVIEW.md なし」と解釈してはならない** (実在するファイルと重複する新規提案になるため)。
        - `existing_review_md_truncated=true` のときも proposals.md 冒頭に 1 行明記する (既存ファイルの取りこぼしで `target_is_new=true` が過剰に付く可能性がある)。
-       - **root (`REVIEW.md`) を新規で提案する場合は要注意**: `compose-review` Step 3 は root の共通方針を `REVIEW.md` → `AGENTS.md` → `.claude/CLAUDE.md` → `CLAUDE.md` の優先順で **最初に見つかった 1 つだけ** 読む。root に `REVIEW.md` が無いリポジトリで新規作成すると、それまで読まれていた `AGENTS.md` / `CLAUDE.md` の方針とエスカレーション基準が丸ごと shadowing されて無言で失効する。したがって `target_review_md=REVIEW.md` かつ `target_is_new=true` の配置先が 1 つでもあれば、**proposals.md 冒頭と caller 報告に「root に REVIEW.md を新規作成すると既存の AGENTS.md / CLAUDE.md が読まれなくなるため、後続フローで既存 root 方針の移植を検討すること」を 1 行明記する** (本 skill は root 4 候補の有無を知らないため、警告に留めて判断は後続フローに委ねる)。root の既存 `REVIEW.md` への追記 (`target_is_new=false`) ならこの問題は起きない。
-    5. **制約**: `node_modules/` / `vendor/` 配下は配置先にしない (`compose-review` が読まないため)。1 proposal = 1 配置先。クラスタの出典が無関係な top-level (`apps/web` と `apps/api` 等) にまたがる場合、ルールが両方でだけ成立するなら共通祖先 (`apps/REVIEW.md`)、リポジトリ全体で成立するなら root にする。配置先が分かれるべき内容なら **proposal を分割する**。
+       - **root (`REVIEW.md`) を新規で提案する場合は要注意**: `compose-review` Step 3 は root の共通方針を `REVIEW.md` → `AGENTS.md` → `.claude/CLAUDE.md` → `CLAUDE.md` の優先順で **最初に見つかった 1 つだけ** 読む。root に `REVIEW.md` が無いリポジトリで新規作成すると、それまで読まれていた `AGENTS.md` / `CLAUDE.md` の方針とエスカレーション基準が丸ごと shadowing されて無言で失効する。したがって `target_review_md=REVIEW.md` かつ **`target_is_new` が `false` 以外 (`true` / `null`)** の配置先が 1 つでもあれば、**proposals.md 冒頭と caller 報告に「root に REVIEW.md を新規作成すると既存の AGENTS.md / CLAUDE.md が読まれなくなるため、後続フローで既存 root 方針の移植を検討すること」を 1 行明記する** (本 skill は root 4 候補の有無を知らないため、警告に留めて判断は後続フローに委ねる)。root の既存 `REVIEW.md` への追記 (`target_is_new=false`) ならこの問題は起きない。
+    5. **制約**: `target_review_md` は **`..` を含まず、絶対パスでもない root 相対パスで、末尾が `REVIEW.md`** でなければならない (出典パスは過去 PR のレビューコメント由来 = 第三者が書ける値なので、そのまま Step 3.5 の書き出し先に流すと `${OUTPUT_DIR}` の外に出られる)。条件を満たさない候補は採用せず root (`REVIEW.md`) に倒す。`node_modules/` / `vendor/` 配下も配置先にしない (`compose-review` が読まないため)。1 proposal = 1 配置先。クラスタの出典が無関係な top-level (`apps/web` と `apps/api` 等) にまたがる場合、ルールが両方でだけ成立するなら共通祖先 (`apps/REVIEW.md`)、リポジトリ全体で成立するなら root にする。配置先が分かれるべき内容なら **proposal を分割する**。
     6. `reject` には配置先を付けない (`target_review_md=null`)。`hold` には暫定の配置先を付ける (後続フローで採用に転じたときそのまま使えるようにするため)。
 
 10. **迷ったら `hold`**
@@ -286,11 +286,11 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 <existing_review_md_paths=null のときのみ: 「既存 REVIEW.md の一覧を取得できなかったため、配置先の既存/新規は判定していない (既存ファイルと重複する提案になっている可能性がある)。後続フローは断片を適用する前に各配置先の実在を確認すること」を 1 行>
 <existing_review_md_truncated=true のときのみ: 「リポジトリの tree が大きく一覧が不完全なため、既存 REVIEW.md を取りこぼして「新規」と判定している配置先がありうる。後続フローは新規扱いの配置先の実在を確認すること」を 1 行>
-<root に target_is_new=true の配置先があるときのみ: 「root に REVIEW.md を新規作成すると compose-review が既存の AGENTS.md / CLAUDE.md を読まなくなる (root は最初に見つかった 1 つだけを読む)。後続フローで既存 root 方針の移植を検討すること」を 1 行>
+<root の配置先があり、その target_is_new が false 以外 (true / null) のときのみ: 「root に REVIEW.md を新規作成すると compose-review が既存の AGENTS.md / CLAUDE.md を読まなくなる (root は最初に見つかった 1 つだけを読む)。後続フローで既存 root 方針の移植を検討すること」を 1 行>
 
 ## 後続フロー
 
-1. `review-md/<配置先>` の断片を、対応するディレクトリの REVIEW.md へ適用する PR を作成する。配置先ごとの根拠は本ファイルの「採用候補」を参照。適用時の注意:
+1. `review-md/<配置先>` の断片を、対応するディレクトリの REVIEW.md へ適用する PR を作成する (採用候補 0 件の回は `review-md/` 自体を出力していないので本手順は不要)。配置先ごとの根拠は本ファイルの「採用候補」を参照。適用時の注意:
    - **適用前に配置先ファイルの実在を確認する**。「新規」と書かれていても実在すれば追記に切り替える (本 skill の既存/新規判定は蒸留実行時点の default branch のスナップショットで、取得失敗・tree truncated・その後の変更でズレうる)。実在しなければ断片をそのままファイルとして作成する
    - **追記位置は `エスカレーション基準` 見出しを含むセクションの配下にしない**。`compose-review` はそのセクション配下の記述だけをエスカレーション基準として扱うため、末尾が当該セクションのファイルに単純追記すると、蒸留した観点が基準として解釈され無関係な PR で `escalate: true` が立つ。断片は見出し付きで出力されるので、当該セクションより前か、独立した節として入る位置に置く
 2. 「保留」セクションは個別判断 (採用 / 棄却 / 文面修正の上で採用 のどれにするか)。採用する場合の配置先候補も各項目に併記してある
@@ -302,7 +302,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 ## 採用候補
 
-配置先 `REVIEW.md` ごとにグルーピングする (root を先頭に、以降はパス昇順)。項目番号は配置先をまたいだ通し番号。
+配置先 `REVIEW.md` ごとにグルーピングする (root を先頭に、以降はパス昇順)。項目番号は配置先をまたいだ通し番号。見出しの括弧内は `target_is_new` に対応させ、`false` なら `既存`、`true` なら `新規`、`null` なら `既存/新規 不明` と書く。
 
 ### 配置先: REVIEW.md (root, 既存)
 
@@ -383,8 +383,9 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 - **ディレクトリ作成**: `Write` ツールは中間ディレクトリの自動作成を保証しないため、書き出し前に `Bash` で `mkdir -p "${OUTPUT_DIR}/review-md/<配置先のディレクトリ部分>"` を実行する。**`Bash` で許可されるのはこの `mkdir` だけ** で、ファイル内容の書き出しは必ず `Write` ツールで行う (`heredoc` / `cat` リダイレクトは使わない)。
 - **内容**: その配置先に割り当てた `accept` の `proposal_text` (bullet) を並べるだけにする。`hold` / `reject` は含めない。**出典 URL / 信号 / 判定根拠などのメタ情報は入れない** — この断片は `compose-review` がそのままレビュー方針として読むファイルになるため (メタは proposals.md 側の責務)。
-- **見出しを必ず付ける**: 断片の先頭は `## レビュー観点 (<生成日 YYYY-MM-DD> 蒸留)` の H2 見出し + 空行 + bullet 群にする。既存ファイルへ追記する場合に **`エスカレーション基準` 見出しのセクションを閉じる** ためで、見出し無しの bullet を末尾追記すると、その記述が `compose-review` にエスカレーション基準として解釈され無関係な PR で `escalate: true` が立つ (後続フローにも適用位置の注意を出すが、断片側でも防いでおく)。
-  - `target_is_new=true` / `null` (新規ファイルの提案) の場合は、H2 の前にさらに H1 を置く (root なら `# レビュー方針`、ディレクトリ別なら `# <dir>/ 配下のレビュー方針`)。ファイルごと作成してもそのまま成立する形にするため。
+- **見出しを必ず付ける**: 断片の先頭は `## レビュー観点 (<生成日 YYYY-MM-DD> 蒸留)` の H2 見出し + 空行 + bullet 群にする。既存ファイルへ追記する場合に **`エスカレーション基準` 見出しのセクションを閉じる** ためで、見出し無しの bullet を末尾追記すると、その記述が `compose-review` にエスカレーション基準として解釈され無関係な PR で `escalate: true` が立つ。ただし `compose-review` は **任意のレベル (`#`〜`######`) の見出し** を基準セクションとして認めるため、追記先の `エスカレーション基準` が H1 だと H2 では閉じられない。断片側の H2 は既定の形であって完全な担保ではなく、**適用位置の判断は後続フロー (Step 3 「後続フロー」2 番目の注意) が担う**。
+  - `target_is_new=true` (既存一覧に無いと確認できた新規ファイル) の場合のみ、H2 の前にさらに H1 を置く (root なら `# レビュー方針`、ディレクトリ別なら `# <dir>/ 配下のレビュー方針`)。ファイルごと作成してもそのまま成立する形にするため。
+  - `target_is_new=null` (既存一覧を取得できず既存/新規が不明) の場合は **H1 を付けない** (H2 + bullet のみ)。実在する既存ファイルに追記されたときに H1 が途中へ挿入されるのを避けるため。後続フローが実在しないと確認してファイルごと作成する場合は、その時点で H1 を補う。
 - **採用候補が 0 件なら `review-md/` は作らない** (空ディレクトリを残さない)。
 - `OUTPUT_DIR` が caller 明示指定で既存の断片が残っている可能性がある場合は、`Write` の前に `Read` を 1 回挟む (proposals.md と同じ理由: `Write` ツールは同一セッション中に `Read` していない既存ファイルへの上書きを拒否する)。
 - 本 step で書くのは `${OUTPUT_DIR}` 配下のみ。**リポジトリ内の `REVIEW.md` は作成も編集もしない**。
@@ -396,16 +397,17 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 - 対象期間 (`SINCE`..`UNTIL`) / 対象リポジトリ
 - 対象 PR 数 / バグ修正PR数 / 抽出コメント数 / 採用・保留・棄却の内訳件数 (採用のうち bugfix-diff 由来件数も)
 - 採用候補の配置先 `REVIEW.md` のファイル数 (既存 <E> / 新規 <N>。`existing_review_md_paths=null` の回は内訳を出さず「既存/新規は判定不能」と伝える) と、主な配置先パス
-- 出力先パス (`OUTPUT_DIR/proposals.md` / `review-md/` / `prs.json` / `signals.json`)
+- 出力先パス (`OUTPUT_DIR/proposals.md` / `prs.json` / `signals.json`。採用候補が 1 件以上あるときだけ `review-md/` も案内する。0 件なら Step 3.5 が作らないので触れない)
 - `MAX_PRS` 超過時 / `bugfix_diffs_truncated=true` / `existing_review_md_paths=null` (既存一覧の取得失敗) / `existing_review_md_truncated=true` の場合はその旨を 1 行で追記
-- root (`REVIEW.md`) を新規で提案した回は、「既存の `AGENTS.md` / `CLAUDE.md` が読まれなくなるため移植の検討が要る」旨を 1 行で追記
+- root (`REVIEW.md`) の配置先があり `target_is_new` が `false` 以外だった回は、「既存の `AGENTS.md` / `CLAUDE.md` が読まれなくなるため移植の検討が要る」旨を 1 行で追記 (既存一覧を取得できなかった回ほど既存 root 方針の有無が分からないので、`null` でも必ず出す)
 
 チャットに proposals.md / `review-md/` 断片の全文をダンプしない (件数が多いケースで後続会話のコンテキストを圧迫するため)。出力先パスと冒頭メタ + 件数内訳のみをチャットに出し、詳細は markdown ファイルを参照させる。
 
 ## 守ること
 
 - READ-ONLY: GitHub 投稿 / PR 作成 / commit / push / `git fetch` / `git checkout` などローカル ref を書き換える操作は一切しない。`gh pr comment` / `gh pr review` / `gh api .../reviews` / `gh pr create` も使わない。**`review-md/` 断片は `${OUTPUT_DIR}` 配下に書くだけで、リポジトリ内の `REVIEW.md` は作成も編集もしない**。
-- **ファイル書き出しは `${OUTPUT_DIR}` 配下の `proposals.md` と `review-md/<配置先>` 断片のみ**。`Bash` での書き出しは禁止で、例外は Step 3.5 の `mkdir -p "${OUTPUT_DIR}/review-md/..."` だけ (内容は必ず `Write` ツールで書く)。
+- **`OUTPUT_DIR` はリポジトリの作業ツリー外に置く** (入力仕様参照)。`review-md/` 断片のファイル名が `REVIEW.md` そのものなので、リポジトリ内に出すと以降のレビューがそれを方針ファイルとして拾う。
+- **ファイル書き出しは `${OUTPUT_DIR}` 配下の `proposals.md` と `review-md/<配置先>` 断片のみ**。`Bash` での書き出しは禁止で、例外は Step 3.5 の `mkdir -p "${OUTPUT_DIR}/review-md/..."` だけ (内容は必ず `Write` ツールで書く)。**`mkdir` / `Write` の前に、組み立てたパスが `${OUTPUT_DIR}/review-md/` 配下に収まることを確認する** (判断軸 9 の 5 で `target_review_md` に課した制約と二重で担保する。配置先は第三者が書けるデータから導出されるため)。
 - **リポジトリ内の既存 `REVIEW.md` の中身は読まない**。配置先決定に使うのはスクリプトが取得した `meta.existing_review_md_paths` (パス一覧) だけで、AI が `Read` / `git show` / `gh api` でリポジトリ内 `REVIEW.md` の内容を追加取得してはならない (既存内容との重複判定は proposals.md のフラグに留める、という責務分離のため)。**本制約の対象はリポジトリ内のファイルだけ**で、Step 3 / 3.5 が上書き前に行う `${OUTPUT_DIR}` 配下 (`proposals.md` / `review-md/**`) の `Read` は対象外 (`Write` ツールの上書き制約を満たすために必要)。
 - **配置先は可能な限りディレクトリ別に分割する**。root (`REVIEW.md`) はリポジトリ横断で成立する汎用ルール専用で、迷ったらディレクトリ側に倒す。`node_modules/` / `vendor/` 配下は配置先にしない。
 - `post-pr-review` / `resolve-pr-threads` / `run-pr-review` / `run-local-review` skill は呼ばない (独立 skill)。
