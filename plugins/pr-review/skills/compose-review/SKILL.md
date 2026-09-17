@@ -182,7 +182,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - **`code-review` が `disable-model-invocation` で呼べないこと** — これは 1 が不成立になるだけで、2 (`scan-diff-findings`) は影響を受けない。詳細は下記「`code-review` の呼び出し可能性判定」。
   - **`gh` 1 経路の失敗** — PR モードの差分取得は git を主経路にしており (Step 4)、`gh` が 403 等で落ちていても Step 1 で fetch 済みの SHA から差分を組める。その ref range はそのまま 2 の `TARGET` に渡せるし、1 が使える環境なら code-review の target にも渡せる (`branch` モードでローカル review。下の「PR モード」「リカバリ」参照)。`gh` の失敗を「GitHub アクセス全不能」と一般化して外部レビューをスキップするのは既知の誤判断であり、してはならない。
   - **Agent / Task ツールが使えないこと** — 1 は Agent ツールに依存するので不成立になりうるが、2 (`scan-diff-findings`) は Agent が無い場合に現在コンテキストでの逐次自己適用へフォールバックする契約なので影響を受けない。
-  - **ローカル作業ツリーが PR ブランチと異なる / checkout していないこと** — 1 も 2 も ref range を target に取れるので作業ツリーの状態に依存しない。
+  - **ローカル作業ツリーが PR ブランチと異なる / checkout していないこと** — 1 も 2 も ref range を target に取れるので作業ツリーの状態に依存しない (**例外**: checkout が無い / shallow で `git` の object や merge-base 自体が無く Step 3 / Step 4 が `gh` 経路に degrade した回は ref range を渡せない。この場合だけは 2 が不成立になり、下記「`scan-diff-findings` の呼び出し」の但し書きに従って 1 (PR URL) → 3 の順で試す)。
 
 - **解決順**:
   1. `code-review` (Claude Code 組み込み) が当セッションで **Skill ツールから実際に呼び出せて**、**かつ** Agent/Task ツールが当コンテキストで利用可能なら → これを使う (`code-review` は内部で Agent ツールによる finder/verifier の fan-out を行うため Agent ツールが必要)。呼び出し可能性の判定は下記「`code-review` の呼び出し可能性判定」に従う。
@@ -218,7 +218,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   | ローカル `staged` | (省略) | `staged` |
   | ローカル `worktree` | (省略) | `worktree` |
 
-  **Step 3 / Step 4 が `gh` 経路に degrade した回は ref range を渡さない**: object が無ければ `scan-diff-findings` は ref range の両端を `git cat-file -e` で確認して `{"error":...}` を返し、merge-base が無い (shallow) 回は差分が空になる。どちらも外部レビューの結果としては使えない。`scan-diff-findings` は PR URL を `TARGET` に取れず自身では fetch しない契約なので、この回は **解決順 2 を不成立として扱い、解決順 3 (ホスト標準レビュースキル) を試してから**、それも無ければ **外部レビュー未併用**として 5-5 の開示を入れる (空振りや error を「併用できた」と記録しない)。
+  **Step 3 / Step 4 が `gh` 経路に degrade した回は ref range を渡さない**: object が無ければ `scan-diff-findings` は ref range の両端を `git cat-file -e` で確認して `{"error":...}` を返し、merge-base が無い (shallow) 回は `fatal: no merge base` で失敗する。どちらも外部レビューの結果としては使えない。`scan-diff-findings` は PR URL を `TARGET` に取れず自身では fetch しない契約なので、この回は **解決順 2 を不成立として扱い、解決順 3 (ホスト標準レビュースキル) を試してから**、それも無ければ **外部レビュー未併用**として 5-5 の開示を入れる (空振りや error を「併用できた」と記録しない)。
 
   戻り後は **`FINDINGS_PATH` を `Read` ツールで読み込み**、JSON を `error` → 正常 の順で評価する (最終メッセージは継続指示文なので parse 対象にしない)。**ここで応答を終了しない** — 読み込んだ findings を正規化して 5-3 → 5-4 → 5-5 → Step 6 まで同一応答内で続行する。`error` だった / `Read` が失敗した / parse できない / `findings` を欠く場合は、解決順 2 が不成立というだけなので **解決順 3 (ホスト標準レビュースキル) を試す**。3 も無ければそこで初めて外部レビューを諦め、**5-5 の未併用開示を入れた上で** 5-1 単独で 5-3 へ進む (本 skill 全体をエラーにはしない)。1 つの候補の失敗で残りを飛ばさないのは、上記「退化条件の厳格化」および解決順 1 失敗時の扱いと対称にするため。
 
