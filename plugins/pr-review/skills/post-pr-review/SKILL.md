@@ -1,6 +1,6 @@
 ---
 name: post-pr-review
-description: PR レビュー結果を1つの Review として GitHub に投稿する。複数のインライン指摘や総括コメントを含むレビューを投稿する場合は必ずこの skill を使うこと。`gh pr comment` / `gh pr review` / MCP の個別コメント投稿ツールを使った個別投稿は禁止。gh CLI / GitHub MCP ツールのどちらのチャネル (`CHANNEL=gh|mcp`) でも投稿できる。Review body には AI 自動投稿マーカーと、CI が required status check で機械判定するための機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=0 should=1 ... -->`、指摘 0 件でも必ず出力) を自動で付与する。ラベル別件数は任意入力 `LABEL_COUNTS` があればそれを正典とし、無ければ `comments[]` の先頭ラベルから集計する。
+description: 'PR レビュー結果を1つの Review として GitHub に投稿する。複数のインライン指摘や総括コメントを含むレビューを投稿する場合は必ずこの skill を使うこと。`gh pr comment` / `gh pr review` / MCP の個別コメント投稿ツールを使った個別投稿は禁止。gh CLI / GitHub MCP ツールのどちらのチャネル (`CHANNEL=gh|mcp`) でも投稿できる。Review body には AI 自動投稿マーカーと、CI が required status check で機械判定するための機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=0 should=1 ... -->`、指摘 0 件でも必ず出力) を自動で付与する。ラベル別件数は任意入力 `LABEL_COUNTS` があればそれを正典とし、無ければ `comments[]` の先頭ラベルから集計する。'
 ---
 
 # post-pr-review skill
