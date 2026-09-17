@@ -202,7 +202,7 @@ permissions:
       --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(gh repo view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git fetch:*),Bash(git show:*),Bash(git cat-file:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*),Bash(grep:*),Bash(sed:*),Bash(date:*),Bash(mkdir:*)"
 ```
 
-> **git 主経路を使うなら checkout を shallow にしない**。上の例には `actions/checkout` を置いていないため、リポジトリが無い環境では全経路が `gh` に degrade する (それでも動くが、指示ファイルの取得は `gh api` 頼みになる)。`actions/checkout` を置く場合は既定の `fetch-depth: 1` だと共通祖先がローカルに無く `git diff <BASE_SHA>...<HEAD_SHA>` が `fatal: no merge base` になるので、`fetch-depth: 0` を指定するか、ジョブ内で `git fetch --unshallow` してから skill を呼ぶ。
+> **`fetch-depth: 0` を指定した `actions/checkout` を置くこと** (上の例には無い)。`compose-review` は base / head の SHA を git で解決するため、checkout が無い / shallow な構成では base SHA を解決できず、黙って空差分を返す代わりに error 停止する (`gh` からは base の SHA を取れないので degrade もしない)。既定の `fetch-depth: 1` は共通祖先がローカルに無く `git diff <BASE_SHA>...<HEAD_SHA>` が `fatal: no merge base` になるので、`fetch-depth: 0` か、ジョブ内の `git fetch --unshallow` を挟む。
 
 > 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
 
