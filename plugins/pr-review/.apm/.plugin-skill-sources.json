@@ -1,0 +1,1 @@
+{"declared": false, "sources": {"compose-review": "skills/compose-review", "distill-pr-reviews": "skills/distill-pr-reviews", "post-pr-review": "skills/post-pr-review", "resolve-pr-threads": "skills/resolve-pr-threads", "run-local-review": "skills/run-local-review", "run-pr-review": "skills/run-pr-review", "scan-diff-findings": "skills/scan-diff-findings"}, "version": 1}
