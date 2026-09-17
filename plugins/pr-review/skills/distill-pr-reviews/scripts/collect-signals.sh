@@ -4,6 +4,8 @@
 # 入力: 環境変数 (OWNER / REPO / SINCE / UNTIL / DAYS / MAX_PRS / MAX_BUGFIX_DIFFS /
 #                  FILTER_AUTHOR / FILTER_LABEL / INCLUDE_AI_AUTHORED / OUTPUT_DIR)
 # 出力:
+#   ${OUTPUT_DIR}/_existing_review_md.json (中間: default branch 上の既存 REVIEW.md パス一覧。
+#                                       中身は読まない。Phase C の配置先決定の入力)
 #   ${OUTPUT_DIR}/_pr_list.json      (中間: gh pr list --json 生 JSON)
 #   ${OUTPUT_DIR}/_pr_data.jsonl     (中間: PR ごと 1 行 JSON, GraphQL から取得した
 #                                       reviewThreads + commits + files)
@@ -30,6 +32,8 @@
 #   - reactions は廃止 (信号価値が低くノード上限の圧迫が大きいため)。
 #   - バグ修正PR (pr_kind=bugfix) のみ `gh pr diff` で 1 PR = 1 コール取得 (Step 3.5)。
 #     subset 限定 + MAX_BUGFIX_DIFFS 件 + DIFF_CHAR_CAP 文字で抑制するため core 枠への影響は限定的。
+#   - 既存 REVIEW.md の配置取得 (Step 0.5) は `gh repo view` + `gh api git/trees` の固定 2 コール
+#     (PR 数に依存しない)。
 #   - 1 query あたりノード試算: reviewThreads(50) × comments(50) + commits(100) + files(100) + labels(0)
 #     ≈ 2,700 ノード (GraphQL 500k 上限の 0.5%)。
 
@@ -90,6 +94,30 @@ mkdir -p "$OUTPUT_DIR"
 log "OWNER=${OWNER} REPO=${REPO} SINCE=${SINCE} UNTIL=${UNTIL} MAX_PRS=${MAX_PRS}"
 log "OUTPUT_DIR=${OUTPUT_DIR}"
 
+# ====== Step 0.5: 既存 REVIEW.md の配置 (パス一覧) を取得 ======
+# 中身は読まない (SKILL.md「REVIEW.md の中身を読まない」原則)。Phase C が各 proposal の配置先
+# REVIEW.md (root / apps/web/REVIEW.md 等) を既存の階層に寄せるための入力にするだけ。
+# default branch の tree を recursive で 1 コール取得し、`REVIEW.md` で終わる blob のみ抽出する。
+# node_modules/ / vendor/ 配下は compose-review が読まない (PR #58) ので配置先候補からも外す。
+# 取得失敗を「REVIEW.md が 1 つも無い」と混同しないため、失敗時は paths=null + WARNING
+# (Step 3.5 の bugfix_diff=null と同じ流儀)。0 PR の早期終了より前に置き、meta のスキーマを
+# 0 件時も同形にする。
+EXISTING_REVIEW_MD_FILE="${OUTPUT_DIR}/_existing_review_md.json"
+DEFAULT_BRANCH=$(gh repo view "${OWNER}/${REPO}" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
+if [[ -n "$DEFAULT_BRANCH" ]] && gh api "repos/${OWNER}/${REPO}/git/trees/${DEFAULT_BRANCH}?recursive=1" \
+     --jq '{paths: ([.tree[] | select(.type == "blob") | .path
+                     | select(test("(^|/)REVIEW\\.md$"))
+                     | select(test("(^|/)(node_modules|vendor)/") | not)] | sort),
+            truncated: (.truncated // false)}' \
+     > "$EXISTING_REVIEW_MD_FILE" 2>/dev/null; then
+  EXISTING_REVIEW_MD_COUNT=$(jq -r '.paths | length' "$EXISTING_REVIEW_MD_FILE")
+  EXISTING_REVIEW_MD_NOTE=$(jq -r 'if .truncated then " (WARNING: tree truncated — 一覧は不完全)" else "" end' "$EXISTING_REVIEW_MD_FILE")
+  log "existing REVIEW.md: ${EXISTING_REVIEW_MD_COUNT} file(s)${EXISTING_REVIEW_MD_NOTE}"
+else
+  log "WARNING: 既存 REVIEW.md 一覧の取得に失敗 (existing_review_md_paths は null。Phase C の既存階層への寄せはスキップされる)"
+  printf '{"paths": null, "truncated": false}\n' > "$EXISTING_REVIEW_MD_FILE"
+fi
+
 # ====== Step 1: gh pr list ======
 # bash の variable assignment 文脈では pathname expansion されないため、
 # FILTER_AUTHOR="-author:dependabot[bot]" のような角括弧入り値も glob 展開されない。
@@ -127,7 +155,8 @@ if [[ "$PR_COUNT" -eq 0 ]]; then
     --argjson pr_count 0 --argjson max_prs_exceeded false \
     --argjson include_ai_authored "$INCLUDE_AI_AUTHORED" \
     --argjson bugfix_pr_count 0 --argjson bugfix_diffs_truncated false \
-    '{meta: {owner:$owner, repo:$repo, since:$since, until:$until, collected_at:$collected_at, pr_count:$pr_count, max_prs_exceeded:$max_prs_exceeded, include_ai_authored:$include_ai_authored, bugfix_pr_count:$bugfix_pr_count, bugfix_diffs_truncated:$bugfix_diffs_truncated}, prs: []}' \
+    --slurpfile existing "$EXISTING_REVIEW_MD_FILE" \
+    '{meta: {owner:$owner, repo:$repo, since:$since, until:$until, collected_at:$collected_at, pr_count:$pr_count, max_prs_exceeded:$max_prs_exceeded, include_ai_authored:$include_ai_authored, bugfix_pr_count:$bugfix_pr_count, bugfix_diffs_truncated:$bugfix_diffs_truncated, existing_review_md_paths:$existing[0].paths, existing_review_md_truncated:$existing[0].truncated}, prs: []}' \
     > "${OUTPUT_DIR}/signals.json"
   echo "${OUTPUT_DIR}/signals.json"
   exit 0
@@ -303,6 +332,7 @@ jq -n \
   --argjson include_ai_authored "$INCLUDE_AI_AUTHORED" \
   --slurpfile pr_list "${OUTPUT_DIR}/_pr_list.json" \
   --slurpfile pr_data_lines "$PR_DATA_FILE" \
+  --slurpfile existing "$EXISTING_REVIEW_MD_FILE" \
   '
     # バグ修正PR検知: title (`<scope> fix:` / `fix:` / `fix(scope):`) / commit headline /
     # ラベル / revert / キーワードのいずれかにマッチすれば bugfix。確信度の最終判断は Phase C の AI。
@@ -320,7 +350,10 @@ jq -n \
         include_ai_authored: $include_ai_authored,
         # bugfix_pr_count / bugfix_diffs_truncated は diff 取得 (Step 3.5) 後に上書きする暫定値。
         bugfix_pr_count: 0,
-        bugfix_diffs_truncated: false
+        bugfix_diffs_truncated: false,
+        # Step 0.5 で取得した既存 REVIEW.md の配置 (パス一覧)。null は取得失敗、[] は 0 件。
+        existing_review_md_paths: $existing[0].paths,
+        existing_review_md_truncated: $existing[0].truncated
       },
       prs: ($pr_list[0] | map(
         . as $pr |

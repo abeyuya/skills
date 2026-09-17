@@ -1,14 +1,16 @@
 ---
 name: distill-pr-reviews
-description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を proposals.md として出力する skill。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する。取り込み判定の信号収集はスクリプト、最終的な採否分類とクラスタリングは AI が行う。本 skill は read-only で、REVIEW.md の編集や PR 作成は行わない。収集スクリプトが gh CLI に依存するため gh チャネル専用 (gh が使えない web/remote セッション等では動かない)。
+description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を proposals.md として出力する skill。各候補には配置先 REVIEW.md (root / apps/web/REVIEW.md 等のディレクトリ別) を付けて振り分け、配置先ごとにそのまま追記できる断片ファイル (review-md/) も出力する。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する。取り込み判定の信号収集はスクリプト、最終的な採否分類とクラスタリングと配置先決定は AI が行う。本 skill は read-only で、REVIEW.md の編集や PR 作成は行わない。収集スクリプトが gh CLI に依存するため gh チャネル専用 (gh が使えない web/remote セッション等では動かない)。
 ---
 
 # distill-pr-reviews skill
 
 過去 merged PR のレビューコメントから「REVIEW.md に蓄積する価値のある指摘」を抽出する skill。
-出力 (`proposals.md`) を後工程 (人間 or 別 skill) が読んで REVIEW.md 編集 PR を作る、という運用を想定している。
+出力 (`proposals.md` + 配置先ごとの `review-md/` 断片) を後工程 (人間 or 別 skill) が読んで REVIEW.md 編集 PR を作る、という運用を想定している。
 
-**本 skill のスコープは proposals.md 出力で停止する。** REVIEW.md の編集 / commit / push / PR 作成は一切行わない。
+`compose-review` は **変更ファイルの祖先ディレクトリにある `REVIEW.md`** を root → 親 → 子の順に読み、それぞれの配下にだけ適用する (monorepo 向けのディレクトリ別方針)。本 skill もこれに追従し、各候補を **可能な限りディレクトリ別の REVIEW.md に振り分ける** (root は「リポジトリ横断で成立する汎用ルール」だけに絞る)。
+
+**本 skill のスコープは proposals.md + `review-md/` 断片の出力で停止する。** REVIEW.md の編集 / commit / push / PR 作成は一切行わない。断片は `OUTPUT_DIR` 配下に書き出すだけで、リポジトリ内の REVIEW.md は作成も編集もしない。
 状態管理ファイルは持たず、毎回期間引数を渡す方式 (運用がシンプルで監査性が高い)。
 
 **本 skill は gh チャネル専用**: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり bash からは GitHub MCP ツールを呼べないため、`gh` CLI が使えない環境 (Claude Code の web/remote セッション等。gh が恒常 403 になる) では実行できない。その場合はエラーとして caller に報告して停止する。
@@ -40,7 +42,8 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 - `run-pr-review` / `post-pr-review` / `resolve-pr-threads` / `run-local-review` はいずれも **単一の進行中 PR ライフサイクル** が対象。本 skill は **過去 merged PR 群** からの横断的な学習材料抽出が対象。
 - 依存関係なし: 本 skill から他 skill は呼ばない。他 skill も本 skill に依存しない。
 - `/pr-review-style-reference` の severity ラベル定義 (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`) は Phase B / C で参照する。本 skill では再掲しない (二重管理を避けるため)。
-- 既存 `REVIEW.md` を **読まない** (それは `run-pr-review` Step 3 / `run-local-review` Step 3 の役割)。本 skill は「REVIEW.md を育てるための候補ファイル」を出すだけで、既存内容との重複判定は AI が proposals.md 内に「重複可能性あり」フラグとして残す形に留める。
+- 既存 `REVIEW.md` の **中身は読まない** (それは `compose-review` Step 3 の役割)。本 skill は「REVIEW.md を育てるための候補ファイル」を出すだけで、既存内容との重複判定は AI が proposals.md 内に「重複可能性あり」フラグとして残す形に留める。ただし **配置 (パス一覧) だけ** は収集スクリプトが取得し (`meta.existing_review_md_paths`)、配置先を既存の階層に寄せるために使う。
+- 配置先の粒度規約は `compose-review` Step 3「ディレクトリ別方針 (monorepo 向け)」に従う (各 `REVIEW.md` はそのディレクトリ配下にだけ適用される / `node_modules/` `vendor/` 配下は読まれない / 1 ファイルに適用される祖先 `REVIEW.md` は 10 個程度が目安)。本 skill は **どこに置くかを提案するだけ** で、実際の適用は `compose-review` の責務。
 - 対象は **merged PR のみ**。open / closed unmerged は対象外 (取り込み判定が安定しないため)。
 
 ## 設計上の主要トレードオフ
@@ -54,6 +57,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 7. **REVIEW.md 既存内容との重複判定は本 skill ではしない**: 後続フロー (REVIEW.md 編集) との責務分離を保つ。AI は proposals.md に「重複可能性あり」フラグだけ立てる。
 8. **バグ修正PR は検知 + diff 取得で「新しい抽出源」にする**: バグ修正PRはレビューをすり抜けたバグの証拠であり、その修正 diff を一般化すれば再発防止のレビュー観点になる。検知 (`pr_kind` / `bugfix_signals`) は既取得の title / commit / labels から追加 API コールなしで行い、diff のみ `pr_kind=bugfix` の subset に限定して `gh pr diff` (1 PR = 1 コール) で取得する。全廃した REST `commits/{sha}` (commit 数 × 1 query) と違い subset 限定 + `MAX_BUGFIX_DIFFS` 件 + `DIFF_CHAR_CAP` 文字で抑えるため rate limit 影響は限定的。`is_revert` は本番に出荷されたバグの差し戻しで最も強い信号。検知は OR の粗いフィルタで false positive (例: 本体は refactor だが fix commit が混ざった PR) を許容し、最終的な一般化判断は Phase C/D の AI が diff を読んで行う。
 9. **決定論的な Phase A + B (PR 一覧取得 / GraphQL / 信号付与) は bash + jq スクリプトに切り出す**: `scripts/collect-signals.sh` が `signals.json` を出力するまでを担い、AI (Phase C+D) は signals.json を読んで `proposals.md` を書き出す責務に集中する。スクリプト化のメリットは挙動の再現性と AI 側プロンプトの圧縮で、デメリットは信号定義を変えたい場合に SKILL.md + スクリプト両方を編集する必要がある点 (signals.json のスキーマを変えると Phase C の AI 解釈もズレるため、両者は本 SKILL.md の `signals.json` スキーマ定義で同期させる)。
+10. **配置先 REVIEW.md の決定は Phase C の AI が行い、スクリプトは既存パス一覧だけを渡す**: 出典パスの最長共通ディレクトリ (LCD) は機械計算できるが、「そのルールがどの範囲で成立するか」(web 全体なのか auth だけなのか、リポジトリ横断なのか) は意味判断なので AI に委ねる。スクリプトは `meta.existing_review_md_paths` を渡すだけ。既存階層に寄せるのは、新規 `REVIEW.md` ファイルの乱立を避け、1 ファイルに適用される祖先 `REVIEW.md` 数 (`compose-review` の 10 個目安) を無駄に増やさないため。root を「横断ルールだけ」に絞るのは、root に何でも積むと monorepo の全パッケージに無関係な観点が効いてしまうためで、これがディレクトリ別分割の動機そのもの。
 
 ## 手順
 
@@ -84,6 +88,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 #### スクリプトの責務 (詳細は `scripts/collect-signals.sh` の本体コメント参照)
 
 - **Step 1-1. 入力正規化**: `OWNER` / `REPO` を `gh repo view` で auto-detect、`UNTIL` は今日 (UTC)、`SINCE` は `UNTIL - DAYS` (GNU/BSD `date` 両対応)、`OUTPUT_DIR` を確定し `mkdir -p`。
+- **Step 1-1.5. 既存 `REVIEW.md` の配置取得**: default branch の tree (`gh api repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1`) から **パスが `REVIEW.md` で終わる blob だけ** を抽出し `_existing_review_md.json` に書き出す (`node_modules/` / `vendor/` 配下は除外。`compose-review` がそこを読まないため配置先候補にもしない)。**中身は読まない** — Step 2 の配置先決定 (2-1 の判断軸 9) で「既存の階層に寄せる」ための入力。gh コールは PR 数に依存しない固定 2 回 (`gh repo view` + `gh api trees`)。取得失敗は `existing_review_md_paths=null` + stderr WARNING で可視化し (「0 件」と区別する)、処理は継続する。tree API の `truncated` は `existing_review_md_truncated` に転記する。
 - **Step 1-2. PR 一覧取得**: `gh pr list --search "merged:${SINCE}..${UNTIL} <filters>" --json ...` で取得し `_pr_list.json` に書き出す。`--state merged` は付けない (`merged:` 検索フィルタと重複するため)。`--limit` は `MAX_PRS + 100` で超過判定できる余裕を持たせる。0 件なら空 `signals.json` を出して即終了。
 - **Step 1-3. PR 詳細 (GraphQL 統合クエリ)**: PR ごとに **1 GraphQL query** で `reviewThreads(first: 50) × comments(first: 50)` + `commits(first: 100)` + `files(first: 100)` を一括取得する。reviewThreads が 50 件超の PR は `$tafter` カーソルで追加クエリ。1 thread の comments が 50 件超の場合のみ `node(id: $threadId)` + inline fragment の追加クエリで埋める (初回クエリの内側 `comments(first: 50)` に `$cafter` を持たせると外側全ノードに同 cursor が適用されて壊れるため、内側ページングは別クエリ)。1 query あたりのノード試算は 50×50 + 100 + 100 ≈ 2,700 で GraphQL の 500,000 ノード制限に対し十分小さい。PR 数 > 50 のときは PR 間で 1 秒 sleep。
   - **rate limit 設計**: 1 PR = graphql 1 query が基本ケース。69 PR でも 70 query 前後で済み、graphql 枠 5000/h の 1〜2% しか使わない。REST `pulls/{N}/commits` および `commits/{sha}` は使わない (旧設計ではこれが core 枠を数百 query 消費して rate limit 到達の主因だった)。
@@ -103,6 +108,10 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
       include_ai_authored: boolean;  // caller 入力 INCLUDE_AI_AUTHORED の値をそのまま転記
       bugfix_pr_count: number;       // pr_kind=bugfix と判定された PR 数
       bugfix_diffs_truncated: boolean; // bugfix PR 数が MAX_BUGFIX_DIFFS を超え、一部の diff を未取得で打ち切ったか
+      existing_review_md_paths: string[] | null; // default branch 上の既存 REVIEW.md (root 相対パス, sort 済み)。
+                                     // node_modules/ vendor/ 配下は除外。`null` は取得失敗 (0 件は `[]`)。
+                                     // **中身は含まない** (Step 2 の配置先決定でパスだけを使う)
+      existing_review_md_truncated: boolean; // git/trees API の truncated フラグ。true なら一覧が不完全
     };
     prs: {
       number: number; title: string; author: string;
@@ -165,13 +174,13 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 #### スクリプト出力の取り扱い
 
-- 中間ファイル (`_pr_list.json` / `_pr_data.jsonl` / `prs.json`) は `${OUTPUT_DIR}` に残す。Phase C で AI が判定をやり直したい場合の入力として再利用できる。
+- 中間ファイル (`_existing_review_md.json` / `_pr_list.json` / `_pr_data.jsonl` / `prs.json`) は `${OUTPUT_DIR}` に残す。Phase C で AI が判定をやり直したい場合の入力として再利用できる。
 - 後段 (Step 2) で AI が読むのは `signals.json` のみ。中間ファイルは AI からは触らない。
 - 0 PR の場合の `signals.json` は `meta.pr_count = 0` / `prs: []` の空状態。Step 2 / Step 3 で「該当なし」分岐に倒す。
 
 ### Step 2. AI による採否判定 (Phase C)
 
-`signals.json` を読み、各コメントを `accept` / `hold` / `reject` に分類し、採用候補には REVIEW.md に書く提案文を作る。判定は AI 自身が行う (本セクションは AI への指示)。
+`signals.json` を読み、各コメントを `accept` / `hold` / `reject` に分類し、採用候補には REVIEW.md に書く提案文と **配置先 REVIEW.md** を決める。判定は AI 自身が行う (本セクションは AI への指示)。
 
 #### 2-1. 採否判断軸
 
@@ -221,7 +230,20 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
    - 一般化判断は axis 1 と同じ: 他 PR にも応用できる観点のみ `accept`。この PR 固有のロジック誤り (一回限り) は `reject`。`bugfix_diff_truncated=true` の場合は diff が途中までしか無い旨を踏まえ、断定できなければ `hold`。
    - クラスタリング (axis 5) はコメント由来候補とも統合してよい (同じ観点ならまとめ、`sources[]` に PR を併記)。
 
-9. **迷ったら `hold`**
+9. **配置先 REVIEW.md の決定 (`accept` / `hold` のみ)**
+
+   `compose-review` は各 `REVIEW.md` を **その出典ディレクトリの配下にだけ** 適用する。したがって配置先は「そのルールが成立する範囲」と一致していなければならない。**可能な限りディレクトリ別に分割する**のが本 skill の方針で、root (`REVIEW.md`) は **リポジトリ横断で成立する汎用ルール専用** とする。手順:
+
+   1. **出典パス集合を作る**: `source=review-comment` はコメントの `path` (クラスタなら全出典分)、`source=bugfix-diff` は `bugfix_diff` の `diff --git a/<path> b/<path>` ヘッダから取った path (取れなければ当該 PR の `files`)。
+   2. **起点 = 最長共通ディレクトリ (LCD)**: 出典が単一ファイルならそのファイルのディレクトリ。root 直下のファイル (`README.md` / `package.json` 等) を含むなら LCD は root。
+   3. **ルールの適用範囲まで上げる**: LCD から、そのルールが実際に成立する範囲 (パッケージ / アプリ / 機能領域の境界) まで祖先方向へ上げる。ツリー構造は `signals.json` 全 PR の `files` から推定してよい。言語 / フレームワークに依らない汎用ルール (null 安全、テスト追加、セキュリティ一般、コミット規約等) だけを root に置く。**迷ったらディレクトリ側に倒す** (分割が方針。root に積むと無関係なパッケージにまで効いてしまう)。
+   4. **既存 `REVIEW.md` へ寄せる**: 3 で決めたディレクトリ D から root へ辿り、`meta.existing_review_md_paths` に含まれる **最も近い祖先** (D 自身を含む) の `REVIEW.md` を探す。見つかったファイルの担当範囲全体でもそのルールが成立するならそこを配置先にし (`target_is_new=false`)、成立しない (既存が広すぎる) / 既存が D より深い位置にしか無い場合は D に新規ファイルを提案する (`target_is_new=true`)。既存に寄せるのは、新規ファイルの乱立と祖先 `REVIEW.md` 数の無駄な増加を避けるため。
+      - `existing_review_md_paths=null` (取得失敗) のときは 4 を丸ごとスキップし、全件 `target_is_new=null` にした上で proposals.md 冒頭にその旨を 1 行明記する。
+      - `existing_review_md_truncated=true` のときも proposals.md 冒頭に 1 行明記する (既存ファイルの取りこぼしで `target_is_new=true` が過剰に付く可能性がある)。
+   5. **制約**: `node_modules/` / `vendor/` 配下は配置先にしない (`compose-review` が読まないため)。1 proposal = 1 配置先。クラスタの出典が無関係な top-level (`apps/web` と `apps/api` 等) にまたがる場合、ルールが両方でだけ成立するなら共通祖先 (`apps/REVIEW.md`)、リポジトリ全体で成立するなら root にする。配置先が分かれるべき内容なら **proposal を分割する**。
+   6. `reject` には配置先を付けない (`target_review_md=null`)。`hold` には暫定の配置先を付ける (後続フローで採用に転じたときそのまま使えるようにするため)。
+
+10. **迷ったら `hold`**
    - `resolve-pr-threads` の「迷ったら resolve しない」と同じ保守的ルール。`reject` に倒すと将来の蓄積機会を失う。
 
 #### 2-2. 各 proposal の属性
@@ -231,6 +253,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 | 属性 | 説明 |
 |---|---|
 | `verdict` | `accept` / `hold` / `reject` |
+| `target_review_md` | 配置先 `REVIEW.md` の root 相対パス (root なら `REVIEW.md`、ディレクトリ別なら `apps/web/REVIEW.md` 等)。2-1 の判断軸 9 で決定。`reject` の場合は null。 |
+| `target_is_new` | 配置先が `meta.existing_review_md_paths` に無い **新規ファイルの提案** なら true、既存ファイルへの追記なら false、一覧取得失敗 (`existing_review_md_paths=null`) なら null。 |
 | `source` | 抽出源。`review-comment` (レビューコメント由来) / `bugfix-diff` (バグ修正diff由来)。クラスタに両方含む場合は主たる根拠を記し `sources[]` に内訳を残す。 |
 | `reason` | 採否の理由 (1〜2 文)。重複可能性 / 一般化不能などのフラグもここに含める。 |
 | `proposal_text` | REVIEW.md に書くなら何と書くか (Markdown bullet point 1〜3 行)。`reject` の場合は null。 |
@@ -254,14 +278,18 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 - バグ修正PR数: <B> 件 (うち diff 取得済み <D> 件 <bugfix_diffs_truncated=true のみ「上限 MAX_BUGFIX_DIFFS 超過で一部未取得」を追記>)
 - 抽出コメント総数: <M> 件 (うち AI 自動投稿 <A> 件 / 人間 <H> 件)
 - 採用候補: <X> 件 (クラスタ: <C> 個 / 単独: <S> 件 / うち bugfix-diff 由来 <BD> 件)
+- 配置先 REVIEW.md: <K> ファイル (既存 <E> / 新規 <N>)
 - 保留: <Y> 件
 - 棄却: <Z> 件
 - 生成日時: <ISO8601 UTC 秒精度>
 
+<existing_review_md_paths=null のときのみ: 「既存 REVIEW.md の一覧を取得できなかったため、配置先の既存/新規は判定していない (既存ファイルと重複する提案になっている可能性がある)」を 1 行>
+<existing_review_md_truncated=true のときのみ: 「リポジトリの tree が大きく一覧が不完全なため、既存 REVIEW.md を取りこぼして「新規」と判定している配置先がありうる」を 1 行>
+
 ## 後続フロー
 
-1. 本ファイルを人間または別 skill が読み、「採用候補」セクションの提案文を REVIEW.md へ追記する PR を作成する
-2. 「保留」セクションは個別判断 (採用 / 棄却 / 文面修正の上で採用 のどれにするか)
+1. `review-md/<配置先>` の断片を、対応するディレクトリの REVIEW.md 末尾へ追記する (「新規」の配置先は断片をそのままファイルとして作成する) PR を作成する。配置先ごとの根拠は本ファイルの「採用候補」を参照
+2. 「保留」セクションは個別判断 (採用 / 棄却 / 文面修正の上で採用 のどれにするか)。採用する場合の配置先候補も各項目に併記してある
 3. 「棄却」セクションは記録のみ。同じ指摘が次回も繰り返し棄却されないよう判断履歴として残す
 
 中間ファイル `prs.json` / `signals.json` は再判定時の入力として ${OUTPUT_DIR} に残してある。
@@ -270,13 +298,19 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 ## 採用候補
 
-### 1. [cluster-001] [should] (source: review-comment) <一般化したルールのタイトル>
+配置先 `REVIEW.md` ごとにグルーピングする (root を先頭に、以降はパス昇順)。項目番号は配置先をまたいだ通し番号。
+
+### 配置先: REVIEW.md (root, 既存)
+
+#### 1. [cluster-001] [should] (source: review-comment) <一般化したルールのタイトル>
 
 **提案文 (REVIEW.md 追記想定)**:
 
 > - <REVIEW.md にそのまま書く想定の bullet。1〜3 行。>
 
 **判定根拠**: <reason 本文。クラスタの場合は出現 PR 数 / 取り込み率を併記。>
+
+**配置先根拠**: <出典パスの LCD → ルールが成立する範囲 → 既存ファイルへの寄せ、を 1 文で。例: 出典は全パッケージに分散しており言語非依存のため root。>
 
 **信号**: <signals_summary>
 
@@ -286,7 +320,9 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 - https://github.com/<OWNER>/<REPO>/pull/<N+5>#discussion_r... (AI 自動投稿)
   > <body 引用>
 
-### 2. [should] (source: bugfix-diff) <バグ修正diffから一般化したレビュー観点のタイトル>
+### 配置先: apps/web/REVIEW.md (新規)
+
+#### 2. [should] (source: bugfix-diff) <バグ修正diffから一般化したレビュー観点のタイトル>
 
 **提案文 (REVIEW.md 追記想定)**:
 
@@ -294,13 +330,15 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 **判定根拠**: <どのバグ修正からどう一般化したか。is_revert 等の強信号があれば明記。>
 
+**配置先根拠**: <例: 出典は apps/web/src/ 配下のみ。Next.js の描画層固有の観点で他パッケージには成立しないため apps/web/ に新規。>
+
 **信号**: pr_kind=bugfix, <マッチした bugfix_signals (例: is_revert=true)>
 
 **出典**:
 - https://github.com/<OWNER>/<REPO>/pull/<N> (バグ修正PR: <title>)
   > <修正の要点。diff の該当箇所を簡潔に引用、長い場合は要約>
 
-### 3. <以下、採用候補ごとに繰り返し (source を併記)>
+#### 3. <以下、配置先ごとの小見出し + 採用候補ごとに繰り返し (source を併記)>
 
 ---
 
@@ -309,6 +347,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 ### H1. [should] <タイトル>
 
 **判定保留理由**: <reason>
+
+**配置先候補**: <target_review_md> (既存 / 新規 / 不明)
 
 **信号**: <signals_summary>
 
@@ -329,9 +369,21 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 | R3 | [should] | AI 自動投稿で行ズレのみ (取り込まれていない) | https://github.com/<OWNER>/<REPO>/pull/<N>#discussion_r... |
 ```
 
-期間内 0 PR でも proposals.md は空状態 (採用 0 / 保留 0 / 棄却 0、各セクションは「該当なし」と明示) で出力する (skip しない)。
+期間内 0 PR でも proposals.md は空状態 (採用 0 / 保留 0 / 棄却 0、各セクションは「該当なし」と明示) で出力する (skip しない)。採用候補が 0 件なら「配置先 REVIEW.md: 0 ファイル」と書き、配置先の小見出しは置かない。
 
 「生成日時」は実行時に `date -u +%Y-%m-%dT%H:%M:%SZ` で取得する。`date` が利用できなければ caller / 実行環境から提供される現在日時を使い、それも無ければ `<unknown>` と記載する。
+
+### Step 3.5. 配置先ごとの断片ファイルを出力する (Phase D)
+
+採用候補 (`verdict=accept`) を配置先ごとにまとめ、**そのまま追記できる markdown 断片** を `${OUTPUT_DIR}/review-md/<target_review_md>` に `Write` ツールで書き出す (root の配置先なら `${OUTPUT_DIR}/review-md/REVIEW.md`、`apps/web/REVIEW.md` なら `${OUTPUT_DIR}/review-md/apps/web/REVIEW.md`)。後続フローが各ディレクトリの `REVIEW.md` へコピー / 追記するだけで済む形にするのが目的。
+
+- **ディレクトリ作成**: `Write` ツールは中間ディレクトリの自動作成を保証しないため、書き出し前に `Bash` で `mkdir -p "${OUTPUT_DIR}/review-md/<配置先のディレクトリ部分>"` を実行する。**`Bash` で許可されるのはこの `mkdir` だけ** で、ファイル内容の書き出しは必ず `Write` ツールで行う (`heredoc` / `cat` リダイレクトは使わない)。
+- **内容**: その配置先に割り当てた `accept` の `proposal_text` (bullet) を並べるだけにする。`hold` / `reject` は含めない。**出典 URL / 信号 / 判定根拠などのメタ情報は入れない** — この断片は `compose-review` がそのままレビュー方針として読むファイルになるため (メタは proposals.md 側の責務)。
+  - `target_is_new=false` (既存ファイルへの追記): **bullet のみ**。既存ファイル末尾にそのまま貼れるようにする。
+  - `target_is_new=true` / `null` (新規ファイルの提案): 先頭に見出し 1 行 + 空行 + bullet。見出しは root なら `# レビュー方針`、ディレクトリ別なら `# <dir>/ 配下のレビュー方針`。
+- **採用候補が 0 件なら `review-md/` は作らない** (空ディレクトリを残さない)。
+- `OUTPUT_DIR` が caller 明示指定で既存の断片が残っている可能性がある場合は、`Write` の前に `Read` を 1 回挟む (proposals.md と同じ理由: `Write` ツールは同一セッション中に `Read` していない既存ファイルへの上書きを拒否する)。
+- 本 step で書くのは `${OUTPUT_DIR}` 配下のみ。**リポジトリ内の `REVIEW.md` は作成も編集もしない**。
 
 ### Step 4. caller への報告
 
@@ -339,14 +391,18 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 - 対象期間 (`SINCE`..`UNTIL`) / 対象リポジトリ
 - 対象 PR 数 / バグ修正PR数 / 抽出コメント数 / 採用・保留・棄却の内訳件数 (採用のうち bugfix-diff 由来件数も)
-- 出力先パス (`OUTPUT_DIR/proposals.md` / `prs.json` / `signals.json`)
-- `MAX_PRS` 超過時 / `bugfix_diffs_truncated=true` の場合はその旨を 1 行で追記
+- 採用候補の配置先 `REVIEW.md` のファイル数 (既存 <E> / 新規 <N>) と、主な配置先パス
+- 出力先パス (`OUTPUT_DIR/proposals.md` / `review-md/` / `prs.json` / `signals.json`)
+- `MAX_PRS` 超過時 / `bugfix_diffs_truncated=true` / `existing_review_md_paths=null` (既存一覧の取得失敗) / `existing_review_md_truncated=true` の場合はその旨を 1 行で追記
 
-チャットに proposals.md 全文をダンプしない (件数が多いケースで後続会話のコンテキストを圧迫するため)。出力先パスと冒頭メタ + 件数内訳のみをチャットに出し、詳細は markdown ファイルを参照させる。
+チャットに proposals.md / `review-md/` 断片の全文をダンプしない (件数が多いケースで後続会話のコンテキストを圧迫するため)。出力先パスと冒頭メタ + 件数内訳のみをチャットに出し、詳細は markdown ファイルを参照させる。
 
 ## 守ること
 
-- READ-ONLY: GitHub 投稿 / PR 作成 / commit / push / `git fetch` / `git checkout` などローカル ref を書き換える操作は一切しない。`gh pr comment` / `gh pr review` / `gh api .../reviews` / `gh pr create` も使わない。
+- READ-ONLY: GitHub 投稿 / PR 作成 / commit / push / `git fetch` / `git checkout` などローカル ref を書き換える操作は一切しない。`gh pr comment` / `gh pr review` / `gh api .../reviews` / `gh pr create` も使わない。**`review-md/` 断片は `${OUTPUT_DIR}` 配下に書くだけで、リポジトリ内の `REVIEW.md` は作成も編集もしない**。
+- **ファイル書き出しは `${OUTPUT_DIR}` 配下の `proposals.md` と `review-md/<配置先>` 断片のみ**。`Bash` での書き出しは禁止で、例外は Step 3.5 の `mkdir -p "${OUTPUT_DIR}/review-md/..."` だけ (内容は必ず `Write` ツールで書く)。
+- **既存 `REVIEW.md` の中身は読まない**。配置先決定に使うのはスクリプトが取得した `meta.existing_review_md_paths` (パス一覧) だけで、AI が `Read` / `git show` / `gh api` で `REVIEW.md` の内容を追加取得してはならない (既存内容との重複判定は proposals.md のフラグに留める、という責務分離のため)。
+- **配置先は可能な限りディレクトリ別に分割する**。root (`REVIEW.md`) はリポジトリ横断で成立する汎用ルール専用で、迷ったらディレクトリ側に倒す。`node_modules/` / `vendor/` 配下は配置先にしない。
 - `post-pr-review` / `resolve-pr-threads` / `run-pr-review` / `run-local-review` skill は呼ばない (独立 skill)。
 - 既存資産 `/pr-review-style-reference` の severity ラベル定義は **slash command 経由でのみ利用** し、本 skill 内で再掲・再実装しない (二重管理を避けるため)。
 - **Phase A + B (PR 一覧 / GraphQL 統合クエリ / 信号付与) は `scripts/collect-signals.sh` に集約してある**。AI 側でこれらを `gh` / `jq` 直叩きで再実装してはならない (差異が出てスクリプトとプロンプトの責務分割が崩れるため)。信号定義を変えたい場合はスクリプトと本 SKILL.md の `signals` フィールド定義をセットで更新する。
@@ -354,4 +410,4 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 - 対象は **merged PR のみ**。open / closed unmerged は対象外 (取り込み判定が安定しないため)。
 - 期間内 0 PR でも proposals.md は空状態で出力する (skip しない)。
 - 判定に迷ったら `hold` に倒す (`resolve-pr-threads` の「迷ったら resolve しない」と同思想)。`reject` に倒すと将来の蓄積機会を失う。
-- proposals.md は **本 skill のスコープの終点**。REVIEW.md 編集 / PR 作成は別工程で行うことを caller に明示する。
+- proposals.md + `review-md/` 断片は **本 skill のスコープの終点**。REVIEW.md 編集 / PR 作成は別工程で行うことを caller に明示する。
