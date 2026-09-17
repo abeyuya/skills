@@ -234,7 +234,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
     `compose-review` は各 `REVIEW.md` を **その出典ディレクトリの配下にだけ** 適用する。したがって配置先は「そのルールが成立する範囲」と一致していなければならない。**可能な限りディレクトリ別に分割する**のが本 skill の方針で、root (`REVIEW.md`) は **リポジトリ横断で成立する汎用ルール専用** とする。手順:
 
-    1. **出典パス集合を作る**: `source=review-comment` はコメントの `path` (クラスタなら全出典分)、`source=bugfix-diff` は `bugfix_diff` の `diff --git a/<path> b/<path>` ヘッダから取った path (取れなければ当該 PR の `files`)。
+    1. **出典パス集合を作る**: `source=review-comment` はコメントの `path` (クラスタなら全出典分)、`source=bugfix-diff` は `bugfix_diff` の `diff --git a/<path> b/<path>` ヘッダから取った path。**`bugfix_diff_truncated=true` の PR、および diff からパスを取れなかった PR は、当該 PR の `files` (PR 全体の変更ファイル一覧) を使う** — truncate された diff のヘッダだけでは変更範囲が実際より狭く見え、次の LCD が深すぎるディレクトリになって配置先が過度に限定されるため。
     2. **起点 = 最長共通ディレクトリ (LCD)**: 出典が単一ファイルならそのファイルのディレクトリ。root 直下のファイル (`README.md` / `package.json` 等) を含むなら LCD は root。
     3. **ルールの適用範囲まで上げる**: LCD から、そのルールが実際に成立する範囲 (パッケージ / アプリ / 機能領域の境界) まで祖先方向へ上げる。ツリー構造は `signals.json` 全 PR の `files` から推定してよい。言語 / フレームワークに依らない汎用ルール (null 安全、テスト追加、セキュリティ一般、コミット規約等) だけを root に置く。**迷ったらディレクトリ側に倒す** (分割が方針。root に積むと無関係なパッケージにまで効いてしまう)。
     4. **既存 `REVIEW.md` へ寄せる**: 3 で決めたディレクトリ D から root へ辿り、`meta.existing_review_md_paths` に含まれる **最も近い祖先** (D 自身を含む) の `REVIEW.md` を探す。見つかったファイルの担当範囲全体でもそのルールが成立するならそこを配置先にし (`target_is_new=false`)、成立しない (既存が広すぎる) / 既存が D より深い位置にしか無い場合は D に新規ファイルを提案する (`target_is_new=true`)。既存に寄せるのは、新規ファイルの乱立と祖先 `REVIEW.md` 数の無駄な増加を避けるため。
@@ -381,7 +381,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 採用候補 (`verdict=accept`) を配置先ごとにまとめ、**そのまま追記できる markdown 断片** を `${OUTPUT_DIR}/review-md/<target_review_md>` に `Write` ツールで書き出す (root の配置先なら `${OUTPUT_DIR}/review-md/REVIEW.md`、`apps/web/REVIEW.md` なら `${OUTPUT_DIR}/review-md/apps/web/REVIEW.md`)。後続フローが各ディレクトリの `REVIEW.md` へコピー / 追記するだけで済む形にするのが目的。
 
-- **ディレクトリ作成**: `Write` ツールは中間ディレクトリの自動作成を保証しないため、書き出し前に `Bash` で `mkdir -p "${OUTPUT_DIR}/review-md/<配置先のディレクトリ部分>"` を実行する。**`Bash` で許可されるのはこの `mkdir` だけ** で、ファイル内容の書き出しは必ず `Write` ツールで行う (`heredoc` / `cat` リダイレクトは使わない)。
+- **ディレクトリ作成**: `Write` ツールは中間ディレクトリの自動作成を保証しないため、書き出し前に `Bash` で `mkdir -p "${OUTPUT_DIR}/review-md/<配置先のディレクトリ部分>"` を実行する。**ファイル内容の書き出しに `Bash` を使ってはならず** (`heredoc` / `cat` リダイレクトは使わない)、内容は必ず `Write` ツールで書く。書き出し系で許可される `Bash` はこの `mkdir` だけという意味であり、Step 1 の収集スクリプト実行や Step 3 の `date` 取得まで禁じるものではない。
 - **内容**: その配置先に割り当てた `accept` の `proposal_text` (bullet) を並べるだけにする。`hold` / `reject` は含めない。**出典 URL / 信号 / 判定根拠などのメタ情報は入れない** — この断片は `compose-review` がそのままレビュー方針として読むファイルになるため (メタは proposals.md 側の責務)。
 - **見出しを必ず付ける**: 断片の先頭は `## レビュー観点 (<生成日 YYYY-MM-DD> 蒸留)` の H2 見出し + 空行 + bullet 群にする。既存ファイルへ追記する場合に **`エスカレーション基準` 見出しのセクションを閉じる** ためで、見出し無しの bullet を末尾追記すると、その記述が `compose-review` にエスカレーション基準として解釈され無関係な PR で `escalate: true` が立つ。ただし `compose-review` は **任意のレベル (`#`〜`######`) の見出し** を基準セクションとして認めるため、追記先の `エスカレーション基準` が H1 だと H2 では閉じられない。断片側の H2 は既定の形であって完全な担保ではなく、**適用位置の判断は後続フロー (Step 3 「後続フロー」2 番目の注意) が担う**。
   - `target_is_new=true` (既存一覧に無いと確認できた新規ファイル) の場合のみ、H2 の前にさらに H1 を置く (root なら `# レビュー方針`、ディレクトリ別なら `# <dir>/ 配下のレビュー方針`)。ファイルごと作成してもそのまま成立する形にするため。
