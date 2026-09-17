@@ -6,6 +6,7 @@
 # 出力:
 #   ${OUTPUT_DIR}/_existing_review_md.json (中間: default branch 上の既存 REVIEW.md パス一覧。
 #                                       中身は読まない。Phase C の配置先決定の入力)
+#   ${OUTPUT_DIR}/_existing_review_md.err  (中間: 上記取得に失敗したときの gh stderr。成功時は削除)
 #   ${OUTPUT_DIR}/_pr_list.json      (中間: gh pr list --json 生 JSON)
 #   ${OUTPUT_DIR}/_pr_data.jsonl     (中間: PR ごと 1 行 JSON, GraphQL から取得した
 #                                       reviewThreads + commits + files)
@@ -32,8 +33,8 @@
 #   - reactions は廃止 (信号価値が低くノード上限の圧迫が大きいため)。
 #   - バグ修正PR (pr_kind=bugfix) のみ `gh pr diff` で 1 PR = 1 コール取得 (Step 3.5)。
 #     subset 限定 + MAX_BUGFIX_DIFFS 件 + DIFF_CHAR_CAP 文字で抑制するため core 枠への影響は限定的。
-#   - 既存 REVIEW.md の配置取得 (Step 0.5) は `gh repo view` + `gh api git/trees` の固定 2 コール
-#     (PR 数に依存しない)。
+#   - 既存 REVIEW.md の配置取得 (Step 0.5) は `gh repo view` + `gh api git/ref` + `gh api git/trees` の
+#     固定 3 コール (PR 数に依存しない)。ブランチ名は SHA に解決してから tree を引く。
 #   - 1 query あたりノード試算: reviewThreads(50) × comments(50) + commits(100) + files(100) + labels(0)
 #     ≈ 2,700 ノード (GraphQL 500k 上限の 0.5%)。
 
@@ -85,11 +86,35 @@ if [[ -z "$SINCE" ]]; then
   fi
 fi
 
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+DEFAULT_OUTPUT_DIR="/tmp/distill-pr-reviews/${REPO}/${TS}"
+OUTPUT_DIR_RELOCATED=false
 if [[ -z "$OUTPUT_DIR" ]]; then
-  TS=$(date -u +%Y%m%dT%H%M%SZ)
-  OUTPUT_DIR="/tmp/distill-pr-reviews/${REPO}/${TS}"
+  OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 fi
 mkdir -p "$OUTPUT_DIR"
+
+# OUTPUT_DIR がリポジトリの作業ツリー配下なら既定パスへ差し替える。
+# Step 3.5 (AI 側) が `review-md/**/REVIEW.md` を **実ファイル名で** 書き出すため、リポジトリ内に
+# 出すと (a)「リポジトリ内の REVIEW.md は作成も編集もしない」保証が破れ、(b) 以降の compose-review の
+# 祖先 REVIEW.md 探索と次回蒸留の existing_review_md_paths に自分が出した断片が混入する。
+# 入力仕様に書くだけでは誰も実行しないため、OUTPUT_DIR を確定する本スクリプトで機械的に弾く。
+# realpath は環境差があるので使わず、mkdir -p 済みのディレクトリへ subshell で cd して pwd -P で解決する
+# (シンボリックリンク経由の cwd でも判定がズレないようにするため repo root 側も同じ方法で解決する)。
+# git リポジトリ外で実行された場合は判定不能なので caller 指定をそのまま尊重する。
+if REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null); then
+  REPO_ROOT_ABS=$(cd "$REPO_ROOT" && pwd -P)
+  OUTPUT_DIR_ABS=$(cd "$OUTPUT_DIR" && pwd -P)
+  # 「等しい」か「<root>/ で始まる」かを prefix 除去で判定する (bash 3.2 互換。`=~` は使わない)。
+  if [[ "$OUTPUT_DIR_ABS" == "$REPO_ROOT_ABS" || "${OUTPUT_DIR_ABS#"${REPO_ROOT_ABS}/"}" != "$OUTPUT_DIR_ABS" ]]; then
+    log "WARNING: OUTPUT_DIR (${OUTPUT_DIR}) がリポジトリ作業ツリー配下のため ${DEFAULT_OUTPUT_DIR} へ差し替える (review-md/ 断片がリポジトリ内に REVIEW.md として残るのを防ぐため)"
+    # 差し替え前に作ったディレクトリは空なので消せるなら消す (失敗は無視)。
+    rmdir "$OUTPUT_DIR" 2>/dev/null || true
+    OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
+    OUTPUT_DIR_RELOCATED=true
+    mkdir -p "$OUTPUT_DIR"
+  fi
+fi
 
 log "OWNER=${OWNER} REPO=${REPO} SINCE=${SINCE} UNTIL=${UNTIL} MAX_PRS=${MAX_PRS}"
 log "OUTPUT_DIR=${OUTPUT_DIR}"
@@ -102,19 +127,36 @@ log "OUTPUT_DIR=${OUTPUT_DIR}"
 # 取得失敗を「REVIEW.md が 1 つも無い」と混同しないため、失敗時は paths=null + WARNING
 # (Step 3.5 の bugfix_diff=null と同じ流儀)。0 PR の早期終了より前に置き、meta のスキーマを
 # 0 件時も同形にする。
+#
+# ブランチ名を URL パスに直接埋めず、必ず commit SHA に解決してから tree を引く:
+#   `git/trees/<branch>` は `release/main` のようなスラッシュ入りブランチ名で階層が壊れて常に 404 になり、
+#   既存階層への寄せが毎回スキップされる縮退に固定される。`git/ref/heads/<branch>` は ref パスが
+#   元々階層構造 (`refs/heads/release/main`) なのでスラッシュをそのまま扱える。
+# gh の stderr は捨てずにファイルへ退避し、失敗時の WARNING に先頭 1 行を載せる
+#   (404 / rate limit / 権限不足のどれで落ちたかを運用時に切り分けられるようにするため)。
 EXISTING_REVIEW_MD_FILE="${OUTPUT_DIR}/_existing_review_md.json"
-DEFAULT_BRANCH=$(gh repo view "${OWNER}/${REPO}" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
-if [[ -n "$DEFAULT_BRANCH" ]] && gh api "repos/${OWNER}/${REPO}/git/trees/${DEFAULT_BRANCH}?recursive=1" \
+EXISTING_REVIEW_MD_ERR="${OUTPUT_DIR}/_existing_review_md.err"
+: > "$EXISTING_REVIEW_MD_ERR"
+DEFAULT_BRANCH=$(gh repo view "${OWNER}/${REPO}" --json defaultBranchRef -q .defaultBranchRef.name 2>>"$EXISTING_REVIEW_MD_ERR" || true)
+DEFAULT_BRANCH_SHA=""
+if [[ -n "$DEFAULT_BRANCH" ]]; then
+  DEFAULT_BRANCH_SHA=$(gh api "repos/${OWNER}/${REPO}/git/ref/heads/${DEFAULT_BRANCH}" \
+    --jq .object.sha 2>>"$EXISTING_REVIEW_MD_ERR" || true)
+fi
+if [[ -n "$DEFAULT_BRANCH_SHA" ]] && gh api "repos/${OWNER}/${REPO}/git/trees/${DEFAULT_BRANCH_SHA}?recursive=1" \
      --jq '{paths: ([.tree[] | select(.type == "blob") | .path
                      | select(test("(^|/)REVIEW\\.md$"))
                      | select(test("(^|/)(node_modules|vendor)/") | not)] | sort),
             truncated: (.truncated // false)}' \
-     > "$EXISTING_REVIEW_MD_FILE" 2>/dev/null; then
+     > "$EXISTING_REVIEW_MD_FILE" 2>>"$EXISTING_REVIEW_MD_ERR"; then
   EXISTING_REVIEW_MD_COUNT=$(jq -r '.paths | length' "$EXISTING_REVIEW_MD_FILE")
   EXISTING_REVIEW_MD_NOTE=$(jq -r 'if .truncated then " (WARNING: tree truncated — 一覧は不完全)" else "" end' "$EXISTING_REVIEW_MD_FILE")
   log "existing REVIEW.md: ${EXISTING_REVIEW_MD_COUNT} file(s)${EXISTING_REVIEW_MD_NOTE}"
+  rm -f "$EXISTING_REVIEW_MD_ERR"
 else
-  log "WARNING: 既存 REVIEW.md 一覧の取得に失敗 (existing_review_md_paths は null。Phase C の既存階層への寄せはスキップされる)"
+  EXISTING_REVIEW_MD_REASON=$(head -n 1 "$EXISTING_REVIEW_MD_ERR" 2>/dev/null || true)
+  [[ -z "$EXISTING_REVIEW_MD_REASON" ]] && EXISTING_REVIEW_MD_REASON="(gh からのエラー出力なし)"
+  log "WARNING: 既存 REVIEW.md 一覧の取得に失敗 (existing_review_md_paths は null。Phase C の既存階層への寄せはスキップされる): ${EXISTING_REVIEW_MD_REASON}"
   printf '{"paths": null, "truncated": false}\n' > "$EXISTING_REVIEW_MD_FILE"
 fi
 
@@ -156,7 +198,8 @@ if [[ "$PR_COUNT" -eq 0 ]]; then
     --argjson include_ai_authored "$INCLUDE_AI_AUTHORED" \
     --argjson bugfix_pr_count 0 --argjson bugfix_diffs_truncated false \
     --slurpfile existing "$EXISTING_REVIEW_MD_FILE" \
-    '{meta: {owner:$owner, repo:$repo, since:$since, until:$until, collected_at:$collected_at, pr_count:$pr_count, max_prs_exceeded:$max_prs_exceeded, include_ai_authored:$include_ai_authored, bugfix_pr_count:$bugfix_pr_count, bugfix_diffs_truncated:$bugfix_diffs_truncated, existing_review_md_paths:$existing[0].paths, existing_review_md_truncated:$existing[0].truncated}, prs: []}' \
+    --argjson output_dir_relocated "$OUTPUT_DIR_RELOCATED" \
+    '{meta: {owner:$owner, repo:$repo, since:$since, until:$until, collected_at:$collected_at, pr_count:$pr_count, max_prs_exceeded:$max_prs_exceeded, include_ai_authored:$include_ai_authored, bugfix_pr_count:$bugfix_pr_count, bugfix_diffs_truncated:$bugfix_diffs_truncated, existing_review_md_paths:$existing[0].paths, existing_review_md_truncated:$existing[0].truncated, output_dir_relocated:$output_dir_relocated}, prs: []}' \
     > "${OUTPUT_DIR}/signals.json"
   echo "${OUTPUT_DIR}/signals.json"
   exit 0
@@ -333,6 +376,7 @@ jq -n \
   --slurpfile pr_list "${OUTPUT_DIR}/_pr_list.json" \
   --slurpfile pr_data_lines "$PR_DATA_FILE" \
   --slurpfile existing "$EXISTING_REVIEW_MD_FILE" \
+  --argjson output_dir_relocated "$OUTPUT_DIR_RELOCATED" \
   '
     # バグ修正PR検知: title (`<scope> fix:` / `fix:` / `fix(scope):`) / commit headline /
     # ラベル / revert / キーワードのいずれかにマッチすれば bugfix。確信度の最終判断は Phase C の AI。
@@ -353,7 +397,9 @@ jq -n \
         bugfix_diffs_truncated: false,
         # Step 0.5 で取得した既存 REVIEW.md の配置 (パス一覧)。null は取得失敗、[] は 0 件。
         existing_review_md_paths: $existing[0].paths,
-        existing_review_md_truncated: $existing[0].truncated
+        existing_review_md_truncated: $existing[0].truncated,
+        # caller 指定の OUTPUT_DIR がリポジトリ配下だったため既定パスへ差し替えたか (Step 0)。
+        output_dir_relocated: $output_dir_relocated
       },
       prs: ($pr_list[0] | map(
         . as $pr |
