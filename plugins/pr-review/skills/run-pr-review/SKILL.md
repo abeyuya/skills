@@ -26,7 +26,7 @@ caller プロジェクト固有の方針 (技術観点 / スタイル上書き /
 
 #### 1-1. OWNER / REPO (pure-git)
 
-caller から渡されていればそれを使う。未指定なら `git remote get-url origin` の URL から抽出する (SSH 形式 / HTTPS 形式の両対応: `git remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'`。`compose-review` Step 3 と同じ抽出)。gh が使える環境では `gh repo view --json nameWithOwner -q .nameWithOwner` を補助に使ってもよい。
+caller から渡されていればそれを使う。未指定なら `git remote get-url origin` の URL から抽出する (SSH 形式 / HTTPS 形式の両対応: `git remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'`。先に末尾 `.git` を除去してから最後の 2 セグメントを取る。1 段で `(\.git)?` を末尾任意にすると貪欲マッチで `repo.git` ごと拾い `.git` が残るため 2 段に分ける)。**抽出元の URL がホストを含む形式 (`scheme://host/owner/repo` または `user@host:owner/repo`) であることと、抽出結果が `^[^/]+/[^/]+$` に一致することの両方を検証する** — 末尾スラッシュ付き URL では sed が非マッチで URL 全体を返し、ローカルパス remote (`/srv/git/myrepo.git` → `git/myrepo`) では形式チェックだけ通って誤った owner/repo になる。どちらもそのまま渡すと `gh api repos/...` が 404 になり、CHANNEL 判定や停止理由を誤らせる。一致しなければ、gh が使える環境では `gh repo view --json nameWithOwner -q .nameWithOwner` を試し、それでも得られなければ caller に `OWNER`/`REPO` の明示を促してエラー停止する (gh で解決できる環境まで止めないため、補助を先に試す)。
 
 #### 1-2. GitHub アクセスチャネル (`CHANNEL`) の解決
 
@@ -56,7 +56,7 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 - **PR メタ情報** (title / body / head ref / head SHA / base ref):
   - `CHANNEL=gh`: `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup` (CI 状態 `statusCheckRollup` も同時に取れる)。
   - `CHANNEL=mcp`: `mcp__github__pull_request_read` を method=`get` で呼ぶ (`head.sha` = headRefOid 相当 / `head.ref` = headRefName 相当 / `base.ref` = baseRefName 相当)。
-  - head SHA (`headRefOid`) を控え、Step 4 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) として常時転送する。`baseRefName` (PR の base ブランチ名) も控え、Step 3 で `compose-review` の `BASE_BRANCH` として転送する (非 default base の PR で compose-review が git 主経路の base を default branch に誤推定し差分範囲がズレるのを防ぐ)。
+  - head SHA (`headRefOid`) を控え、Step 4 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) として常時転送する。**ただし `compose-review` が返した `commit_id` が控えた値と異なる場合は、Step 2 と同じ経路 (`CHANNEL` に応じた `gh pr view --json headRefOid` / `mcp__github__pull_request_read`) で head SHA を取り直し、それと一致する方を転送する** (`compose-review` は Step 1 で force-push を検知すると head を取り直すが、`gh` が使えない環境では API と突き合わせずに決めているため、投稿前に本 skill 側で裏を取る。どちらとも一致しなければ取り直した API 値を使う)。`baseRefName` (PR の base ブランチ名) も控え、Step 3 で `compose-review` の `BASE_BRANCH` として転送する (非 default base の PR で compose-review が git 主経路の base を default branch に誤推定し差分範囲がズレるのを防ぐ)。
 - **既存レビュー / コメント** (compose-review に渡す重複指摘抑制用 context):
   - `CHANNEL=gh`: GraphQL で `reviewThreads` を取得する。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `path` / `line` / `comments.nodes[].body` まで取る。
   - `CHANNEL=mcp`: `mcp__github__pull_request_read` を method=`get_review_comments` で呼ぶ。スレッド単位で `path` / `line` / 各コメント `body` が返る。`pageInfo.hasNextPage` が `true` の間 `after=<endCursor>` を付けて全件取得する (`perPage` は最大 100)。
@@ -125,7 +125,7 @@ Step 1 の `OWNER` / `REPO` / `PR_NUMBER` / `CHANNEL` と Step 3 で得たレビ
 
 `escalation` を **`escalate: true` の回だけ転送する**のは、エスカレーション基準を持たない caller (プロジェクト指示ファイルに基準の記載が無い = 大多数) の出力を従来と完全に同一に保つため。`compose-review` は基準が無い回も `escalation` を `{"escalate": false, "reasons": []}` として **必ず返す** 契約 (フィールドを省略しない) なので、これを無条件に転送すると全 PR の Review body に `<!-- AI-REVIEW-ESCALATE: escalate=0 reasons=0 -->` が付き、この機能を使っていない caller の出力が変わってしまう。`escalate: false` は CI にとって何のアクションも生まない値 (レビュアー追加の信号は `escalate=1` のみ) なので、転送しないことで失われる情報は無い。**`escalate: false` だった回も Step 6 の報告では `エスカレーション: 不要` と 1 行出す** (黙って落とさない)。`escalation` の欠落 / 破損で転送しなかった回は「不要」ではなく `不明` と報告する (Step 3 の戻り値の扱い参照。両者を取り違えさせない)。
 
-`label_counts` の転送は **Review body の機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=… -->`) の件数を正確にするため**に必要 (`post-pr-review` は `LABEL_COUNTS` が無ければ `comments[]` から集計するが、それでは `MAX_INLINE_COMMENTS` で省略された指摘が件数から落ちる)。サマリ行は CI (required status check 等) がパースする契約なので、`compose-review` が返した値をそのまま転送し、本 skill 側で再集計・加工しない。`COMMIT_ID` も CI が「head SHA に対するレビューか」を review の `commit_id` で判定する前提のため、Step 2 で取得した `headRefOid` を従来どおり常時転送する (本 skill の `COMMIT_ID` 挙動は変更なし)。
+`label_counts` の転送は **Review body の機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=… -->`) の件数を正確にするため**に必要 (`post-pr-review` は `LABEL_COUNTS` が無ければ `comments[]` から集計するが、それでは `MAX_INLINE_COMMENTS` で省略された指摘が件数から落ちる)。サマリ行は CI (required status check 等) がパースする契約なので、`compose-review` が返した値をそのまま転送し、本 skill 側で再集計・加工しない。`COMMIT_ID` も CI が「head SHA に対するレビューか」を review の `commit_id` で判定する前提のため常時転送するが、**渡す値は `compose-review` が返した `commit_id`** (Step 2 で控えた `headRefOid` と異なる場合は返ってきた方。`compose-review` が Step 1 で force-push を検知して head を取り直すことがあり、実際にレビューした差分の head はそちらだから)。`compose-review` が `commit_id` を返さなかった回だけ Step 2 の `headRefOid` を使う。
 
 投稿の実行 (`CHANNEL` に応じた `gh api .../reviews --input` または MCP での pending review 組み立て) は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして `/tmp/review.json` を書いたり API を叩いたりしない。
 
