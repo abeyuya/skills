@@ -169,7 +169,7 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 
 例外は `distill-pr-reviews`: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり、bash からは MCP ツールを呼べないため **gh チャネル専用** (gh が使えない環境では実行できない)。
 
-なお PR 差分の取得 (`compose-review`) はどちらのチャネルにも依存せず pure-git (read-only fetch + `git diff`) で完結する。
+なお PR 差分と指示ファイルの取得 (`compose-review`) は **pure-git (read-only fetch + `git diff` / `git show`) が主経路** で、どちらのチャネルにも依存しない。ただし git が使えない / head object を fetch できない環境では `gh` 経路に degrade する (詳細は `compose-review` Step 3 / Step 4)。
 
 ## 利用方法 (GitHub Actions)
 
@@ -184,6 +184,10 @@ permissions:
 > 本 skill 群はトップレベル PR コメント (`POST /repos/.../issues/{n}/comments` 経路) を投稿しないため `issues: write` は不要。caller が `claude-code-action` 等を経由している場合は action 側の要件で `issues: write` が要求されることがあるため、その場合のみ caller が追加する。
 
 ```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0        # compose-review の git 主経路 (SHA 解決 / diff / 指示ファイル取得) に必要
+
 - uses: anthropics/claude-code-action@v1
   with:
     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -200,8 +204,12 @@ permissions:
       run-pr-review skill を呼び、上記の入力で PR レビュー一式 (方針読み込み・レビュー作成・投稿・過去スレッド resolve) を実行してください。
       caller プロジェクトの共通方針はリポジトリ root の REVIEW.md / AGENTS.md / .claude/CLAUDE.md / CLAUDE.md のいずれかに置けば自動で読み込まれます (この順で最初に見つかった 1 つだけ)。加えて変更ファイルの祖先ディレクトリにある REVIEW.md が読み込まれ、それぞれの配下にだけ適用されます。
     claude_args: |
-      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*)"
+      --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(gh repo view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git fetch origin:*),Bash(git fetch https://github.com/*),Bash(git show:*),Bash(git cat-file:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*),Bash(grep:*),Bash(sed -E:*),Bash(date:*),Bash(mkdir:*),Bash(dirname:*)"
 ```
+
+> checkout の `fetch-depth: 0` は `compose-review` の git 主経路のためのもの。既定の `fetch-depth: 1` では共通祖先がローカルに無く `git diff <BASE_SHA>...<HEAD_SHA>` が `fatal: no merge base` になる (`fetch-depth: 0` の代わりにジョブ内で `git fetch --unshallow` を挟んでもよい)。checkout を置かない構成でも `gh` 経路への degrade でレビュー自体は動くが、SHA 解決・差分・指示ファイルの取得がすべて `gh` 頼みになり、**外部レビュースキルの併用 (`compose-review` 5-2) は ref range を渡せなくなる**。`code-review` を Skill ツールから呼べる環境なら PR URL を target にして併用は維持されるが、GitHub Actions のように `disable-model-invocation` で呼べない環境では解決順 2 も不成立になり、自前レビュー単独へ退化する (その場合は未併用である旨が総括 `body` に開示される)。品質を落としたくなければ checkout を置くこと。
+
+> `Bash(sed -E:*)` は skill が remote URL / ref 名の抽出に使う読み取り専用の置換 (`sed -E 's#...#...#'`) のためのもの。skill は sed の `e` / `w` コマンド、`s///e` / `s///w` フラグ、`-i` を使わない。前方一致なので `-E` 以降の引数までは許可設定で制限できない点に注意し、より厳しくしたい場合は sed の許可を外して `OWNER` / `REPO` / `BASE_BRANCH` を caller から明示的に渡す運用にする (抽出が不要になる)。
 
 > 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
 
