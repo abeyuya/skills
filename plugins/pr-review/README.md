@@ -21,7 +21,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 優先順位:
 
-1. `code-review` (Claude Code 組み込み) — 内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが利用可能な現在コンテキストでのみ使える (sub-agent コンテキストでは不可)。`run-pr-review` / `run-local-review` が `compose-review` を現在コンテキストで直接呼ぶのはこのため。**ただし多くの環境ではモデルから呼び出せない** (後述「`code-review` が呼べない問題」)。
+1. `code-review` (Claude Code 組み込み) — 内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが使えるコンテキストでのみ動く (sub-agent の中でもネスト上限の範囲内なら可。Agent を持たないホストや上限に達した階層では不可)。**ただし多くの環境ではモデルから呼び出せない** (後述「`code-review` が呼べない問題」)。
 2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、`code-review` と同じ「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい。
 3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
 4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
@@ -38,6 +38,24 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
 外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は `code-review` / ホスト標準スキルには渡さない (scope 引数専用で free-text 非対応) が、`scan-diff-findings` は `EXTRA_FOCUS` で観点を free text で受け取れる。いずれの経路でも最終的なラベル付け・正規化は `compose-review` 側の責務。
+
+### 呼び出し構成とネスト深さ
+
+sub-agent はネスト起動できる (既定でメイン会話から 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可)。本 plugin の呼び出し構成と、各段が消費する深さは次のとおり:
+
+```text
+run-pr-review / run-local-review    (caller のコンテキスト)
+└─ compose-review                   Skill ツール。同一コンテキスト (深さを消費しない)
+   └─ scan-diff-findings            Skill ツール。同一コンテキスト (深さを消費しない)
+      └─ finder / verifier          Agent ツール。+1 階層。末端 (さらに sub-agent を起動しない)
+```
+
+- メイン会話から呼べば 1 階層しか使わない。caller 自身が sub-agent の中から呼んでもよい。
+- ネスト上限に達した階層で呼ばれた場合、Agent が使えないため `scan-diff-findings` は現在コンテキストでの逐次自己適用に縮退し、`external_review.mode=inline` として開示される。
+- orchestrator が `compose-review` を sub-agent ではなく直接呼ぶのは fan-out のためではない。理由は次の 3 つ:
+  1. background 化されると結果を同期的に受け取れず、投稿前 / 出力前に停止しうる。
+  2. 手動 `/code-review` の findings を同じコンテキストで採用する運用 (後述) が成立しなくなる。
+  3. Agent を持たない caller / ホストでも同じ手順で動く。
 
 ### `code-review` が呼べない問題 (`disable-model-invocation`)
 

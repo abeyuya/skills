@@ -7,7 +7,13 @@ description: PR レビュー全体を 1 コマンドで実行する thin orchest
 
 PR レビュー一式 (PR 情報取得 → compose-review でレビュー本文生成 → post-pr-review で投稿 → resolve-pr-threads で過去スレッド整理) を **1 つの skill 呼び出しで完結** させる thin orchestrator。
 
-`compose-review` は **sub-agent を立てず現在コンテキストで直接呼ぶ** (Step 3 参照)。これは `compose-review` の Step 5-2 で `code-review` 等の外部レビュースキルを併用する際、その fan-out (Agent ツール) が現在コンテキストでないと動かないため。トレードオフとして、大きい PR 差分 + 外部レビューの実行が orchestrator のコンテキストを膨らませる点は許容する。
+`compose-review` は **sub-agent を立てず現在コンテキストで直接呼ぶ** (Step 3 参照)。理由は次の 3 つ:
+
+1. **結果を同期的に受け取る必要がある**: ホストは sub-agent を background 化することがある (`run_in_background: false` が無視される事例をリモート実行環境で実測。`scan-diff-findings` Step 2)。`compose-review` が background 化されると本 skill は完了を待ってターンを明け渡すしかなく、headless CI ではそのまま投稿されずに終わりうる。finder の background 化は `compose-review` 5-1 の自前レビューが取りこぼしを補うが、`compose-review` 自体の background 化を補う仕組みは無い。
+2. **手動 `/code-review` の findings を採用する運用** (plugin README「外部レビューの手動併用」/ `compose-review` 5-2 の例外) は、同じコンテキストに findings が残っていることが前提。sub-agent からは親のコンテキストが見えない。
+3. Agent ツールを持たない caller / ホストでも同じ手順で動き、sub-agent 起動のオーバーヘッドも無い。
+
+「外部レビューの fan-out を成立させるため」は理由ではない。sub-agent のネスト起動が可能なので (既定でメイン会話から 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可)、上限の範囲内なら sub-agent の中でも fan-out は動く。トレードオフとして、大きい PR 差分 + 外部レビューの実行が orchestrator のコンテキストを膨らませる点は許容する。
 
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
@@ -68,7 +74,7 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 ### Step 3. `compose-review` でレビュー本文を生成する (sub-agent を立てず現在コンテキストで直接呼ぶ)
 
-`Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す。**Task / Agent ツールで sub-agent を spawn しない** — `compose-review` が Step 5-2 で `code-review` 等の外部レビュースキルを併用する際、その fan-out (Agent ツール) は sub-agent コンテキストでは動かず、現在コンテキストでのみ動くため。レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。
+`Skill` ツール (`skill: "compose-review"`) を **現在のコンテキストで直接** 呼び出す。**Task / Agent ツールで sub-agent を spawn しない** — background 化されると結果を同期的に受け取れず投稿前に停止しうるため、および手動 `/code-review` の findings を `compose-review` がコンテキスト上で採用できなくなるため (冒頭の理由 1〜3)。レビュー方針の読み込み (`/pr-review-style-reference` / プロジェクト指示ファイル) ・差分取得・外部レビュースキル併用・本文生成は `compose-review` に委譲し、本 skill 側で再実装しない。
 
 #### 外部レビューの手動併用 (任意, ユーザー向け運用)
 
@@ -151,7 +157,7 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 ## 守ること
 
 - 各 step で使う既存資産 (`compose-review` / `post-pr-review` / `resolve-pr-threads`) は **必ず本 skill 経由で利用** する。本 skill 内で同等の処理を再実装してはならない (スタイル参考ガイド・投稿手順・resolve 判定・本文生成の二重管理を防ぐため)。
-- `compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (`compose-review` の `code-review` 等外部レビュースキル併用の fan-out を成立させるため)。
+- `compose-review` は **Task / Agent ツールで sub-agent として起動せず、現在のコンテキストで Skill ツール経由で直接呼ぶ** (background 化による投稿前停止を避け、手動 `/code-review` の findings をコンテキスト上で採用できるようにするため。冒頭の理由 1〜3)。
 - `compose-review` から戻っても **そこで応答を終了しない**。`compose-review` の出力は `HANDOFF_PATH` に書き出された中間成果物であり、**戻り後の次アクションは `HANDOFF_PATH` の `Read`**。そこから Step 4 (投稿) → Step 5 (resolve) → Step 6 (報告) を同一応答内で連続実行して初めて本 skill の責務が完了する (現在コンテキスト直接呼びには制御戻り境界が無く、投稿前に停止する事故が起きやすい。詳細は Step 3「戻り値の扱い」冒頭の警告)。
 - レビュー方針 (重要度ラベル等) / プロジェクト指示ファイル読み込み / `/pr-review-style-reference` の参照は `compose-review` の責務。本 skill では再実装しない。
 - GitHub API 操作は Step 1 で解決した `CHANNEL` の経路に統一し、下流 skill (`post-pr-review` / `resolve-pr-threads`) にも同じ値を転送する。gh が 403 になったことを理由に投稿や resolve を黙って skip しない — MCP チャネルが使えるならそちらで実行する (逆も同様)。
