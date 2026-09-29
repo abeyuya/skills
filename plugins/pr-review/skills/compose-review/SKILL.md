@@ -49,7 +49,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 - `-z` を付けないと、git は既定 (`core.quotePath=true`) で非 ASCII を含むパスを `"apps/\346\227\245..."` のように quote・エスケープして出す。`core.quotePath=false` にしても `"` / `\` / タブ / 改行を含むパスは quote される。quote されたままのパスを使うと、`git show <SHA>:<path>` が「path 不在」の fatal になって祖先の `REVIEW.md` とそこにしかない方針・エスカレーション基準を黙って落とし、5-4 でも指示ファイルへの変更を検知できない (基準を削除する PR が `escalate: false` で通る)。`-z` なら quote は一切行われず、パスがそのまま出る。
 - `--no-renames` は、rename されたファイルを「移動元の削除 + 移動先の追加」として両方のパスを一覧に出すため (git は既定で rename を検出し、移動先のパスしか出さない)。これが無いと、PR が基準入りの `REVIEW.md` を別名に rename しただけで一覧に `REVIEW.md` が現れず、5-4 の自己回避防止が発火しない。Step 3 の祖先探索でも移動元のディレクトリを見落とす。
-- **NUL を改行に変換してから処理しない** (`tr '\0' '\n'` は、改行を含むパスを複数の行に分け、その断片を偽のパスとして祖先探索に流す)。一覧の処理は下記のように NUL 区切りのまま行う。**まず一覧を一時ファイルに書き出し、git の終了コードを確認してから** 処理する (`L=$(mktemp); git diff --name-only -z --no-renames <範囲> > "$L" || echo 'FATAL: 一覧を取得できない'`)。パイプで直接流すと、git diff が fatal (object 不在 / shallow で共通祖先なし等) になっても「0 件」と区別できず、祖先の方針・5-4 の発火・5-3 の範囲判定がすべて黙って空になる。FATAL なら空リストと読まず、各 step の degrade 手順 (共通規約の `gh` 経路) に進む。以下のコマンドは **いずれも bash で実行する** (`read -d ''` / `$'\n'` / `< <(...)` は POSIX sh では動かず、出力が空になって「該当なし」と区別できなくなる)。
+- **NUL を改行に変換してから処理しない** (`tr '\0' '\n'` は、改行を含むパスを複数の行に分け、その断片を偽のパスとして祖先探索に流す)。一覧の処理は下記のように NUL 区切りのまま行う。**まず一覧を一時ファイルに書き出し、git の終了コードを確認してから** 処理する (`git diff --name-only -z --no-renames <範囲> > '<LIST_PATH>' || echo 'FATAL: 一覧を取得できない'`。`<LIST_PATH>` は `/tmp/compose-review-names-<UTCタイムスタンプ>-<ランダム英数字>.z` のような一意の絶対パスで、**以降のコマンドにもシェル変数ではなくこのパスを直接書く** — Bash ツールは呼び出しごとにシェル変数が消えるので、`L=$(mktemp)` の `$L` を別の呼び出しで読むと空になり、全ステップが黙って「0 件」になる)。パイプで直接流すと、git diff が fatal (object 不在 / shallow で共通祖先なし等) になっても「0 件」と区別できず、祖先の方針・5-4 の発火・5-3 の範囲判定がすべて黙って空になる。FATAL なら空リストと読まず、各 step の degrade 手順 (共通規約の `gh` 経路) に進む。以下のコマンドは **いずれも bash で実行する** (`read -d ''` / `$'\n'` / `< <(...)` は POSIX sh では動かず、出力が空になって「該当なし」と区別できなくなる)。
   - **祖先 `REVIEW.md` の列挙** (存在する候補だけを、root → 親 → 子の順 = `/` の少ない順で出力する。PR モードの例。ローカルモードは `<範囲>` を `diff_mode` に合わせ、`git cat-file -e` の代わりに `[ -f "$c" ]` で確認する):
 
     ```bash
@@ -61,7 +61,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
         printf '%s\0' "$c"
         [ "$d" = . ] && break
       done
-    done < "$L" | sort -zu |
+    done < '<LIST_PATH>' | sort -zu |
     while IFS= read -r -d '' c; do
       git cat-file -e "<HEAD_SHA>:$c" 2>/dev/null || continue
       case $c in
@@ -76,15 +76,15 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
   - **5-4 の発火条件** (列挙とは別のコマンドで判定する。同じパイプラインの中で出力すると列挙側の NUL 区切りの流れに混ざるため):
 
     ```bash
-    grep -zc -E '^(REVIEW\.md|.*/REVIEW\.md|AGENTS\.md|\.claude/CLAUDE\.md|CLAUDE\.md)$' < "$L"
+    grep -zc -E '^(REVIEW\.md|.*/REVIEW\.md|AGENTS\.md|\.claude/CLAUDE\.md|CLAUDE\.md)$' < '<LIST_PATH>'
     ```
 
     出力 (該当件数) が 1 以上なら発火 (`grep -c` は 0 件のとき終了コード 1 を返すが、判定には出力の数値だけを使う)。改行を含むパスも NUL 区切りのまま 1 件として判定される。
-  - **範囲内かどうかの突き合わせ** (5-3 の範囲外除外。`<path>` は正規化済みの値。`"$L"` は Step 4 と同じ範囲を `-z` のみ (rename は既定) で書き出したもの。範囲外除外は移動先のパスがあれば足りる):
+  - **範囲内かどうかの突き合わせ** (5-3 の範囲外除外。`<path>` は正規化済みの値。`<RANGE_LIST_PATH>` は Step 4 と同じ範囲を `-z` のみ (rename は既定) で書き出した別ファイル (`<LIST_PATH>` と同じ命名規則で別名にする)。範囲外除外は移動先のパスがあれば足りる):
 
     ```bash
     P='<path>'; found=0
-    while IFS= read -r -d '' p; do [ "$p" = "$P" ] && found=1; done < "$L"
+    while IFS= read -r -d '' p; do [ "$p" = "$P" ] && found=1; done < '<RANGE_LIST_PATH>'
     echo "$found"
     ```
 
