@@ -63,6 +63,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
       done
     done < '<LIST_PATH>' | sort -zu |
     while IFS= read -r -d '' c; do
+      case /$c in */node_modules/*|*/vendor/*) continue ;; esac
       git cat-file -e "<HEAD_SHA>:$c" 2>/dev/null || continue
       case $c in
         *$'\n'*) echo '(改行を含むパスの REVIEW.md を 1 件除外)' >&2 ;;
@@ -72,7 +73,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
     awk -F/ '{ print NF "\t" $0 }' | sort -n -k1,1 -s | cut -f2-
     ```
 
-    親ディレクトリは `$(dirname ...)` ではなく `${d%/*}` で求める (コマンド置換は末尾の改行を削るので、改行で終わるディレクトリ名が別のパスに化ける)。`sort -zu` は重複除去のためだけで、読み込み順は最後の `/` の個数による並べ替えで決める (バイト順のままだと `apps/API/REVIEW.md` が親の `apps/REVIEW.md` より先に来て、親子の優先関係が逆転する)。出力されたパスは `git show` 等にそのまま渡せる。改行を含むパスの `REVIEW.md` は表示・引用が安全にできないので読まず、stderr に出た除外件数を総括 `body` の `## 総合判断` 末尾に 1 文で開示する。
+    親ディレクトリは `$(dirname ...)` ではなく `${d%/*}` で求める (コマンド置換は末尾の改行を削るので、改行で終わるディレクトリ名が別のパスに化ける)。`sort -zu` は重複除去のためだけで、読み込み順は最後の `/` の個数による並べ替えで決める (バイト順のままだと `apps/API/REVIEW.md` が親の `apps/REVIEW.md` より先に来て、親子の優先関係が逆転する)。`node_modules/` / `vendor/` 配下の候補は Step 3 の規定どおり除外している。出力されたパスは `git show` 等にそのまま渡せる。改行を含むパスの `REVIEW.md` は表示・引用が安全にできないので読まず、stderr に出た除外件数を総括 `body` の `## 総合判断` 末尾に 1 文で開示する。
   - **5-4 の発火条件** (列挙とは別のコマンドで判定する。同じパイプラインの中で出力すると列挙側の NUL 区切りの流れに混ざるため):
 
     ```bash
@@ -91,7 +92,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
     `grep -zxF` は使わない (パターン中の改行をパターンの区切りとして扱うので、改行を含むパスが一致しない)。
 - 取得したパスを `git show <SHA>:<path>` 等のコマンドに渡すときは、シェルのクォート (単一引用符で囲み、パス中の `'` は `'\''` にする) を必ず付ける。`gh api .../contents/<path>?ref=<SHA>` の URL に入れるときは、区切りの `/` 以外で英数字・`-`・`.`・`_`・`~` 以外のバイトを UTF-8 でパーセントエンコードする (`#` / `?` を含むパスで URL が途中で切れて 404 になり、「候補不在」と区別できないまま方針と基準を落とすのを防ぐため)。
 - **差分本文 (Step 4) も `git -c core.quotePath=false diff ...` で取る**。差分の見出し行 (`diff --git` / `+++ b/`) も既定では非 ASCII のパスを quote するので、見出しから写した `comments[].path` や 5-3 の範囲外除外が、この一覧 (quote なし) と一致しなくなる。`core.quotePath=false` でも `"` / `\` / タブ / 改行を含むパスの見出しは `"b/..."` と quote されたままなので、見出しが `"` で始まるときは、前後の引用符を外し、C 形式のエスケープ (`\"` / `\\` / `\t` / `\n` / 8 進の `\ooo`) を戻してから、この一覧の表記と突き合わせる。`a/` / `b/` の接頭辞は、quote されていた場合と、そのままでは一覧に無く外すと一覧にある場合だけ外す (リポジトリに本物の `b/` ディレクトリがあるときに、正しいパスを削って範囲外にしないため)。外部レビュースキルの finding の `path` も、突き合わせの前に同じ正規化をかける。
-- **`gh` 経路の一覧**: git 経路が使えず `gh` 経路に degrade した回は、一覧を **`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename` と `previous_filename`** (rename されたファイルは `status: "renamed"` で `previous_filename` に移動元が入る。git 経路の `--no-renames` と同じ理由で両方を加える) から取る (API の JSON なので quote されない)。`gh api` が使えないときだけ `gh pr diff --name-only <PR_NUMBER> --repo <OWNER>/<REPO>` で代替する (パッチの見出し行からパスを取るため、quote されるパスが崩れたり抜けたりしうる)。本文の各 step はこの手順を「共通規約の `gh` 経路」として参照する。
+- **`gh` 経路の一覧**: git 経路が使えず `gh` 経路に degrade した回は、一覧を **`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename` と `previous_filename`** (rename されたファイルは `status: "renamed"` で `previous_filename` に移動元が入る。git 経路の `--no-renames` と同じ理由で両方を加える) から取る (API の JSON なので quote されない)。`gh api` が使えないときだけ `gh pr diff --name-only <PR_NUMBER> --repo <OWNER>/<REPO>` で代替する (パッチの見出し行からパスを取るため、quote されるパスが崩れたり抜けたりしうる)。本文の各 step はこの手順を「共通規約の `gh` 経路」として参照する。**この経路でも一覧は同じ形式のファイルに書き出し、上の 3 つのコマンドをそのまま使う**: `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files --jq '.[] | .filename, (.previous_filename // empty)' | tr '\n' '\0' > '<LIST_PATH>'` (5-3 用の `<RANGE_LIST_PATH>` は `previous_filename` を除いて同様に作る)。`gh` の出力が失敗したら空リストと読まず「失敗時」に従う。JSON 上で改行を含む `filename` はこの変換で区別できないので、1 件でもあれば総括 `body` の `## 総合判断` 末尾に 1 文開示する。head object が無いので、祖先の列挙コマンドの存在確認 (`git cat-file -e`) は使えない。`sort -zu` までの候補一覧を得たうえで、各候補を Step 3 の `gh api -H "Accept: application/vnd.github.raw" .../contents/<path>?ref=<HEAD_SHA>` で確認する (404 は候補不在)。
 
 ### Step 1. モード判定と対象確定
 
