@@ -181,7 +181,7 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 {
   "target": "9f8e7d6c...a1b2c3d4",
   "diff_mode": "ref_range",
-  "fanout": {"mode": "agent", "finders": 4, "finders_expected": 4, "perspectives": ["correctness", "boundary", "security", "concurrency"], "perspectives_missing": [], "findings_raw": 8, "verified": 6, "refuted": 2, "unverified": 0},
+  "fanout": {"mode": "agent", "finders": 3, "finders_expected": 3, "perspectives": ["correctness", "boundary", "security"], "perspectives_missing": [], "findings_raw": 8, "verified": 6, "refuted": 2, "unverified": 0},
   "findings": [
     {
       "path": "src/example.ts",
