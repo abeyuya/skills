@@ -45,13 +45,33 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 ### 共通規約: 変更ファイル一覧の取得
 
-本 skill で変更ファイル一覧 (`--name-only`) を git から取るときは、**必ず `-z` と `--no-renames` を付けて NUL 区切りで取る** (例外は 5-2 リカバリの件数突合のみ。同所参照) (`git diff --name-only -z --no-renames <範囲> | tr '\0' '\n'` のように NUL を改行に変換して読む)。Step 3 の祖先探索と 5-4 の発火条件の判定はこの一覧を使う (5-2 のリカバリ手順での件数突合は `-z` だけを付け、`--no-renames` は付けない)。
+本 skill で変更ファイル一覧 (`--name-only`) を git から取るときは、**必ず `-z` と `--no-renames` を付けて NUL 区切りで取り、NUL 区切りのまま処理する** (例外は 5-2 リカバリの件数突合だけで、扱いは同所に書く)。Step 3 の祖先探索と 5-4 の発火条件の判定はこの一覧を使う。
 
 - `-z` を付けないと、git は既定 (`core.quotePath=true`) で非 ASCII を含むパスを `"apps/\346\227\245..."` のように quote・エスケープして出す。`core.quotePath=false` にしても `"` / `\` / タブ / 改行を含むパスは quote される。quote されたままのパスを使うと、`git show <SHA>:<path>` が「path 不在」の fatal になって祖先の `REVIEW.md` とそこにしかない方針・エスカレーション基準を黙って落とし、5-4 でも指示ファイルへの変更を検知できない (基準を削除する PR が `escalate: false` で通る)。`-z` なら quote は一切行われず、パスがそのまま出る。
 - `--no-renames` は、rename されたファイルを「移動元の削除 + 移動先の追加」として両方のパスを一覧に出すため (git は既定で rename を検出し、移動先のパスしか出さない)。これが無いと、PR が基準入りの `REVIEW.md` を別名に rename しただけで一覧に `REVIEW.md` が現れず、5-4 の自己回避防止が発火しない。Step 3 の祖先探索でも移動元のディレクトリを見落とす。
-- 改行を含むパスは `tr` で改行に変換すると行が分かれて壊れる。`git diff --name-only -z --no-renames <範囲> | tr -cd '\0' | wc -c` (NUL の個数 = ファイル数) と変換後の行数が一致しなければ改行を含むパスがあるので、そのパスは祖先探索に使わず、総括 `body` の `## 総合判断` 末尾に「改行を含むパスがあり、その祖先の指示ファイルは確認していない」旨を 1 文添える (5-4 の発火条件では、NUL 区切りのまま `REVIEW.md` / root 4 候補との一致を判定する)。
+- **NUL を改行に変換してから処理しない** (`tr '\0' '\n'` は、改行を含むパスを複数の行に分け、その断片を偽のパスとして祖先探索に流す)。祖先 `REVIEW.md` の列挙と存在確認は、次のように NUL 区切りのまま shell で行い、存在する候補だけを出力させる (PR モードの例。ローカルモードは `<範囲>` を `diff_mode` に合わせ、`git cat-file -e` の代わりに `[ -f "$c" ]` で確認する):
+
+  ```sh
+  git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA> |
+    while IFS= read -r -d '' p; do
+      d=$p
+      while :; do
+        d=$(dirname -- "$d")
+        if [ "$d" = . ]; then c=REVIEW.md; else c=$d/REVIEW.md; fi
+        printf '%s\0' "$c"
+        [ "$d" = . ] && break
+      done
+    done | sort -zu |
+    while IFS= read -r -d '' c; do
+      git cat-file -e "<HEAD_SHA>:$c" 2>/dev/null || continue
+      case $c in *$'\n'*) echo '(改行を含むパスの REVIEW.md を 1 件除外)' ;; *) printf '%s\n' "$c" ;; esac
+    done
+  ```
+
+  出力されたパスは `git show` 等にそのまま渡せる。改行を含むパスの `REVIEW.md` だけは表示・引用が安全にできないので読まず、その件数を総括 `body` の `## 総合判断` 末尾に 1 文で開示する。5-4 の発火条件も同じループの中で `case $p in REVIEW.md|*/REVIEW.md|AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) printf '%s\n' "$p" ;; esac` のように判定する (発火したかどうかだけが要るので、改行を含むパスも判定対象に含まれる)。
 - 取得したパスを `git show <SHA>:<path>` 等のコマンドに渡すときは、シェルのクォート (単一引用符で囲み、パス中の `'` は `'\''` にする) を必ず付ける。`gh api .../contents/<path>?ref=<SHA>` の URL に入れるときは、区切りの `/` 以外で英数字・`-`・`.`・`_`・`~` 以外のバイトを UTF-8 でパーセントエンコードする (`#` / `?` を含むパスで URL が途中で切れて 404 になり、「候補不在」と区別できないまま方針と基準を落とすのを防ぐため)。
-- git 経路が使えず `gh` 経路に degrade した回は、一覧を **`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename`** から取るのを優先する (API の JSON なので quote されない)。rename されたファイルは `status: "renamed"` で `previous_filename` に移動元が入るので、`filename` と `previous_filename` の両方を一覧に加える (git 経路の `--no-renames` と同じ理由)。本文中で併記している `gh pr diff --name-only` はパッチの見出し行からパスを取り出すため、git が見出し行で quote するパス (`"` / `\` / タブ / 改行、設定によっては非 ASCII) が崩れたり抜けたりしうる。`gh api` が使えないときだけの代替として扱う。
+- **差分本文 (Step 4) も `git -c core.quotePath=false diff ...` で取る**。差分の見出し行 (`diff --git` / `+++ b/`) も既定では非 ASCII のパスを quote するので、見出しから写した `comments[].path` や 5-3 の範囲外除外が、この一覧 (quote なし) と一致しなくなる。`core.quotePath=false` でも `"` / `\` / タブ / 改行を含むパスの見出しは `"b/..."` と quote されたままなので、見出しが `"` で始まるときは C 形式のエスケープ (`\"` / `\\` / `\t` / `\n` / 8 進の `\ooo`) を戻してから、この一覧の表記と突き合わせる。外部レビュースキルの finding の `path` も、突き合わせの前に同じ正規化をかける。
+- **`gh` 経路の一覧**: git 経路が使えず `gh` 経路に degrade した回は、一覧を **`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename` と `previous_filename`** (rename されたファイルは `status: "renamed"` で `previous_filename` に移動元が入る。git 経路の `--no-renames` と同じ理由で両方を加える) から取る (API の JSON なので quote されない)。`gh api` が使えないときだけ `gh pr diff --name-only <PR_NUMBER> --repo <OWNER>/<REPO>` で代替する (パッチの見出し行からパスを取るため、quote されるパスが崩れたり抜けたりしうる)。本文の各 step はこの手順を「共通規約の `gh` 経路」として参照する。
 
 ### Step 1. モード判定と対象確定
 
@@ -102,7 +122,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 #### ディレクトリ別方針 (monorepo 向け)
 
-root の共通方針に加え、**変更ファイルの祖先ディレクトリにある `REVIEW.md`** を root → 親 → 子の順にすべて読み込む。変更ファイル一覧は Step 4 と同じ差分範囲を「共通規約: 変更ファイル一覧の取得」に従って取って使う (PR モードは `git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA>`。fatal になったら空リストと読まず `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename` / `previous_filename` (共通規約。`gh api` が使えなければ `gh pr diff --name-only <PR_NUMBER> --repo <OWNER>/<REPO>`) から取り直す (Step 4 / 5-4 と同じ扱い)、ローカルは `diff_mode` に合わせて `git diff --name-only -z --no-renames <base>...HEAD` / `--cached` / 引数なし)。
+root の共通方針に加え、**変更ファイルの祖先ディレクトリにある `REVIEW.md`** を root → 親 → 子の順にすべて読み込む。変更ファイル一覧は Step 4 と同じ差分範囲を「共通規約: 変更ファイル一覧の取得」に従って取って使う (PR モードは `git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA>`。fatal になったら空リストと読まず 共通規約の `gh` 経路 から取り直す (Step 4 / 5-4 と同じ扱い)、ローカルは `diff_mode` に合わせて `git diff --name-only -z --no-renames <base>...HEAD` / `--cached` / 引数なし)。
 
 ```text
 REVIEW.md                       # 全体共通
@@ -129,7 +149,7 @@ apps/api/REVIEW.md              # apps/api/ 配下
 祖先ディレクトリの `REVIEW.md` も、root の候補と **同じ取得元** から読む (下記の各モードで `<path>` を `apps/web/REVIEW.md` のような root 相対パスに読み替える)。
 
 - **ローカルモード**: `Read` ツールで cwd 直下を上記 4 候補の優先順で順に試す (`limit` で打ち切らず全文を読む。下記「全文を取得する」参照)。
-- **PR モード**: **本文も見出し探索も `git show <HEAD_SHA>:<path>` を正典にする** (`<HEAD_SHA>` は Step 1 で確定した head SHA)。候補の走査に入る前に **`git cat-file -e <HEAD_SHA>^{commit}` で head object がローカルにあることを確認する**。無ければ (git 自体が無い / `git fetch` が拒否・失敗した等、理由を問わず) `git show` 経路は使えないので候補を走査せず、**下記「任意の補助」の `gh api ... ?ref=<HEAD_SHA>` に切り替える** (head object を要らないので degrade 先として成立する)。**この degrade に落ちた回は、変更ファイル一覧も `git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA>` では取れない** (head object が無いので同じく fatal になる) ので、ディレクトリ別方針の祖先探索と 5-4 の発火条件に使う一覧は `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename` / `previous_filename` (共通規約。`gh api` が使えなければ `gh pr diff --name-only <PR_NUMBER> --repo <OWNER>/<REPO>`) から取る。これを怠ると祖先 `REVIEW.md` とそこにしかない基準を落としたまま黙って成功する。`gh` も使えず head 側をどの経路でも読めないときだけ「失敗時」に従い `{"error":"..."}` を書き出して停止する (指示ファイルを読めないまま投稿すると、方針なし・`escalate: false` が「基準なし」と区別できないため。なお head object も `gh` も無い状態では Step 4 の差分取得自体が成立しないので、この停止で失うレビューは無い)。`git show` は object 不在でも path 不在と同じ `fatal: path '<path>' does not exist in '<SHA>'` を返すため fatal の文面では区別できず、cwd の `Read` フォールバックも無いので、確認せずに走査すると 4 候補すべて「不在」に見え、方針なし・`escalate: false` のまま投稿されてしまう。確認後、候補を優先順に 1 つずつ `git show <HEAD_SHA>:<path>` で取り、fatal (`does not exist in` / `exists on disk, but not in`。後者は cwd の作業ツリーにだけあって head には無いファイルなので同じく候補不在) なら次の候補へ進む。Step 1 で `refs/pull/<PR_NUMBER>/head` を fetch 済みなのでその object から直接読める (cross-repo でも Step 1 で explicit URL から fetch 済みなら読める。`gh` は不要で、下記の任意の補助に限る)。
+- **PR モード**: **本文も見出し探索も `git show <HEAD_SHA>:<path>` を正典にする** (`<HEAD_SHA>` は Step 1 で確定した head SHA)。候補の走査に入る前に **`git cat-file -e <HEAD_SHA>^{commit}` で head object がローカルにあることを確認する**。無ければ (git 自体が無い / `git fetch` が拒否・失敗した等、理由を問わず) `git show` 経路は使えないので候補を走査せず、**下記「任意の補助」の `gh api ... ?ref=<HEAD_SHA>` に切り替える** (head object を要らないので degrade 先として成立する)。**この degrade に落ちた回は、変更ファイル一覧も `git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA>` では取れない** (head object が無いので同じく fatal になる) ので、ディレクトリ別方針の祖先探索と 5-4 の発火条件に使う一覧は 共通規約の `gh` 経路 から取る。これを怠ると祖先 `REVIEW.md` とそこにしかない基準を落としたまま黙って成功する。`gh` も使えず head 側をどの経路でも読めないときだけ「失敗時」に従い `{"error":"..."}` を書き出して停止する (指示ファイルを読めないまま投稿すると、方針なし・`escalate: false` が「基準なし」と区別できないため。なお head object も `gh` も無い状態では Step 4 の差分取得自体が成立しないので、この停止で失うレビューは無い)。`git show` は object 不在でも path 不在と同じ `fatal: path '<path>' does not exist in '<SHA>'` を返すため fatal の文面では区別できず、cwd の `Read` フォールバックも無いので、確認せずに走査すると 4 候補すべて「不在」に見え、方針なし・`escalate: false` のまま投稿されてしまう。確認後、候補を優先順に 1 つずつ `git show <HEAD_SHA>:<path>` で取り、fatal (`does not exist in` / `exists on disk, but not in`。後者は cwd の作業ツリーにだけあって head には無いファイルなので同じく候補不在) なら次の候補へ進む。Step 1 で `refs/pull/<PR_NUMBER>/head` を fetch 済みなのでその object から直接読める (cross-repo でも Step 1 で explicit URL から fetch 済みなら読める。`gh` は不要で、下記の任意の補助に限る)。
   - **cwd の作業ツリーは読まない** (cwd の remote が PR と同一リポジトリでも同じ)。`run-pr-review` は checkout しないので、cwd の作業ツリーは通常 base 相当 (セッションのブランチ次第ではそれより古い) であり、PR で新設・編集された指示ファイルを反映できない。`Read` で cwd を先に見て「あったから採用」とすると、head 側の内容を default branch 相当の古い内容で上書きしたことになる。差分が指示ファイルを触っていない PR では 5-4 の base/head 突き合わせも発火しないため、head 側にしかない `エスカレーション基準` 見出しはそのまま取りこぼされる。cwd が head と同一に見えても `git show` の方が確認の手間なく確実なので、例外は設けない。
   - **`gh` 経路 (git の head object が無い環境では必須の degrade 先、それ以外では任意の補助)**: `gh api -H "Accept: application/vnd.github.raw" repos/<OWNER>/<REPO>/contents/<path>?ref=<HEAD_SHA>` で remote fetch。**404 (候補不在) と経路障害を区別する**: 404 なら次の候補へ進み、401 / 403 / 5xx / ネットワークエラーは候補不在ではなく経路が使えない状態なので、次の候補へ進まず「失敗時」に従い error 停止する (経路障害を 404 と同じに扱うと、全候補が不在に見えて方針ゼロのまま投稿される)。`?ref=` を省略すると default branch から取れて不整合になるため必ず付ける。**raw の Accept ヘッダを付ける**と本文がそのまま返るので、既定 JSON の `content` (Base64) を別コマンドでデコードする必要が無い (デコード用に `node` / `python3` の実行許可を広げずに済む)。
 
@@ -163,16 +183,16 @@ apps/api/REVIEW.md              # apps/api/ 配下
 
 ### Step 4. 差分を取得する
 
-- **PR モード**: **git 主経路** — Step 1 で退避した SHA を使い `git diff <BASE_SHA>...<HEAD_SHA>` (三点記法 = merge-base 基準で base 進行を除外。GitHub の "Files changed" と一致) を差分ソースにする。head/base の object は Step 1 で read-only fetch 済みなので `gh` は不要。ローカルの作業ツリー・ローカルブランチは一切変えない (「守ること」の read-only fetch 例外)。git 経路では出力打ち切りが起きないため truncation 検知 / ファイル単位の追い読みは不要。
+- **PR モード**: **git 主経路** — Step 1 で退避した SHA を使い `git -c core.quotePath=false diff <BASE_SHA>...<HEAD_SHA>` (見出し行の quote は共通規約参照。三点記法 = merge-base 基準で base 進行を除外。GitHub の "Files changed" と一致) を差分ソースにする。head/base の object は Step 1 で read-only fetch 済みなので `gh` は不要。ローカルの作業ツリー・ローカルブランチは一切変えない (「守ること」の read-only fetch 例外)。git 経路では出力打ち切りが起きないため truncation 検知 / ファイル単位の追い読みは不要。
   - **任意の補助 (使える環境のみ)**: `gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>`。この場合 **truncation 検知** (`gh pr diff --name-only` の件数と patch hunk header (`diff --git a/...`) の出現件数の突合、末尾 `... (truncated)` の有無) を行い、疑わしければ `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` (各要素の `filename` / `patch`) で追い読みする (`--paginate` 必須。`per_page=30` デフォルトで 30 ファイル超が落ちる事故防止)。ただし git 経路が使えるなら上記主経路を優先する。
   - `BASE_SHA` / `HEAD_SHA` は **Step 1 の完了条件として両方とも 40 桁の commit SHA** (空のまま三点記法に渡すと fatal にならず空差分になり、リテラル `FETCH_HEAD` 等は非空でも SHA ではない。Step 1 参照)。念のため差分を取る前にも `^[0-9a-f]{40}$` を確認し、満たさなければ Step 1 の解決に戻る。
   - **`git diff <BASE_SHA>...<HEAD_SHA>` が fatal を返したら、理由を問わず空差分と解釈してはならない** (object がローカルに無い / shallow checkout で共通祖先が無く `fatal: no merge base` 等)。上記の `gh` 補助経路で同じ範囲を取れるならそれを使い (**使う前に `gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER> --jq .head.sha` が `HEAD_SHA` と一致することを確認する**。`gh pr diff` / `pulls/<N>/files` は常に PR の現 head の差分を返すので、Step 1 以降に force-push があると、新しい head の差分から作った指摘が古い `commit_id` に投稿される。`COMMIT_ID` を渡されて head の fetch も失敗した回は Step 1 の force-push 検知が走っていないので、ここが唯一の照合点になる。食い違えば「失敗時」に従い error 停止し、再実行させる)、取れなければ **差分取得不能として「失敗時」に従い `{"error":"..."}` を書き出して停止する**。
   - 差分取得不能として扱うのは、SHA を確定できない場合と、上記のとおり git / `gh` のどちらでも差分を取れない場合。**空差分の分岐に入ってよいのは、差分取得に成功したうえで結果が空だったときだけ**。
   - 差分が空なら Step 5 のレビュー生成 (5-1〜5-4) を skip し、Step 6 で `body` を「対象差分なし」、`comments` を `[]`、`label_counts` を全キー `0`、`escalation` を `{"escalate": false, "reasons": []}` で返す (ローカルモードの `diff_mode="none"` と同様、5-3 / 5-4 を skip してもこれらのフィールドは省略しない)。
 - **ローカルモード**: Step 1 で確定した `diff_mode` に応じて以下を取得。大きければ `--stat` で規模を見てファイル単位で追い読み (`--stat` の表示はパスを省略・quote するので、追い読みに使うパスの一覧は共通規約の `--name-only -z` で取る)。`commit` モードでは差分本体とは別に **`commit_count = git rev-list --count <base>..HEAD` で件数を取得** し Step 6 出力に含める (`--oneline | wc -l` ではなく `rev-list --count` を使う。コミットメッセージ改行等で値ズレしない正準コマンド)。`staged` / `worktree` / `none` モードでは `commit_count = 0` 固定。
-  - `commit`: `git diff <base>...HEAD` (三点記法でベース進行を除外)
-  - `staged`: `git diff --cached`
-  - `worktree`: `git diff`
+  - `commit`: `git -c core.quotePath=false diff <base>...HEAD` (三点記法でベース進行を除外。`core.quotePath=false` は共通規約参照)
+  - `staged`: `git -c core.quotePath=false diff --cached`
+  - `worktree`: `git -c core.quotePath=false diff`
 
 ### Step 5. レビュー本文を作成する
 
@@ -263,7 +283,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - ローカル `staged` / `worktree` モード: 外部スキルの既定 scope (uncommitted 差分) に委ねる。`code-review` は既定で `git diff HEAD` 相当も見るため staged 差分も拾えるが、**staged のみ (worktree クリーン) のケースで外部スキルが空 diff を返したら scope 不一致の可能性が高い**ため、解決順 2 (`scan-diff-findings` に `DIFF_MODE=staged` を明示して呼ぶ) に切り替える。それも不可なら外部レビューを「指摘なし」として扱い 5-1 のみで続行し、5-5 の未併用開示を入れる (silent skip はしない)。
 - **リカバリ: `gh` 経路が落ちて code-review が `pr` モードで取得できない場合**: PR URL / PR番号を渡すと code-review は内部で `gh pr diff` を使うため、`gh` が 403 等で落ちていると外部レビューが空振りする (web/remote では GitHub が `mcp__github__*` 経由のみになり `gh` が恒常 403 になりうる)。この場合は PR URL の代わりに **Step 1 で read-only fetch 済みの ref range `<BASE_SHA>...<HEAD_SHA>` を target に渡す**。code-review は `branch` モードに入り、ローカル `git diff` で review する (`gh` 不要・checkout/worktree 不要、fetch 済み object だけで完結)。手順:
   1. Step 1 で退避した `BASE_SHA` / `HEAD_SHA` をそのまま使う (このリカバリのために追加の fetch は不要)。
-  2. `git cat-file -e <BASE_SHA>^{commit}` と `git cat-file -e <HEAD_SHA>^{commit}` で両 object が commit として存在することを確認し (ref range diff は commit 前提。Step 1 の存在確認と peel を揃える)、`git diff --name-only -z <BASE_SHA>...<HEAD_SHA>` の件数 (共通規約の `-z` は付けるが、Step 4 の差分と rename の数え方を揃えるためここだけ `--no-renames` は付けない) を 5-1 の自前レビュー対象と突合する (範囲一致の確認)。
+  2. `git cat-file -e <BASE_SHA>^{commit}` と `git cat-file -e <HEAD_SHA>^{commit}` で両 object が commit として存在することを確認し (ref range diff は commit 前提。Step 1 の存在確認と peel を揃える)、`git diff --name-only -z <BASE_SHA>...<HEAD_SHA> | tr -cd '\0' | wc -c` の件数を 5-1 の自前レビュー対象と突合する (範囲一致の確認。**ここだけ共通規約の例外**: Step 4 の差分と rename の数え方を揃えるため `--no-renames` は付けない。`-z` の出力には改行が無いので `wc -l` ではなく NUL の個数で数える)。
   3. code-review を `<BASE_SHA>...<HEAD_SHA>` を target にして起動し、「Reviewing … against …」等の出力でローカル (`branch`) モードに入ったことを確認する。
   4. ref range target を受け付けずローカル review に入れないと確認できた場合は **1 が不成立**というだけなので、解決順 2 (`scan-diff-findings` に `TARGET=<BASE_SHA>...<HEAD_SHA>` / `DIFF_MODE=ref_range`) へ進む (ただし `gh` 経路に degrade した回は上記のとおり ref range を渡せないので 2 も不成立)。5-1 単独へ退化するのは 2 と 3 も不可と確認できた場合のみ。
   なお 5-1 自前レビューも同じ ref range 差分 (Step 4 の `git diff <BASE_SHA>...<HEAD_SHA>`) を基盤にできるので、**まず 5-1 の品質を担保する**。`gh` 1 経路の失敗では外部レビューを諦めない (退化条件は上記「退化条件の厳格化」参照)。
@@ -279,7 +299,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 5-1 と 5-2 の指摘を統合し、最終 `comments[]` を確定する。
 
-- **範囲外の指摘の除外**: 外部スキル (5-2) から得られた指摘のうち、Step 4 で取得した実際の差分に含まれないファイル / 行への指摘は、マージ時に除外する (scope 解釈の差で未変更行や対象外ファイルへの指摘が返りうるため。無関係な箇所への誤投稿を防ぐ)。
+- **範囲外の指摘の除外**: 突き合わせの前に、各指摘の `path` を共通規約の表記 (quote なしの生のパス) に正規化し、NUL 区切りの一覧と `git diff --name-only -z <範囲> | grep -qzxF -- '<path>'` のように突き合わせる (差分見出しから写した `"b/..."` 形式が残っていると、日本語パス等の指摘が範囲外として落ちるため)。外部スキル (5-2) から得られた指摘のうち、Step 4 で取得した実際の差分に含まれないファイル / 行への指摘は、マージ時に除外する (scope 解釈の差で未変更行や対象外ファイルへの指摘が返りうるため。無関係な箇所への誤投稿を防ぐ)。
 - **重複排除**: 同一 `path:line` かつ同主旨の指摘は 1 件に集約する (自前と外部スキルが同じ問題を指したケース)。位置が同じでも論点が別なら両方残す。
 - **重要度競合**: 同主旨で重要度が割れた場合は高い方を採用する (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。判定に迷えば残す方向 (取りこぼし回避優先)。
 - `EXISTING_THREADS_CONTEXT` が渡されている場合、同主旨の指摘は再掲しない (位置が同じでも論点が別なら新規指摘してよい)。重要度が既存より高い場合は別主旨として残す ([must]/[should] を dedupe で抑制すると実害大のため判定に迷えば残す方向)。
@@ -308,7 +328,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - **判定基準の自己回避を防ぐ (PR モードで必須)**: 基準は **レビュー対象 PR が書き換えられるファイル** にあるため、作成者が同一 PR で基準セクションを削除する / 文言を狭める / **上位候補ファイルを新設して既存の基準を shadowing する** (Step 3 は「最初に見つかった 1 つだけ」を読むため、基準を持つ `AGENTS.md` の手前に基準の無い `REVIEW.md` を追加すれば基準なし扱いになる) と、明示的な「判定するな」という指示を書かずに判定を `escalate: false` へ落とせる。したがって **Step 4 の差分が root の 4 候補または任意階層の `REVIEW.md` を追加 / 変更 / 削除している回** (`git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA>` (共通規約) に含まれる) は次の 2 つを行う:
   1. **base 側をこの判定のために明示的に読み、head 側と突き合わせる**: どちらも `git show <HEAD_SHA>:<path>` / `git show <BASE_SHA>:<path>` を使い、**root は 4 候補の優先順で最初に見つかったもの、加えて差分が触っている `REVIEW.md` とその祖先** を取る (read-only なので「守ること」に抵触しない)。**この突き合わせにも Step 3「全文を取得する (打ち切り禁止)」を適用する**: 両側とも `head` 等で打ち切らず全文を取り、見出し探索は `git show <SHA>:<path> | grep -nE '^ {0,3}#{1,6}[[:space:]].*エスカレーション基準'` で行う (base 側を先頭 N 行だけ見て後半の見出しを見落とすと、rule 2 の基準削除 / shadowing の検知が発火しないため)。head 側は Step 3 が `git show <HEAD_SHA>:<path>` で読んだ内容と取得元が同じなので、Step 3 で全文取得済みの候補はそのまま head 側として使ってよい (base 側は必ず `git show <BASE_SHA>:<path>` で別途読む)。**Step 3 で読んでいない候補は head 側も改めて取る** (`git show <HEAD_SHA>:<path>`。Step 3 が `gh api` に degrade した回は head 側も同じく `gh api -H "Accept: application/vnd.github.raw" ... ?ref=<HEAD_SHA>` で取る。head 側だけ取得に失敗して「head で削除された」と読むと rule 2 が誤って `escalate: true` を出す) — 祖先 `REVIEW.md` の間引き (10 個目安) で落ちた候補や、root で下位だった候補は未取得なので、流用できるのは実際に読んだものだけ。**cwd の作業ツリーから読んだ内容を head 側として使ってはならない** — Step 3 の PR モードは cwd を読まないので通常は起きないが、`run-pr-review` は checkout しないので cwd の作業ツリーは通常 base 相当であり、それを head 側として扱うと「head と base が同一」に見えて rule 2 の検知が発火しない。base 側で最初に見つかる候補は **head 側で選ばれた候補と別ファイルになりうる** (上位候補が本 PR で新設された場合)。それは shadowing の検知そのものなので正常な結果として扱う。base 側に基準セクションがあれば **その基準でも判定する** (head 側で消えていても判定を落とさない)。この追い読みは 5-4 の判定に限った参照であり、Step 3 のレビュー方針としての読み込み (「最初に見つかった 1 つだけを読み、下位は読まない」) は変えない。
   2. **基準セクションの有無・記述が head と base で変わっている場合は `escalate: true`** とし、`reasons[]` に 1 行入れる (例: `エスカレーション基準の変更: <どう変わったかの 1 行要約>`)。見出しの削除・改名や shadowing による実質的な消失もここに含む。レビュールーティングの方針変更そのものが第三者の確認対象なので、内容の善悪を判定せずエスカレーションする (誤検知しても PR は止まらない)。
-  - **base 側が読めないとき**: base 側の走査前に `git cat-file -e <BASE_SHA>^{commit}` で base object の存在を確認する (Step 3 の head 側と同じ理由: object 不在でも `git show` の fatal は path 不在と同じ文面になる)。本ルールの発火条件の判定 (`git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA>` (共通規約)) は base / head 両方の object を要するので、これが fatal になる場合も「差分に含まれない」と読まず **どちらかの object が未取得** として扱い、一覧は `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename` / `previous_filename` (共通規約。`gh api` が使えなければ `gh pr diff --name-only <PR_NUMBER> --repo <OWNER>/<REPO>`) から取り直す (head は取得済みで base だけ未取得の回もここに含む。沈黙で `escalate: false` に落ちるのを防ぐため)。なお `BASE_SHA` / `HEAD_SHA` は Step 1 の完了条件として両方とも 40 桁の commit SHA なので、ここで空 SHA や非 SHA 文字列を考慮する必要はない。未取得なら **まず Step 3 と同じ `gh api -H "Accept: application/vnd.github.raw" repos/<OWNER>/<REPO>/contents/<path>?ref=<BASE_SHA>` に degrade する (raw の Accept ヘッダは Step 3 と同じ理由で必須。既定の JSON は Base64 なので、そのまま見出し `grep` をかけると base 側が常に「基準なし」に見え、rule 2 の削除・shadowing 検知が発火しない)** (head 側の補助経路と対)。この degrade の 404 は **base 側に当該パスが無い (候補不在)** を意味するだけなので、head 側と同じく次の候補へ進む。**経路自体が使えず** base 側を読めないときだけ、次のように扱う:
+  - **base 側が読めないとき**: base 側の走査前に `git cat-file -e <BASE_SHA>^{commit}` で base object の存在を確認する (Step 3 の head 側と同じ理由: object 不在でも `git show` の fatal は path 不在と同じ文面になる)。本ルールの発火条件の判定 (`git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA>` (共通規約)) は base / head 両方の object を要するので、これが fatal になる場合も「差分に含まれない」と読まず **どちらかの object が未取得** として扱い、一覧は 共通規約の `gh` 経路 から取り直す (head は取得済みで base だけ未取得の回もここに含む。沈黙で `escalate: false` に落ちるのを防ぐため)。なお `BASE_SHA` / `HEAD_SHA` は Step 1 の完了条件として両方とも 40 桁の commit SHA なので、ここで空 SHA や非 SHA 文字列を考慮する必要はない。未取得なら **まず Step 3 と同じ `gh api -H "Accept: application/vnd.github.raw" repos/<OWNER>/<REPO>/contents/<path>?ref=<BASE_SHA>` に degrade する (raw の Accept ヘッダは Step 3 と同じ理由で必須。既定の JSON は Base64 なので、そのまま見出し `grep` をかけると base 側が常に「基準なし」に見え、rule 2 の削除・shadowing 検知が発火しない)** (head 側の補助経路と対)。この degrade の 404 は **base 側に当該パスが無い (候補不在)** を意味するだけなので、head 側と同じく次の候補へ進む。**経路自体が使えず** base 側を読めないときだけ、次のように扱う:
     - **head 側に `エスカレーション基準` 見出しがある回**: `escalate: true` とし、`reasons[]` に `エスカレーション基準の突き合わせ不能: base 側 (<BASE_SHA>) を取得できず` を 1 行入れる (基準を持つ caller なので、削除・shadowing を検知できないまま通すより迷ったらエスカレーションする方向に倒す)。
     - **head 側のどの候補にも見出しが無い回**: `{"escalate": false, "reasons": []}` のままにし、代わりに **`body` に「指示ファイルの base 側を取得できず、基準の削除 / shadowing を確認できなかった」旨を 1 文添える**。本ルールの発火条件は「差分が指示ファイル候補を触ったか」であって「基準を持つか」ではないため、ここで `escalate: true` に倒すと、基準を一度も書いていないリポジトリが `CLAUDE.md` を編集しただけの PR にも `AI-REVIEW-ESCALATE` 行が付き、「基準なし caller の出力は従来と同一」という不変条件が破れる。人には開示しつつ機械可読行は増やさない。
   - object の存在を確認できたあとの `git show` fatal (base / head 側に当該パスが無い) は候補不在を意味するだけなので、次の候補へ進む / 片側のみ存在として扱う (エラー停止しない)。両側とも root の 4 候補と対象の `REVIEW.md` がすべて不在なら基準なしとして `escalate: false`。
