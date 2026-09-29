@@ -49,26 +49,48 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 
 - `-z` を付けないと、git は既定 (`core.quotePath=true`) で非 ASCII を含むパスを `"apps/\346\227\245..."` のように quote・エスケープして出す。`core.quotePath=false` にしても `"` / `\` / タブ / 改行を含むパスは quote される。quote されたままのパスを使うと、`git show <SHA>:<path>` が「path 不在」の fatal になって祖先の `REVIEW.md` とそこにしかない方針・エスカレーション基準を黙って落とし、5-4 でも指示ファイルへの変更を検知できない (基準を削除する PR が `escalate: false` で通る)。`-z` なら quote は一切行われず、パスがそのまま出る。
 - `--no-renames` は、rename されたファイルを「移動元の削除 + 移動先の追加」として両方のパスを一覧に出すため (git は既定で rename を検出し、移動先のパスしか出さない)。これが無いと、PR が基準入りの `REVIEW.md` を別名に rename しただけで一覧に `REVIEW.md` が現れず、5-4 の自己回避防止が発火しない。Step 3 の祖先探索でも移動元のディレクトリを見落とす。
-- **NUL を改行に変換してから処理しない** (`tr '\0' '\n'` は、改行を含むパスを複数の行に分け、その断片を偽のパスとして祖先探索に流す)。祖先 `REVIEW.md` の列挙と存在確認は、次のように NUL 区切りのまま shell で行い、存在する候補だけを出力させる (PR モードの例。ローカルモードは `<範囲>` を `diff_mode` に合わせ、`git cat-file -e` の代わりに `[ -f "$c" ]` で確認する):
+- **NUL を改行に変換してから処理しない** (`tr '\0' '\n'` は、改行を含むパスを複数の行に分け、その断片を偽のパスとして祖先探索に流す)。一覧の処理は下記のように NUL 区切りのまま行う。**いずれも bash で実行する** (`read -d ''` / `$'\n'` / `< <(...)` は POSIX sh では動かず、出力が空になって「該当なし」と区別できなくなる)。
+  - **祖先 `REVIEW.md` の列挙** (存在する候補だけを、root → 親 → 子の順 = `/` の少ない順で出力する。PR モードの例。ローカルモードは `<範囲>` を `diff_mode` に合わせ、`git cat-file -e` の代わりに `[ -f "$c" ]` で確認する):
 
-  ```sh
-  git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA> |
-    while IFS= read -r -d '' p; do
-      d=$p
-      while :; do
-        d=$(dirname -- "$d")
-        if [ "$d" = . ]; then c=REVIEW.md; else c=$d/REVIEW.md; fi
-        printf '%s\0' "$c"
-        [ "$d" = . ] && break
-      done
-    done | sort -zu |
-    while IFS= read -r -d '' c; do
-      git cat-file -e "<HEAD_SHA>:$c" 2>/dev/null || continue
-      case $c in *$'\n'*) echo '(改行を含むパスの REVIEW.md を 1 件除外)' ;; *) printf '%s\n' "$c" ;; esac
-    done
-  ```
+    ```bash
+    git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA> |
+      while IFS= read -r -d '' p; do
+        d=$p
+        while :; do
+          case $d in */*) d=${d%/*} ;; *) d=. ;; esac
+          if [ "$d" = . ]; then c=REVIEW.md; else c=$d/REVIEW.md; fi
+          printf '%s\0' "$c"
+          [ "$d" = . ] && break
+        done
+      done | sort -zu |
+      while IFS= read -r -d '' c; do
+        git cat-file -e "<HEAD_SHA>:$c" 2>/dev/null || continue
+        case $c in
+          *$'\n'*) echo '(改行を含むパスの REVIEW.md を 1 件除外)' >&2 ;;
+          *) printf '%s\n' "$c" ;;
+        esac
+      done |
+      awk -F/ '{ print NF "\t" $0 }' | sort -n -k1,1 -s | cut -f2-
+    ```
 
-  出力されたパスは `git show` 等にそのまま渡せる。改行を含むパスの `REVIEW.md` だけは表示・引用が安全にできないので読まず、その件数を総括 `body` の `## 総合判断` 末尾に 1 文で開示する。5-4 の発火条件も同じループの中で `case $p in REVIEW.md|*/REVIEW.md|AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) printf '%s\n' "$p" ;; esac` のように判定する (発火したかどうかだけが要るので、改行を含むパスも判定対象に含まれる)。
+    親ディレクトリは `$(dirname ...)` ではなく `${d%/*}` で求める (コマンド置換は末尾の改行を削るので、改行で終わるディレクトリ名が別のパスに化ける)。`sort -zu` は重複除去のためだけで、読み込み順は最後の `/` の個数による並べ替えで決める (バイト順のままだと `apps/API/REVIEW.md` が親の `apps/REVIEW.md` より先に来て、親子の優先関係が逆転する)。出力されたパスは `git show` 等にそのまま渡せる。改行を含むパスの `REVIEW.md` は表示・引用が安全にできないので読まず、stderr に出た除外件数を総括 `body` の `## 総合判断` 末尾に 1 文で開示する。
+  - **5-4 の発火条件** (列挙とは別のコマンドで判定する。同じパイプラインの中で出力すると列挙側の NUL 区切りの流れに混ざるため):
+
+    ```bash
+    git diff --name-only -z --no-renames <BASE_SHA>...<HEAD_SHA> |
+      grep -zc -E '^(REVIEW\.md|.*/REVIEW\.md|AGENTS\.md|\.claude/CLAUDE\.md|CLAUDE\.md)$'
+    ```
+
+    出力 (該当件数) が 1 以上なら発火。改行を含むパスも NUL 区切りのまま 1 件として判定される。
+  - **範囲内かどうかの突き合わせ** (5-3 の範囲外除外。`<path>` は正規化済みの値):
+
+    ```bash
+    P='<path>'; found=0
+    while IFS= read -r -d '' p; do [ "$p" = "$P" ] && found=1; done < <(git diff --name-only -z <範囲>)
+    echo "$found"
+    ```
+
+    `grep -zxF` は使わない (パターン中の改行をパターンの区切りとして扱うので、改行を含むパスが一致しない)。
 - 取得したパスを `git show <SHA>:<path>` 等のコマンドに渡すときは、シェルのクォート (単一引用符で囲み、パス中の `'` は `'\''` にする) を必ず付ける。`gh api .../contents/<path>?ref=<SHA>` の URL に入れるときは、区切りの `/` 以外で英数字・`-`・`.`・`_`・`~` 以外のバイトを UTF-8 でパーセントエンコードする (`#` / `?` を含むパスで URL が途中で切れて 404 になり、「候補不在」と区別できないまま方針と基準を落とすのを防ぐため)。
 - **差分本文 (Step 4) も `git -c core.quotePath=false diff ...` で取る**。差分の見出し行 (`diff --git` / `+++ b/`) も既定では非 ASCII のパスを quote するので、見出しから写した `comments[].path` や 5-3 の範囲外除外が、この一覧 (quote なし) と一致しなくなる。`core.quotePath=false` でも `"` / `\` / タブ / 改行を含むパスの見出しは `"b/..."` と quote されたままなので、見出しが `"` で始まるときは C 形式のエスケープ (`\"` / `\\` / `\t` / `\n` / 8 進の `\ooo`) を戻してから、この一覧の表記と突き合わせる。外部レビュースキルの finding の `path` も、突き合わせの前に同じ正規化をかける。
 - **`gh` 経路の一覧**: git 経路が使えず `gh` 経路に degrade した回は、一覧を **`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename` と `previous_filename`** (rename されたファイルは `status: "renamed"` で `previous_filename` に移動元が入る。git 経路の `--no-renames` と同じ理由で両方を加える) から取る (API の JSON なので quote されない)。`gh api` が使えないときだけ `gh pr diff --name-only <PR_NUMBER> --repo <OWNER>/<REPO>` で代替する (パッチの見出し行からパスを取るため、quote されるパスが崩れたり抜けたりしうる)。本文の各 step はこの手順を「共通規約の `gh` 経路」として参照する。
@@ -299,7 +321,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 
 5-1 と 5-2 の指摘を統合し、最終 `comments[]` を確定する。
 
-- **範囲外の指摘の除外**: 突き合わせの前に、各指摘の `path` を共通規約の表記 (quote なしの生のパス) に正規化し、NUL 区切りの一覧と `git diff --name-only -z <範囲> | grep -qzxF -- '<path>'` のように突き合わせる (差分見出しから写した `"b/..."` 形式が残っていると、日本語パス等の指摘が範囲外として落ちるため)。外部スキル (5-2) から得られた指摘のうち、Step 4 で取得した実際の差分に含まれないファイル / 行への指摘は、マージ時に除外する (scope 解釈の差で未変更行や対象外ファイルへの指摘が返りうるため。無関係な箇所への誤投稿を防ぐ)。
+- **範囲外の指摘の除外**: 突き合わせの前に、各指摘の `path` を共通規約の表記 (quote なしの生のパス) に正規化し、共通規約の「範囲内かどうかの突き合わせ」で NUL 区切りの一覧と突き合わせる (差分見出しから写した `"b/..."` 形式が残っていると、日本語パス等の指摘が範囲外として落ちるため)。外部スキル (5-2) から得られた指摘のうち、Step 4 で取得した実際の差分に含まれないファイル / 行への指摘は、マージ時に除外する (scope 解釈の差で未変更行や対象外ファイルへの指摘が返りうるため。無関係な箇所への誤投稿を防ぐ)。
 - **重複排除**: 同一 `path:line` かつ同主旨の指摘は 1 件に集約する (自前と外部スキルが同じ問題を指したケース)。位置が同じでも論点が別なら両方残す。
 - **重要度競合**: 同主旨で重要度が割れた場合は高い方を採用する (`[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。判定に迷えば残す方向 (取りこぼし回避優先)。
 - `EXISTING_THREADS_CONTEXT` が渡されている場合、同主旨の指摘は再掲しない (位置が同じでも論点が別なら新規指摘してよい)。重要度が既存より高い場合は別主旨として残す ([must]/[should] を dedupe で抑制すると実害大のため判定に迷えば残す方向)。

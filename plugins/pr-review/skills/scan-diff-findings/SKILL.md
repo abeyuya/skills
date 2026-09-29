@@ -161,7 +161,7 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 ### Step 4. マージと正規化
 
 - **path の正規化**: すべての `path` を Step 1 のリポジトリルート相対に揃える (絶対パスは root prefix を除去、`./` 始まりは除去)。差分見出しから写した `"b/..."` / `"a/..."` 形式が残っていたら、引用符と `a/` / `b/` を外し、C 形式のエスケープ (`\"` / `\\` / `\t` / `\n` / 8 進の `\ooo`) を戻して、Step 1 の一覧と同じ quote なしの表記にする。`compose-review` の重複排除と `post-pr-review` の投稿が `path` の表記一貫性に依存するため必須。
-- **範囲外除外**: Step 1 の `--name-only` に含まれないファイルへの finding は除外する (上の正規化を済ませてから、NUL 区切りの一覧と突き合わせる。例: `git diff --name-only -z <範囲> | grep -qzxF -- '<path>'` が成功すれば範囲内)。行が差分に含まれない (未変更行への係留) findings も除外する。
+- **範囲外除外**: Step 1 の `--name-only` に含まれないファイルへの finding は除外する (上の正規化を済ませてから、NUL 区切りの一覧と bash で突き合わせる。例: `P='<path>'; found=0; while IFS= read -r -d '' p; do [ "$p" = "$P" ] && found=1; done < <(git diff --name-only -z <範囲>)` の後 `found=1` なら範囲内。`grep -zxF` はパターン中の改行を区切りとして扱い、改行を含むパスが一致しないので使わない)。行が差分に含まれない (未変更行への係留) findings も除外する。
 - **重複排除**: 同一 `path` かつ行が重なり同主旨の findings は 1 件に集約し、`severity` は高い方 (`high` > `medium` > `low`)、`confidence` は低い方 (`unverified` を残す) を採る。`category` が異なっても論点が同じなら集約し、位置が同じでも論点が別なら両方残す。
 - **並び順**: `severity` 降順 → 同 severity 内は `confidence` (`confirmed` を `unverified` より先) → `path` / `line` 昇順。`compose-review` が上位から扱えるようにする。`confidence` を tie-break に挟むのは、12 件超で一部しか verify できなかった回に `MAX_FINDINGS` の絞り込みが **verify を通った指摘を落として未検証の指摘を残す** のを防ぐため。
 - **件数上限**: `MAX_FINDINGS` が正の整数なら上位 N 件に絞り、落とした件数を `omitted_count` に入れる (`unlimited` / 省略時は `omitted_count: 0`)。
