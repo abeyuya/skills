@@ -50,7 +50,7 @@ caller プロジェクト固有の方針は **プロジェクト指示ファイ�
 - `-z` を付けないと、git は既定 (`core.quotePath=true`) で非 ASCII を含むパスを `"apps/\346\227\245..."` のように quote・エスケープして出す。`core.quotePath=false` にしても `"` / `\` / タブ / 改行を含むパスは quote される。quote されたままのパスを使うと、`git show <SHA>:<path>` が「path 不在」の fatal になって祖先の `REVIEW.md` とそこにしかない方針・エスカレーション基準を黙って落とし、5-4 でも指示ファイルへの変更を検知できない (基準を削除する PR が `escalate: false` で通る)。`-z` なら quote は一切行われず、パスがそのまま出る。
 - 改行を含むパスは `tr` で改行に変換すると行が分かれて壊れる。`git diff --name-only -z <範囲> | tr -cd '\0' | wc -c` (NUL の個数 = ファイル数) と変換後の行数が一致しなければ改行を含むパスがあるので、そのパスは祖先探索に使わず、総括 `body` の `## 総合判断` 末尾に「改行を含むパスがあり、その祖先の指示ファイルは確認していない」旨を 1 文添える (5-4 の発火条件では、NUL 区切りのまま `REVIEW.md` / root 4 候補との一致を判定する)。
 - 取得したパスを `git show <SHA>:<path>` 等のコマンドに渡すときは、シェルのクォート (単一引用符で囲み、パス中の `'` は `'\''` にする) を必ず付ける。
-- `gh pr diff --name-only` / `gh api .../pulls/<N>/files` の `filename` は quote されずに返るので、この規約は git 経路にだけ適用する。
+- git 経路が使えず `gh` 経路に degrade した回は、一覧を **`gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files` の `filename`** から取るのを優先する (API の JSON なので quote されない)。本文中で併記している `gh pr diff --name-only` はパッチの見出し行からパスを取り出すため、git が見出し行で quote するパス (`"` / `\` / タブ / 改行、設定によっては非 ASCII) が崩れたり抜けたりしうる。`gh api` が使えないときだけの代替として扱う。
 
 ### Step 1. モード判定と対象確定
 
