@@ -55,14 +55,15 @@ description: 差分 (ref range / ブランチ / staged / worktree) を対象に�
   3. `TARGET` が空 → `git diff --cached` が非空なら `staged`、それも空で `git diff` が非空なら `worktree`、**どちらも空なら `diff_mode: "none"` として正常終了する** (error にしない。`DIFF_MODE` の解決失敗として error 停止するのは `ref_range` / `branch` を明示されたのに `TARGET` が無い等、入力が矛盾しているケースだけ)
 - **`DIFF_MODE` と `TARGET` の整合性を検証する (必須)**: `ref_range` / `branch` は `TARGET` を **必須** とし、`TARGET` が空 / 未指定なら「失敗時」節に従い error 停止する。逆に `staged` / `worktree` で `TARGET` が渡されていたら `TARGET` を無視する (モード指定を優先し、その旨を最終メッセージに 1 行添える)。**この検証を省いて他モードのコマンドへ落ちてはならない** — 例えば `DIFF_MODE=ref_range` + `TARGET` 空のまま進むと `git diff <TARGET>` が実質 `git diff` (worktree 差分) として走り、`diff_mode: "ref_range"` と自称したまま全く別範囲をレビューする (caller が「PR 差分の外部レビュー済み」と誤認する最悪の失敗モード)。
 - 各モードの差分取得コマンド:
-  - `ref_range`: `git diff <TARGET>`。事前に range 両端について `git cat-file -e <SHA>^{commit}` で **commit として存在すること** を確認する (object が無ければ error 停止。**本 skill は fetch しない** — materialize は caller の責務)。
-  - `branch`: `git diff <TARGET>...HEAD` (三点記法で base の進行を除外)。事前に `git rev-parse --verify <TARGET>^{commit}` で ref が解決できることを確認し、解決できなければ error 停止する (`ref_range` と同じ扱い。存在しない ref / タイプミスを黙って他モードにフォールバックさせない)。
-  - `staged`: `git diff --cached`
-  - `worktree`: `git diff`
-- 変更ファイル一覧を同じ range / モードの `--name-only` で取得し保持する (Step 4 の範囲外除外に使う)。
+  - `ref_range`: `git -c core.quotePath=false diff <TARGET>`。事前に range 両端について `git cat-file -e <SHA>^{commit}` で **commit として存在すること** を確認する (object が無ければ error 停止。**本 skill は fetch しない** — materialize は caller の責務)。
+  - `branch`: `git -c core.quotePath=false diff <TARGET>...HEAD` (三点記法で base の進行を除外)。事前に `git rev-parse --verify <TARGET>^{commit}` で ref が解決できることを確認し、解決できなければ error 停止する (`ref_range` と同じ扱い。存在しない ref / タイプミスを黙って他モードにフォールバックさせない)。
+  - `staged`: `git -c core.quotePath=false diff --cached`
+  - `worktree`: `git -c core.quotePath=false diff`
+  - いずれも `core.quotePath=false` を付けるのは、finder が読む差分の見出し行 (`diff --git` / `+++ b/`) で非 ASCII のパスが quote されないようにするため (付けないと finder が `"b/\346..."` の形でパスを写し、Step 4 で `-z` の一覧と一致しなくなる)。`"` / `\` / タブ / 改行を含むパスの見出しはこれでも quote されるので、Step 4 で正規化する。
+- 変更ファイル一覧を同じ range / モードの `--name-only` で取得し保持する (Step 4 の範囲外除外に使う)。**必ず `-z` を付けて NUL 区切りで取り、NUL 区切りのまま一時ファイルに保持する** (`git diff --name-only -z <範囲> > '<LIST_PATH>'`。`<LIST_PATH>` は `/tmp/scan-diff-findings-names-<UTCタイムスタンプ>-<ランダム英数字>.z` のような一意の絶対パスで、Step 4 のコマンドにもシェル変数ではなくこのパスを直接書く — Bash ツールは呼び出しごとにシェル変数が消えるので、`$L` のような変数を Step 4 で読むと空になり、全 finding が範囲外として消える。改行に変換すると、改行を含むパスが複数の断片に分かれる。git の終了コードが 0 以外なら空リストと読まず error 停止する — パイプで直接流すと fatal が「0 件」に見え、全 finding が範囲外として消える)。`-z` を付けないと git は非 ASCII や `"` / `\` / タブを含むパスを `"apps/\346\227\245..."` のように quote して出す (`core.quotePath=false` でも `"` / `\` / タブ / 改行は quote される)。範囲外除外では移動先のパスがあれば足りるので、rename の扱いは既定のままでよい。
 - 差分が空なら Step 2〜4 を skip し、Step 5 で `findings: []` / `diff_mode: "none"` / **`fanout: {"mode": null, "finders": 0, "finders_expected": 0, "perspectives": [], "perspectives_missing": [], "findings_raw": 0, "verified": 0, "refuted": 0, "unverified": 0}`** として書き出す (error にはしない)。`fanout` 自体を省略しないのは、caller が `fanout.mode` を機械判定に使う契約になっており、欠落すると「未併用」との区別が caller ごとに揺れるため。
 
-差分が大きい場合は `--stat` でファイル一覧を取り、finder には「自分で必要なファイルの差分を読む」よう指示する (Step 2)。差分本文を prompt に丸ごと詰めない。
+差分が大きい場合は `--stat` で規模を見て (`--stat` の表示はパスを省略・quote するので、ファイル一覧は上記の `--name-only -z` のものを使う)、finder には「自分で必要なファイルの差分を読む」よう指示する (Step 2)。差分本文を prompt に丸ごと詰めない。
 
 ### Step 2. 観点別 finder を fan-out する
 
@@ -159,8 +160,8 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 
 ### Step 4. マージと正規化
 
-- **path の正規化**: すべての `path` を Step 1 のリポジトリルート相対に揃える (絶対パスは root prefix を除去、`./` 始まりは除去)。`compose-review` の重複排除と `post-pr-review` の投稿が `path` の表記一貫性に依存するため必須。
-- **範囲外除外**: Step 1 の `--name-only` に含まれないファイルへの finding は除外する。行が差分に含まれない (未変更行への係留) findings も除外する。
+- **path の正規化**: すべての `path` を Step 1 のリポジトリルート相対に揃える (絶対パスは root prefix を除去、`./` 始まりは除去)。差分見出しから写した `"b/..."` / `"a/..."` 形式が残っていたら、引用符と `a/` / `b/` を外し、C 形式のエスケープ (`\"` / `\\` / `\t` / `\n` / 8 進の `\ooo`) を戻して、Step 1 の一覧と同じ quote なしの表記にする。`compose-review` の重複排除と `post-pr-review` の投稿が `path` の表記一貫性に依存するため必須。
+- **範囲外除外**: Step 1 の `--name-only` に含まれないファイルへの finding は除外する (上の正規化を済ませてから、NUL 区切りの一覧と bash で突き合わせる。例: `P='<path>'; found=0; while IFS= read -r -d '' p; do [ "$p" = "$P" ] && found=1; done < '<LIST_PATH>'; echo "$found"` の出力が `1` なら範囲内 (同じ Bash 呼び出しの中で出力させる。変数は次の呼び出しに残らない)。`<path>` は単一引用符で囲み、パス中の `'` は `'\''` にする (そのまま埋め込むと `it's.ts` のようなパスで構文エラーになり、`found` が出ないまま範囲外として落ちる)。`grep -zxF` はパターン中の改行を区切りとして扱い、改行を含むパスが一致しないので使わない)。行が差分に含まれない (未変更行への係留) findings も除外する。
 - **重複排除**: 同一 `path` かつ行が重なり同主旨の findings は 1 件に集約し、`severity` は高い方 (`high` > `medium` > `low`)、`confidence` は低い方 (`unverified` を残す) を採る。`category` が異なっても論点が同じなら集約し、位置が同じでも論点が別なら両方残す。
 - **並び順**: `severity` 降順 → 同 severity 内は `confidence` (`confirmed` を `unverified` より先) → `path` / `line` 昇順。`compose-review` が上位から扱えるようにする。`confidence` を tie-break に挟むのは、12 件超で一部しか verify できなかった回に `MAX_FINDINGS` の絞り込みが **verify を通った指摘を落として未検証の指摘を残す** のを防ぐため。
 - **件数上限**: `MAX_FINDINGS` が正の整数なら上位 N 件に絞り、落とした件数を `omitted_count` に入れる (`unlimited` / 省略時は `omitted_count: 0`)。
