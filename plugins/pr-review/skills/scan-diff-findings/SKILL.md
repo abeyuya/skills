@@ -1,6 +1,6 @@
 ---
 name: scan-diff-findings
-description: 差分 (ref range / ブランチ / staged / worktree) を対象に「観点別 finder の fan-out → 各 finding の adversarial verify → マージ」を行い、`path` / `line` / 要約 / 重大度に正規化した findings JSON を `FINDINGS_PATH` にファイル書き出しする read-only レビュースキル。`compose-review` Step 5-2 が併用する外部レビュースキルの 1 つで、Claude Code 組み込みの `code-review` が `disable-model-invocation` によりモデルから Skill ツール経由で呼べない環境でも成立する正規経路として用意している。Agent ツールが使える環境では観点別 sub-agent を fan-out し、使えない環境では同じ観点リストを現在コンテキストで逐次自己適用してフォールバックする。ファイル編集 / GitHub 投稿 / working tree を変える git 操作は行わない (`FINDINGS_PATH` への Write のみ)。`disable-model-invocation` は付けない (モデルから Skill ツール経由で呼べることが本 skill の存在意義)。
+description: 差分 (ref range / ブランチ / staged / worktree) を観点別 finder の fan-out → adversarial verify → マージでレビューし、`path` / `line` / 要約 / 重大度に正規化した findings JSON を `FINDINGS_PATH` に書き出す read-only レビュースキル。`compose-review` Step 5-2 が外部レビューとして併用する (`code-review` をモデルから呼べない環境での既定経路)。Agent ツールが無い環境では同じ観点を現在コンテキストで逐次適用する。ファイル編集 / GitHub 投稿 / working tree を変える git 操作は行わない。
 ---
 
 # scan-diff-findings skill
@@ -9,7 +9,7 @@ description: 差分 (ref range / ブランチ / staged / worktree) を対象に�
 
 ## なぜ本 skill があるか
 
-`compose-review` Step 5-2 は「自前レビュー (5-1) に加えてもう 1 系統の指摘を得る」ために外部レビュースキルを 1 つ併用する設計だが、その第 1 候補である Claude Code 組み込みの `code-review` は **skill 定義の frontmatter に `disable-model-invocation: true` を持つため、モデルから Skill ツール経由で呼び出せない** (CLI の Skill ツール検証段階で `cannot be used with Skill tool due to disable-model-invocation` として拒否され、モデルに提示される available-skills 一覧からも除外される)。これは CLI 側の設定 / 権限設定でオプトインできる類の制約ではないため、`code-review` に依存した解決順だけでは 5-2 が常に不成立になり、外部レビュー併用が黙って無効化される。
+`compose-review` Step 5-2 は「自前レビュー (5-1) に加えてもう 1 系統の指摘を得る」ために外部レビュースキルを 1 つ併用する設計だが、その第 1 候補である Claude Code 組み込みの `code-review` は、版や環境によって skill 定義の frontmatter に `disable-model-invocation: true` を持ち、**その場合はモデルから Skill ツール経由で呼び出せない** (CLI の Skill ツール検証段階で `cannot be used with Skill tool due to disable-model-invocation` として拒否され、モデルに提示される available-skills 一覧からも除外される)。これは CLI 側の設定 / 権限設定でオプトインできる類の制約ではないため、そうした環境では `code-review` に依存した解決順だけだと 5-2 が不成立になり、外部レビュー併用が黙って無効化される。
 
 本 skill は **リポジトリ / ユーザー管理下にあり、`disable-model-invocation` を持たない** ため、モデルから Skill ツール経由で確実に呼べる。`code-review` が呼べない環境でも 5-2 を成立させるための正規の代替経路。
 

@@ -59,13 +59,13 @@ run-pr-review / run-local-review    (caller のコンテキスト)
 
 ### `code-review` が呼べない問題 (`disable-model-invocation`)
 
-Claude Code 組み込みの `code-review` は skill 定義の frontmatter に `disable-model-invocation: true` を持つため、**モデルから Skill ツール経由で呼び出せない**。
+Claude Code 組み込みの `code-review` は、版や環境によって skill 定義の frontmatter に `disable-model-invocation: true` を持ち、**その場合はモデルから Skill ツール経由で呼び出せない** (モデルから呼べる版もあるため、`compose-review` は呼べるかどうかを決め打ちせず実行時に判定する)。
 
 - Skill ツールの検証段階で `Skill code-review cannot be used with Skill tool due to disable-model-invocation` として拒否される。
 - モデルに提示される available-skills 一覧からも除外されるため、そもそも候補として見えない。
 - この挙動は skill 定義の frontmatter が唯一の入力源で、settings.json のオプトインや `permissions.allow` では解除できない (検証が権限判定より前段のため)。
 
-つまり `code-review` を第 1 候補に置いた解決順だけでは、外部レビュー併用は多くの環境で構造的に不成立になる。`scan-diff-findings` (優先順 2) はこの枠を埋めるために用意されており、**`disable-model-invocation` を持たない** ことが要件そのもの。同種の自前レビュースキルを追加する場合も同様に付けてはならない。
+つまり `code-review` を第 1 候補に置いた解決順だけでは、そうした環境では外部レビュー併用が構造的に不成立になる。`scan-diff-findings` (優先順 2) はこの枠を埋めるために用意されており、**`disable-model-invocation` を持たない** ことが要件そのもの。同種の自前レビュースキルを追加する場合も同様に付けてはならない。
 
 ### 外部レビューの手動併用 (`/code-review` を先に実行する運用)
 

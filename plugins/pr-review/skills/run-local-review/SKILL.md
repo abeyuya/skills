@@ -34,7 +34,7 @@ Skill ツール (`skill: "compose-review"`) を **現在のコンテキストで
 
 #### 外部レビューの手動併用 (任意, ユーザー向け運用)
 
-`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
+`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` をモデルから Skill ツール経由で呼べる環境ではそれを使い、呼べない環境 (`disable-model-invocation` を持つ版) では同梱の `scan-diff-findings` を使う。後者の環境で `code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
 
 #### 渡す引数
 
