@@ -154,15 +154,48 @@ fi
 # ---------- 取得 ----------
 # fetch_one <path> <out>: 0 = present / 1 = absent。経路障害は write_fatal で止める。
 
+# git_resolve_blob <ref> <path>: <ref> の tree 上で <path> をシンボリックリンクを辿って解決し、通常ファイルなら
+# 解決後のパスを RESOLVED に入れて 0 を返す (作業ツリーの Read / contents API がリンク先を読むのと揃える)。
+# 不在・ディレクトリ・リポジトリ外 (絶対パス / root より上) を指すリンク・8 段を超える連鎖は 1。
+RESOLVED=""
+git_resolve_blob() {
+  local ref=$1 p=$2 hop=0 mode type rest part norm target
+  while [ "$hop" -le 8 ]; do
+    # --full-tree: cwd がサブディレクトリでも root 相対で引く / --literal-pathspecs: パス中の * ? [ を glob にしない
+    read -r mode type rest < <(git --literal-pathspecs ls-tree --full-tree "$ref" -- "$p" 2>/dev/null) || return 1
+    case $mode:$type in
+      100644:blob|100755:blob) RESOLVED=$p; return 0 ;;
+      120000:blob) ;;
+      *) return 1 ;;
+    esac
+    target=$(git cat-file blob "$ref:$p"; printf x) || return 1
+    target=${target%x}
+    case $target in /*|'') return 1 ;; esac
+    case $p in */*) rest=${p%/*}/$target ;; *) rest=$target ;; esac
+    norm=""
+    while [ -n "$rest" ]; do
+      case $rest in */*) part=${rest%%/*}; rest=${rest#*/} ;; *) part=$rest; rest="" ;; esac
+      case $part in
+        ''|.) ;;
+        ..) [ -n "$norm" ] || return 1; case $norm in */*) norm=${norm%/*} ;; *) norm="" ;; esac ;;
+        *) norm=${norm:+$norm/}$part ;;
+      esac
+    done
+    [ -n "$norm" ] || return 1
+    p=$norm
+    hop=$((hop + 1))
+  done
+  return 1
+}
+
 encode_path() { jq -rn --arg p "$1" '$p | split("/") | map(@uri | gsub("!"; "%21") | gsub("\\*"; "%2A") | gsub("'"'"'"; "%27") | gsub("\\("; "%28") | gsub("\\)"; "%29")) | join("/")'; }
 
 fetch_one() {
   local p=$1 out=$2 t err enc
   case $SOURCE in
     git)
-      t=$(git cat-file -t "$REF:$p" 2>/dev/null) || return 1
-      [ "$t" = blob ] || return 1
-      git cat-file blob "$REF:$p" >"$out" || write_fatal "git cat-file blob $REF:$p が失敗"
+      git_resolve_blob "$REF" "$p" || return 1
+      git cat-file blob "$REF:$RESOLVED" >"$out" || write_fatal "git cat-file blob $REF:$RESOLVED が失敗"
       ;;
     gh)
       enc=$(encode_path "$p")
@@ -177,7 +210,8 @@ fetch_one() {
       fi
       t=$(jq -r 'if type == "object" then .type // "" else "dir" end' <"$out.meta") \
         || write_fatal "gh api contents/$p?ref=$REF の応答を解釈できない"
-      case $t in file|symlink) ;; *) return 1 ;; esac
+      # リンク先が通常ファイルのシンボリックリンクは GitHub が解決して type=file で返す。symlink のままなら解決できないリンク
+      case $t in file) ;; *) return 1 ;; esac
       if ! gh api -H 'Accept: application/vnd.github.raw' "repos/$OWNER/$REPO/contents/$enc?ref=$REF" >"$out" 2>"$out.err"; then
         err=$(head -c 500 "$out.err")
         case $err in

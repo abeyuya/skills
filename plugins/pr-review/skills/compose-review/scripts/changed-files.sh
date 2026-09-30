@@ -240,14 +240,47 @@ done <"$NAMES" | LC_ALL=C sort -zu >"$CAND"
 EXIST="$WORK_DIR/existing.z"
 : >"$EXIST"
 exist_fatal=""
+# git_resolve_blob <ref> <path>: <ref> の tree 上で <path> をシンボリックリンクを辿って解決し、通常ファイルなら
+# 解決後のパスを RESOLVED に入れて 0 を返す (作業ツリーの Read / contents API がリンク先を読むのと揃える)。
+# 不在・ディレクトリ・リポジトリ外 (絶対パス / root より上) を指すリンク・8 段を超える連鎖は 1。
+RESOLVED=""
+git_resolve_blob() {
+  local ref=$1 p=$2 hop=0 mode type rest part norm target
+  while [ "$hop" -le 8 ]; do
+    # --full-tree: cwd がサブディレクトリでも root 相対で引く / --literal-pathspecs: パス中の * ? [ を glob にしない
+    read -r mode type rest < <(git --literal-pathspecs ls-tree --full-tree "$ref" -- "$p" 2>/dev/null) || return 1
+    case $mode:$type in
+      100644:blob|100755:blob) RESOLVED=$p; return 0 ;;
+      120000:blob) ;;
+      *) return 1 ;;
+    esac
+    target=$(git cat-file blob "$ref:$p"; printf x) || return 1
+    target=${target%x}
+    case $target in /*|'') return 1 ;; esac
+    case $p in */*) rest=${p%/*}/$target ;; *) rest=$target ;; esac
+    norm=""
+    while [ -n "$rest" ]; do
+      case $rest in */*) part=${rest%%/*}; rest=${rest#*/} ;; *) part=$rest; rest="" ;; esac
+      case $part in
+        ''|.) ;;
+        ..) [ -n "$norm" ] || return 1; case $norm in */*) norm=${norm%/*} ;; *) norm="" ;; esac ;;
+        *) norm=${norm:+$norm/}$part ;;
+      esac
+    done
+    [ -n "$norm" ] || return 1
+    p=$norm
+    hop=$((hop + 1))
+  done
+  return 1
+}
+
 encode_path() { jq -rn --arg p "$1" '$p | split("/") | map(@uri | gsub("!"; "%21") | gsub("\\*"; "%2A") | gsub("'"'"'"; "%27") | gsub("\\("; "%28") | gsub("\\)"; "%29")) | join("/")'; }
 
 while IFS= read -r -d '' c; do
   case $USED_SOURCE in
     git)
-      # tree ではなく blob であることまで確かめる (REVIEW.md という名前のディレクトリを拾わない)
-      t=$(git cat-file -t "$HEAD_SHA:$c" 2>/dev/null) || continue
-      [ "$t" = blob ] || continue
+      # ファイルであることまで確かめる (REVIEW.md という名前のディレクトリを拾わない。シンボリックリンクはリンク先で判定)
+      git_resolve_blob "$HEAD_SHA" "$c" || continue
       ;;
     gh|gh-pr-diff)
       enc=$(encode_path "$c")
@@ -261,7 +294,8 @@ while IFS= read -r -d '' c; do
       fi
       t=$(jq -r 'if type == "object" then .type // "" else "dir" end' <"$WORK_DIR/meta.json") \
         || { exist_fatal="$exist_fatal$c: contents API の応答を解釈できない"$'\n'; continue; }
-      case $t in file|symlink) ;; *) continue ;; esac
+      # リンク先が通常ファイルのシンボリックリンクは GitHub が解決して type=file で返す。symlink のままなら解決できないリンク
+      case $t in file) ;; *) continue ;; esac
       ;;
     local)
       [ -f "$c" ] || continue

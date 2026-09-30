@@ -295,6 +295,33 @@ run OUT 0 env SOURCE=local bash "$READ" --root
 check "root は最初に見つかった 1 つだけ (AGENTS.md)" "$OUT" '.root_selected == "AGENTS.md" and ([.files[] | select(.status == "present") | .path] == ["AGENTS.md"])'
 cd "$R"
 
+# シンボリックリンクの指示ファイルは、git 経路でもリンク先の中身を読む (作業ツリー / contents API と揃える)
+cd "$T"; mkdir r3; cd r3; git init -q
+git config user.email test@example.com; git config user.name test; git config commit.gpgsign false
+printf '# claude\n\n## エスカレーション基準\n- 共有の基準\n' > CLAUDE.md
+ln -s CLAUDE.md AGENTS.md
+mkdir -p shared sub esc loop
+printf '# shared\n\n## エスカレーション基準\n- sub の基準\n' > shared/REVIEW-body.md
+ln -s ../shared/REVIEW-body.md sub/REVIEW.md
+ln -s ../../outside.md esc/REVIEW.md
+ln -s REVIEW.md loop/REVIEW.md
+printf 'x\n' > sub/a.txt; printf 'x\n' > esc/a.txt; printf 'x\n' > loop/a.txt
+git add -A; git commit -qm s
+S3=$(git rev-parse HEAD)
+run OUT 0 env SOURCE=git REF="$S3" bash "$READ" --root -- sub/REVIEW.md esc/REVIEW.md loop/REVIEW.md
+check "git 経路: シンボリックリンクの AGENTS.md はリンク先 (CLAUDE.md) の基準を読む" "$OUT" '.root_selected == "AGENTS.md" and ((.files[] | select(.path == "AGENTS.md") | .escalation_sections | length) == 1)'
+check "git 経路: 相対リンク (../) を解決する" "$OUT" '(.files[] | select(.path == "sub/REVIEW.md") | .escalation_sections[0].text) | test("sub の基準")'
+check "git 経路: リポジトリ外を指すリンク・循環リンクは absent" "$OUT" '[.files[] | select(.path == "esc/REVIEW.md" or .path == "loop/REVIEW.md") | .status] == ["absent", "absent"]'
+run OUT 0 env SOURCE=local bash "$READ" --root -- sub/REVIEW.md
+check "local 経路と git 経路で結果が揃う" "$OUT" '.root_selected == "AGENTS.md" and ([.files[] | select(.status == "present") | .escalation_sections | length] == [1, 1])'
+printf 'y\n' >> sub/a.txt; printf 'y\n' >> esc/a.txt; printf 'y\n' >> loop/a.txt
+git add -A; git commit -qm s2
+S4=$(git rev-parse HEAD)
+cd sub   # cwd がサブディレクトリでも root 相対で解決する
+run OUT 0 env MODE=pr HEAD_SHA="$S4" BASE_SHA="$S3" SOURCE=git bash "$CHANGED"
+cd "$R"
+check "changed-files: シンボリックリンクの祖先 REVIEW.md はリンク先がファイルなら存在扱い (リポジトリ外・循環は除外)" "$OUT" '[.ancestor_review_md[].path] == ["sub/REVIEW.md"]'
+
 # ========== jq の途中失敗を「見出しなし」「0 件」と取り違えない ==========
 echo "# 内部の失敗"
 FJ="$T/fakejq"
