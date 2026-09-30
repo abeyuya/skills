@@ -328,6 +328,18 @@ git add -A; git commit -qm s3
 S5=$(git rev-parse HEAD)
 run OUT 0 env MODE=pr HEAD_SHA="$S5" BASE_SHA="$S4" SOURCE=git bash "$CHANGED"
 check "changed-files: シンボリックリンク先 (祖先 REVIEW.md) だけの編集でも 5-4 が発火" "$OUT" '.instruction_files_touched and .instruction_files_touched_paths == ["shared/REVIEW-body.md"]'
+check "changed-files: 発火の根拠になったリンク (sub/REVIEW.md) を比較候補に足す" "$OUT" '.ancestor_candidates | index(["sub/REVIEW.md"])'
+# SKILL.md 5-4 の突き合わせコマンドで、リンク先の基準の変更が changed=true になることを確かめる
+cp "$OUT" "$T/cf-link.json"
+run HJ 0 env SOURCE=git REF="$S5" bash "$READ" --root --candidates "$T/cf-link.json"
+run BJ 0 env SOURCE=git REF="$S4" bash "$READ" --root --candidates "$T/cf-link.json"
+CMP=$(jq -n --slurpfile h "$HJ" --slurpfile b "$BJ" '
+  def crit: [.files[] | select(.status == "present" and (.escalation_sections | length > 0))
+             | {key: .path, value: [.escalation_sections[].text]}] | from_entries;
+  {changed: (($h[0] | crit) != ($b[0] | crit)), head: ($h[0] | crit), base: ($b[0] | crit),
+   root_head: $h[0].root_selected, root_base: $b[0].root_selected}')
+printf '%s' "$CMP" > "$T/cmp.json"
+check "5-4 の突き合わせ: リンク先の基準の変更を changed=true と判定" "$T/cmp.json" '.changed and (.head | has("sub/REVIEW.md"))'
 printf -- '- 追記\n' >> CLAUDE.md
 git add -A; git commit -qm s4
 run OUT 0 env MODE=pr HEAD_SHA="$(git rev-parse HEAD)" BASE_SHA="$S5" SOURCE=git bash "$CHANGED"

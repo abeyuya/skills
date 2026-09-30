@@ -77,7 +77,7 @@ MODE=local DIFF_MODE='<diff_mode>' BASE_BRANCH='<base>' bash '<SCRIPTS>/changed-
 - `source`: `"git"` = git 経路。`"gh"` / `"gh-pr-diff"` = **`gh` 経路に degrade した回** (Step 3 の指示ファイル取得、Step 5-2 の target の選び方はこの値で分岐する)。`"local"` = ローカルモード。degrade した理由は `git_error` に入る。
 - `ancestor_review_md[]`: 存在する祖先 `REVIEW.md` (`{path, depth, changed_files_under}`。`changed_files_under` はそのディレクトリ配下の変更ファイル数) で、Step 3 のディレクトリ別方針に使う。`ancestor_candidates[]` は存在確認前の候補で、5-4 の base 側走査に使う。
 - `excluded_review_md`: 1 以上なら、除外した件数を総括 `body` の `## 総合判断` 末尾に 1 文で開示する。`list_degraded: true` (`gh pr diff --name-only` で代替した回) も、パッチ見出し由来で quote されたパスが崩れ、rename の移動元が一覧に出ない旨を同じ位置に 1 文開示する (この回の `instruction_files_touched` は安全側に倒して常に `true`)。
-- `instruction_files_touched`: 5-4「判定基準の自己回避を防ぐ」の発火有無 (根拠のパスは `instruction_files_touched_paths`。指示ファイルがシンボリックリンクなら、リンク先だけの編集でも発火する)。
+- `instruction_files_touched`: 5-4「判定基準の自己回避を防ぐ」の発火有無 (根拠のパスは `instruction_files_touched_paths`。PR モードの git 経路では、指示ファイルがシンボリックリンクならリンク先だけの編集でも発火し、そのリンクを `ancestor_candidates` に足す)。
 - `changed_files[]` / `changed_count`: `--no-renames` の一覧 (Step 4 ローカルモードの追い読みにもこれを使う)。`range_files[]` / `range_count`: rename を既定のまま数えた一覧で、Step 4 の差分と数え方が揃う (5-3 の範囲外除外と 5-2 リカバリの件数突合に使う)。`lossy_paths` は不正な UTF-8 を含み配列中で U+FFFD に化けたパスの件数 (件数は実数)。
 
 **範囲内かどうかの突き合わせ** (5-3。`<path>` は下記の正規化済みの値。改行を含むパスも `jq` の文字列比較でそのまま判定できる):

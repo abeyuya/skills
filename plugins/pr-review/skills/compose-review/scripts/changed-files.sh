@@ -26,12 +26,14 @@
 #   range_files      : rename を既定のまま数えた一覧 (移動先のみ)。5-3 の範囲外除外と 5-2 リカバリの件数突合用
 #   changed_count / range_count : 上記の件数 (JSON に載せられないパスも含めた実件数)
 #   lossy_paths      : changed_files のうち不正な UTF-8 を含み JSON で正確に表せなかったパスの件数 (配列中は U+FFFD に化ける)
-#   ancestor_candidates : 祖先 REVIEW.md の候補 (存在確認前・node_modules/ vendor/ 除外済み)。5-4 の base 側走査用
+#   ancestor_candidates : 祖先 REVIEW.md の候補 (存在確認前・node_modules/ vendor/ 除外済み)。5-4 の base 側走査用。
+#                         リンク先の編集で発火した回は、そのシンボリックリンクの REVIEW.md も含む
 #   ancestor_review_md  : 存在する祖先 REVIEW.md。root → 親 → 子 (`/` の少ない順) で
 #                         [{path, depth, changed_files_under}]。changed_files_under は Step 3 の間引きの優先度用
 #   excluded_review_md  : 改行を含む / JSON で正確に表せないため読まずに除外した REVIEW.md の件数 (body で開示)
-#   instruction_files_touched       : 5-4「判定基準の自己回避を防ぐ」の発火有無 (指示ファイルがシンボリックリンクなら、
-#                                     リンク先の変更でも発火する)。list_degraded のときは
+#   instruction_files_touched       : 5-4「判定基準の自己回避を防ぐ」の発火有無 (PR モードの git 経路では、指示ファイルが
+#                                     シンボリックリンクならリンク先の変更でも発火する。gh 経路は変更ファイルの祖先にある
+#                                     リンクだけ、ローカルモードはリンク先を見ない)。list_degraded のときは
 #                                     rename の移動元が一覧に出ないため、安全側に倒して常に true
 #   instruction_files_touched_paths : 発火の根拠になったパス
 #   list_degraded    : gh pr diff --name-only で代替した回は true (パッチ見出し由来で quote が崩れうる。
@@ -280,16 +282,24 @@ git_resolve_blob() {
 encode_path() { jq -rn --arg p "$1" '$p | split("/") | map(@uri | gsub("!"; "%21") | gsub("\\*"; "%2A") | gsub("'"'"'"; "%27") | gsub("\\("; "%28") | gsub("\\)"; "%29")) | join("/")'; }
 
 # シンボリックリンクの指示ファイルは、リンク先 (連鎖の途中のリンクを含む) だけを編集して基準を消せるので、
-# 辿ったパスも控えて 5-4 の発火判定に使う
-LINKS="$WORK_DIR/link-targets.z"
+# 「辿ったパス NUL リンクのパス NUL」の組を控えて 5-4 の発火判定と比較候補に使う
+LINKS="$WORK_DIR/link-pairs.z"
 : >"$LINKS"
-note_link() { [ "$1" = "$2" ] || printf '%s\0' "$2" >>"$LINKS"; }
+note_link() { [ "$1" = "$2" ] || printf '%s\0%s\0' "$2" "$1" >>"$LINKS"; }
+# resolve_links <ref> <path>: git_resolve_blob と同じ結果を返し、辿ったパスを組として LINKS に控える
+resolve_links() {
+  local rc=0 h
+  : >"$WORK_DIR/hops.z"
+  LINK_LOG="$WORK_DIR/hops.z" git_resolve_blob "$1" "$2" || rc=1
+  while IFS= read -r -d '' h; do printf '%s\0%s\0' "$h" "$2" >>"$LINKS"; done <"$WORK_DIR/hops.z"
+  return $rc
+}
 
 while IFS= read -r -d '' c; do
   case $USED_SOURCE in
     git)
       # ファイルであることまで確かめる (REVIEW.md という名前のディレクトリを拾わない。シンボリックリンクはリンク先で判定)
-      LINK_LOG=$LINKS git_resolve_blob "$HEAD_SHA" "$c" || continue
+      resolve_links "$HEAD_SHA" "$c" || continue
       ;;
     gh|gh-pr-diff)
       enc=$(encode_path "$c")
@@ -317,7 +327,8 @@ done <"$CAND"
 
 # git 経路では、head / base の tree 全体からシンボリックリンクの指示ファイル (任意階層の REVIEW.md と root の 3 候補) を
 # 列挙してリンク先を控える (変更ファイルの祖先に無いリンクでも、リンク先の編集で基準は消せるため)。
-# gh 経路は tree を安く列挙できないので、上の存在確認で分かった head 側の祖先のリンク先だけを使う。
+# gh 経路は tree を安く列挙できないので、上の存在確認で分かった head 側の祖先のリンク先だけを使う
+# (変更ファイルの祖先に無いリンクは検知できない)。ローカルモードはリンク先を控えない (5-4 の base 突き合わせ自体が任意)。
 if [ "$USED_SOURCE" = git ]; then
   for ref in "$HEAD_SHA" "$BASE_SHA"; do
     git ls-tree -r -z --full-tree "$ref" >"$WORK_DIR/tree.z" || write_fatal "git ls-tree -r $ref が失敗"
@@ -326,7 +337,7 @@ if [ "$USED_SOURCE" = git ]; then
       c=${e#*$'\t'}
       case $c in REVIEW.md|*/REVIEW.md|AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) ;; *) continue ;; esac
       case /$c in */node_modules/*|*/vendor/*) continue ;; esac
-      LINK_LOG=$LINKS git_resolve_blob "$ref" "$c" || true
+      resolve_links "$ref" "$c" || true
     done <"$WORK_DIR/tree.z"
   done
 fi
@@ -340,23 +351,33 @@ fi
 # 改行を含むパスも NUL 区切りのまま 1 件として判定する。`*` は `/` と改行にも一致する。
 
 TOUCHED="$WORK_DIR/touched.z"
-: >"$TOUCHED"
+LINKCAND="$WORK_DIR/link-candidates.z"
+: >"$TOUCHED"; : >"$LINKCAND"
 while IFS= read -r -d '' p; do
   case $p in
     REVIEW.md|*/REVIEW.md|AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) printf '%s\0' "$p" >>"$TOUCHED"; continue ;;
   esac
-  # 指示ファイルのシンボリックリンク先を編集した場合も発火する
-  while IFS= read -r -d '' l; do
-    if [ "$p" = "$l" ]; then printf '%s\0' "$p" >>"$TOUCHED"; break; fi
+  # 指示ファイルのシンボリックリンク先を編集した場合も発火し、そのリンク自体を 5-4 の比較候補に足す
+  # (リンクが変更ファイルの祖先に無いと、ancestor_candidates に入らず head / base の比較から漏れるため)
+  hit=false
+  while IFS= read -r -d '' h && IFS= read -r -d '' l; do
+    if [ "$p" = "$h" ]; then
+      [ "$hit" = true ] || printf '%s\0' "$p" >>"$TOUCHED"
+      hit=true
+      case $l in AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) ;; *) printf '%s\0' "$l" >>"$LINKCAND" ;; esac
+    fi
   done <"$LINKS"
 done <"$NAMES"
+# root の候補は read-instruction-files.sh の --root が必ず見るので足さない
+cat "$CAND" "$LINKCAND" | LC_ALL=C sort -zu >"$CAND.all"
+CAND_ALL="$CAND.all"
 
 # ---------- JSON 組み立て ----------
 # NUL 区切りのファイルを jq -Rs で読み、NUL で split する (不正な UTF-8 は U+FFFD に置き換わる)。
 
 zlist='split("\u0000") | map(select(length > 0))'
 # プロセス置換の中の失敗は検知できないので、先に一時ファイルへ変換して終了コードを確かめる
-for z in NAMES RANGE CAND EXIST TOUCHED; do
+for z in NAMES RANGE CAND_ALL EXIST TOUCHED; do
   eval "zf=\$$z"
   jq -Rs "$zlist" <"$zf" >"$zf.json" || write_fatal "一覧の JSON 化 (jq) が失敗: $z"
 done
@@ -371,7 +392,7 @@ jq -n \
   --argjson list_degraded "$LIST_DEGRADED" \
   --slurpfile names "$NAMES.json" \
   --slurpfile rng "$RANGE.json" \
-  --slurpfile cand "$CAND.json" \
+  --slurpfile cand "$CAND_ALL.json" \
   --slurpfile exist "$EXIST.json" \
   --slurpfile touched "$TOUCHED.json" \
   '
