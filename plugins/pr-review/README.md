@@ -74,7 +74,7 @@ Claude Code 組み込みの `code-review` は、版や環境によって skill �
 1. `/code-review` を手動で実行する (レビュー対象を引数で指定。`--fix` / `--comment` は付けない)。
 2. **同じセッションのまま** `/run-pr-review` (または `/run-local-review`) を実行する。
 
-1 の findings はセッションのコンテキストに残っているため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用でき、実質的に「自前レビュー + `code-review`」の併用になる。モデルから `code-review` を呼べる環境では、この運用を取らなくても優先順 1 で自動的に併用される。呼べない環境でこの運用を取らない場合は、優先順 2 の `scan-diff-findings` が自動で使われる。
+1 の findings はセッションのコンテキストに残っているため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用でき、実質的に「自前レビュー + `code-review`」の併用になる。モデルから `code-review` を呼べ、かつ Agent ツールが使えるコンテキストでは、この運用を取らなくても優先順 1 で自動的に併用される。それ以外でこの運用を取らない場合は、優先順 2 の `scan-diff-findings` が自動で使われる。
 
 ## caller プロジェクトのレビュー方針の置き方
 

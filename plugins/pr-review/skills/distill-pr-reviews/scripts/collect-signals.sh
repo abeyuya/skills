@@ -29,8 +29,9 @@
 #   - 1 PR あたり GraphQL 1 query (基本) で reviewThreads + commits + files を一括取得。
 #   - reviewThreads が 50 件超の PR は after cursor で追加 query を発行。
 #   - 1 thread の comments が 50 件超の場合のみ node(id) で追加 query。
-#   - REST `pulls/{N}/commits` / `commits/{sha}` は使わない (commit と files は上記 GraphQL で取れる。
-#     `commits/{sha}` は commit 数 × 1 query になり core 枠を数百 query 消費するため)。
+#   - REST `pulls/{N}/commits` / `commits/{sha}` は使わない (PR の commits と PR 全体の files は上記 GraphQL で取る。
+#     commit 別の files は `commits/{sha}` でしか取れず commit 数 × 1 query で core 枠を数百 query 消費するため、
+#     取得せずに近似する)。
 #   - reactions は取得しない (信号価値が低くノード上限の圧迫が大きいため)。
 #   - バグ修正PR (pr_kind=bugfix) のみ `gh pr diff` で 1 PR = 1 コール取得 (Step 3.5)。
 #     subset 限定 + MAX_BUGFIX_DIFFS 件 + DIFF_CHAR_CAP 文字で抑制するため core 枠への影響は限定的。

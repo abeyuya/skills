@@ -244,7 +244,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - **退化条件の厳格化 (重要)**: 自前単独 (5-1 のみ) へ退化してよいのは、**解決順 1〜3 のすべてが利用不能と確認できたとき** だけ。特に以下は退化理由にならない:
   - **`code-review` が `disable-model-invocation` で呼べないこと** — これは 1 が不成立になるだけで、2 (`scan-diff-findings`) は影響を受けない。詳細は下記「`code-review` の呼び出し可能性判定」。
   - **`gh` 1 経路の失敗** — PR モードの差分取得は git を主経路にしており (Step 4)、`gh` が 403 等で落ちていても Step 1 で fetch 済みの SHA から差分を組める。その ref range はそのまま 2 の `TARGET` に渡せるし、1 が使える環境なら code-review の target にも渡せる (`branch` モードでローカル review。下の「PR モード」「リカバリ」参照)。`gh` の失敗を「GitHub アクセス全不能」と一般化して外部レビューをスキップするのは既知の誤判断であり、してはならない。
-  - **Agent / Task ツールが使えないこと** (Agent を持たないホスト、またはネスト上限に達した階層で起こる) — 1 は Agent ツールに依存するので不成立になりうるが、2 (`scan-diff-findings`) は Agent が無い場合に現在コンテキストでの逐次自己適用へフォールバックする契約なので影響を受けない。
+  - **Agent / Task ツールが使えないこと** (Agent を持たないホスト、またはネスト上限に達した階層で起こる) — 1 は Agent ツールがあることを選択条件にしているので不成立になるが、2 (`scan-diff-findings`) は Agent が無い場合に現在コンテキストでの逐次自己適用へフォールバックする契約なので影響を受けない。
   - **ローカル作業ツリーが PR ブランチと異なる / checkout していないこと** — 1 も 2 も ref range を target に取れるので作業ツリーの状態に依存しない (**例外**: checkout が無い / shallow で `git` の object や merge-base 自体が無く Step 3 / Step 4 が `gh` 経路に degrade した回は ref range を渡せない。この場合だけは 2 が不成立になり、下記「`scan-diff-findings` の呼び出し」の但し書きに従って 1 (PR URL) → 3 の順で試す)。
 
 - **解決順**:
@@ -258,7 +258,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - 呼び出して上記メッセージで拒否された場合も **1 は不成立** → **リトライせず** 2 へ進む (CLI レベルの構造的な拒否であり、引数や呼び方を変えても通らない)。
   - どちらのケースでも **5-1 単独へ退化してはならない**。「`code-review` が使えない」は「外部レビューが使えない」ではない。
   - **例外 (手動併用)**: ユーザーが同一セッションで先に `/code-review` を手動実行していれば、その findings は既に現在コンテキストに残っている。その場合は改めて呼ばず、**コンテキスト上の findings を 1 の結果として採用** して下記「正規化」に流す (この運用は plugin README の「外部レビューの手動併用」に記載)。
-    - ただし採用前に、**その findings が本 step のレビュー対象 (PR モードなら `<BASE_SHA>...<HEAD_SHA>`、ローカルモードなら Step 1 で確定した差分) を対象に実行されたものかを確認する**。`/code-review` は target を任意に取れるため、セッション前半に別ブランチ / 数コミット前の状態で実行された findings がそのまま本 PR の外部レビュー結果として採用されうる (`external_review` には対象範囲も実行時刻も含まれないので事後には区別できない)。**確認できなければ手動の findings は採用しない** (古い findings を混ぜるより安全)。その上で、上の 2 つの判定で `code-review` を呼べるなら本 step の対象を target にして改めて呼び、呼べなければ 2 へ進む。
+    - ただし採用前に、**その findings が本 step のレビュー対象 (PR モードなら `<BASE_SHA>...<HEAD_SHA>`、ローカルモードなら Step 1 で確定した差分) を対象に実行されたものかを確認する**。`/code-review` は target を任意に取れるため、セッション前半に別ブランチ / 数コミット前の状態で実行された findings がそのまま本 PR の外部レビュー結果として採用されうる (`external_review` には対象範囲も実行時刻も含まれないので事後には区別できない)。**確認できなければ手動の findings は採用しない** (古い findings を混ぜるより安全)。その上で、解決順 1 の条件 (上の 2 つの判定で呼び出せること、かつ Agent/Task ツールが当コンテキストで使えること) を満たすなら本 step の対象を target にして改めて呼び、満たさなければ 2 へ進む。
 - **`scan-diff-findings` の呼び出し**: Skill ツール (`skill: "scan-diff-findings"`) を **現在コンテキストで直接** 呼ぶ (sub-agent は立てない。fan-out は呼び先の責務)。引数は `KEY=VALUE` 1 行ずつ、長文 value (`EXTRA_FOCUS`) は末尾に置く:
 
   ```
@@ -302,7 +302,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - `low` → `[nit]`
   - `confidence: "unverified"` (adversarial verify を通っていない) の finding は、`failure_scenario` を差分から自分で追認できなければ 1 段下げる (`[must]` → `[should]`、`[should]` → `[nit]`)。追認できればそのまま。
   - Step 3 のプロジェクト指示ファイルが必須化している観点に該当する指摘は上記より昇格させてよい (ディレクトリ別方針は、その配下のファイルに対する指摘にだけ適用する)。
-- **実行 (read-only)**: 解決したスキルを **read-only モードで** 呼ぶ。**投稿 / 自動修正フラグは付けない** (`code-review` なら `--comment` / `--fix` を付けない。他ホストでも投稿・working tree 改変モードは使わない。投稿は `post-pr-review` の責務、working tree 改変は本 skill の禁止事項)。特に PR モードで `--comment` を付けると、`code-review` 由来の生 inline コメント (AI 自動投稿マーカーなし) が `post-pr-review` の 1 Review と **二重投稿** されるため厳禁。`scan-diff-findings` は read-only 契約が skill 側に内在しているため追加フラグは不要。
+- **実行 (read-only)**: 解決したスキルを **read-only モードで** 呼ぶ。**投稿 / 自動修正フラグは付けない** (`code-review` なら `--comment` / `--fix` を付けない。他ホストでも投稿・working tree 改変モードは使わない。投稿は `post-pr-review` の責務、working tree 改変は本 skill の禁止事項)。特に PR モードで `--comment` を付けると、`code-review` 由来の生 inline コメント (AI 自動投稿マーカーなし) が `post-pr-review` の 1 Review と **二重投稿** されるため厳禁。`scan-diff-findings` は read-only 契約が skill 側に内在しているため追加フラグは不要。**`code-review` 等から戻っても応答を終了しない** — 最終出力が findings の JSON 配列やカード表示でも、それは本 skill にとって中間結果なので、下記「正規化」→ 5-3 → 5-4 → 5-5 → Step 6 まで同一応答内で続行する (`scan-diff-findings` の戻り後と同じ扱い)。
 - **scope (target) 引数** (解決順 1 の `code-review` を使う場合。レビュー対象の diff 範囲を伝える): `code-review` の target 引数は **PR番号 / PR URL / branch名 / ref range (`<base>...HEAD` の三点記法) / file path** を受け取る (argumentHint は `[level] [--fix] [--comment] [<target>]`)。**target の種別で内部の diff 取得経路が変わる点が最重要**:
   - **PR番号 / PR URL → `pr` モード**: 内部で `gh pr diff` を実行。**`gh` に依存**するため 403 だと空振りする (→「リカバリ」)。
   - **branch名 / ref range → `branch` モード**: **ローカル `git diff` で review (`gh` 不要)**。Step 1 で read-only fetch 済みなら `<BASE_SHA>...<HEAD_SHA>` をそのまま target に渡せる。「範囲は渡せない」は誤りで、**ref range は正規の target 形式**。
