@@ -315,7 +315,8 @@ while IFS= read -r -d '' c; do
         || { exist_fatal="$exist_fatal$c: contents API の応答を解釈できない"$'\n'; continue; }
       # リンク先が通常ファイルのシンボリックリンクは GitHub が解決して type=file で返す。symlink のままなら解決できないリンク
       case $t in file) ;; *) continue ;; esac
-      # 解決されたリンクは、メタデータの path がリンク先になる
+      # 解決されたリンクは、メタデータの path がリンク先になる (GitHub の contents API の挙動を前提にしており、
+      # テストの gh スタブでは検証していない。前提が外れてもリンク先の編集を検知できないだけで、誤って発火はしない)
       t=$(jq -r '.path // empty' <"$WORK_DIR/meta.json") && [ -n "$t" ] && note_link "$c" "$t"
       ;;
     local)
