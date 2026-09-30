@@ -30,9 +30,11 @@
 #   ancestor_review_md  : 存在する祖先 REVIEW.md。root → 親 → 子 (`/` の少ない順) で
 #                         [{path, depth, changed_files_under}]。changed_files_under は Step 3 の間引きの優先度用
 #   excluded_review_md  : 改行を含む / JSON で正確に表せないため読まずに除外した REVIEW.md の件数 (body で開示)
-#   instruction_files_touched       : 5-4「判定基準の自己回避を防ぐ」の発火有無
+#   instruction_files_touched       : 5-4「判定基準の自己回避を防ぐ」の発火有無。list_degraded のときは
+#                                     rename の移動元が一覧に出ないため、安全側に倒して常に true
 #   instruction_files_touched_paths : 発火の根拠になったパス
-#   list_degraded    : gh pr diff --name-only で代替した回は true (パッチ見出し由来で quote が崩れうる)
+#   list_degraded    : gh pr diff --name-only で代替した回は true (パッチ見出し由来で quote が崩れうる。
+#                      rename の移動元も出ないので、移動元ディレクトリの祖先 REVIEW.md は列挙から漏れうる)
 #
 # exit: 0 = 正常 / 3 = fatal (JSON は書き出し済み。.fatal に理由) / 2 = 引数エラー (JSON なし) / 1 = 内部エラー (JSON なし)
 #
@@ -172,7 +174,7 @@ gh_lists() {
   err=$(head -c 500 "$WORK_DIR/gh.err")
   log "gh api pulls/$PR_NUMBER/files が失敗 ($err)。gh pr diff --name-only で代替する"
   if gh pr diff --name-only "$PR_NUMBER" --repo "$OWNER/$REPO" >"$WORK_DIR/names.txt" 2>"$WORK_DIR/gh.err"; then
-    # パッチ見出し由来なので改行を含むパスは表せない (行 = 1 件)
+    # パッチ見出し由来なので改行を含むパスは表せない (行 = 1 件)。rename は移動先 (b/ 側) しか出ない
     tr '\n' '\0' <"$WORK_DIR/names.txt" >"$NAMES"
     cp "$NAMES" "$RANGE"
     USED_SOURCE=gh-pr-diff
@@ -337,7 +339,7 @@ jq -n \
         | sort_by(.depth)
       ),
       excluded_review_md: (($e | length) - ($ok | length)),
-      instruction_files_touched: (($touched[0] | length) > 0),
+      instruction_files_touched: ((($touched[0] | length) > 0) or $list_degraded),
       instruction_files_touched_paths: $touched[0]
     }
   ' >"$OUTPUT_PATH"

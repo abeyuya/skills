@@ -175,6 +175,10 @@ cat > "$STUB/gh" <<'EOF'
 # テスト用の gh スタブ。STUB_REPO の git object から GitHub API の応答を組み立てる。
 # STUB_FAIL=403 で全 API を 403 にし、STUB_FAIL_CONTENTS=<path> でその contents だけ 500 にする。
 set -euo pipefail
+if [ "${1:-}" = pr ] && [ "${2:-}" = diff ]; then
+  # gh pr diff --name-only: パッチ見出しの b/ 側だけ (rename の移動元は出ない)
+  cd "$STUB_REPO"; git diff --name-only "$STUB_BASE...$STUB_HEAD"; exit 0
+fi
 [ "${1:-}" = api ] || { echo "stub: unsupported: $*" >&2; exit 1; }
 shift
 url=""; silent=false; raw=false
@@ -193,6 +197,7 @@ case $url in
     n=${STUB_CHANGED_FILES:-$(git diff --name-only -z "$STUB_BASE...$STUB_HEAD" | tr -cd '\0' | wc -c | tr -d ' ')}
     printf '{"head":{"sha":"%s"},"changed_files":%s}' "$STUB_HEAD" "$n" ;;
   repos/o/r/pulls/7/files)
+    if [ -n "${STUB_FAIL_FILES:-}" ]; then echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi
     # 2 ページに分けて返す (--paginate の連結を再現)。rename は previous_filename 付き
     git diff --name-status -z "$STUB_BASE...$STUB_HEAD" | jq -Rs '
       split("\u0000") | map(select(length > 0)) as $a
@@ -231,6 +236,8 @@ check "gh 経路: 5-4 発火" "$OUT" '.instruction_files_touched'
 
 run OUT 3 env PATH="$STUB:$PATH" STUB_FAIL_CONTENTS='apps/REVIEW.md' MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
 check "gh 経路: 404 以外 (500) は fatal" "$OUT" '.fatal | test("404 以外")'
+run OUT 0 env PATH="$STUB:$PATH" STUB_FAIL_FILES=1 MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
+check "gh pr diff 代替: list_degraded で 5-4 は安全側に発火" "$OUT" '.source == "gh-pr-diff" and .list_degraded and .instruction_files_touched'
 run OUT 3 env PATH="$STUB:$PATH" STUB_CHANGED_FILES=3500 MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
 check "gh 経路: files が PR の変更ファイル数に足りなければ fatal (3000 件の打ち切り)" "$OUT" '.fatal | test("打ち切られた")'
 run OUT 3 env PATH="$STUB:$PATH" STUB_FAIL=403 MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
@@ -270,6 +277,11 @@ check "base 側: 改行を含むパスの候補も走査できる" "$OUT" '[.fil
 printf '## エスカレーション基準\n- 作業ツリーだけ\n' >> REVIEW.md
 run OUT 0 env SOURCE=git REF="$HEAD" bash "$READ" --root
 check "git 経路は作業ツリーの変更を読まない" "$OUT" '(.files[0].escalation_sections) == []'
+cp "$CF" "$T/cf.json"
+cd apps
+run OUT 0 env SOURCE=local bash "$READ" --ancestors ../../cf.json
+cd "$R"
+check "local 経路: サブディレクトリから相対パスの JSON を渡しても読める" "$OUT" '[.files[] | select(.status == "present") | .path] | index(["apps/web/REVIEW.md"])'
 run OUT 0 env SOURCE=local bash "$READ" --root
 check "local 経路は作業ツリーを読む" "$OUT" '(.files[0].escalation_sections | length) == 1'
 git checkout -q -- REVIEW.md

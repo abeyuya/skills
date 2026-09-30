@@ -116,8 +116,9 @@ add_from_json() {
 while [ $# -gt 0 ]; do
   case $1 in
     --root) USE_ROOT=true; shift ;;
-    --ancestors) [ $# -ge 2 ] || die_usage "--ancestors に JSON が無い"; ANC_JSON=$2; shift 2 ;;
-    --candidates) [ $# -ge 2 ] || die_usage "--candidates に JSON が無い"; CAND_JSON=$2; shift 2 ;;
+    # SOURCE=local は後で repo root に cd するので、JSON のパスは呼び出し時の cwd 基準の絶対パスにしておく
+    --ancestors) [ $# -ge 2 ] || die_usage "--ancestors に JSON が無い"; ANC_JSON=$2; case $ANC_JSON in /*) ;; *) ANC_JSON="$PWD/$ANC_JSON" ;; esac; shift 2 ;;
+    --candidates) [ $# -ge 2 ] || die_usage "--candidates に JSON が無い"; CAND_JSON=$2; case $CAND_JSON in /*) ;; *) CAND_JSON="$PWD/$CAND_JSON" ;; esac; shift 2 ;;
     --) shift; break ;;
     *) die_usage "不明な引数: $1 (任意のパスは -- の後に置く)" ;;
   esac
