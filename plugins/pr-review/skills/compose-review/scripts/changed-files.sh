@@ -244,10 +244,12 @@ exist_fatal=""
 # git_resolve_blob <ref> <path>: <ref> の tree 上で <path> をシンボリックリンクを辿って解決し、通常ファイルなら
 # 解決後のパスを RESOLVED に入れて 0 を返す (作業ツリーの Read / contents API がリンク先を読むのと揃える)。
 # 不在・ディレクトリ・リポジトリ外 (絶対パス / root より上) を指すリンク・8 段を超える連鎖は 1。
+# LINK_LOG が設定されていれば、辿った先のパス (連鎖の途中と最終) を NUL 区切りでそのファイルに追記する。
 RESOLVED=""
 git_resolve_blob() {
   local ref=$1 p=$2 hop=0 mode type rest part norm target
   while [ "$hop" -le 8 ]; do
+    if [ "$hop" -gt 0 ] && [ -n "${LINK_LOG:-}" ]; then printf '%s\0' "$p" >>"$LINK_LOG"; fi
     # --full-tree: cwd がサブディレクトリでも root 相対で引く / --literal-pathspecs: パス中の * ? [ を glob にしない
     read -r mode type rest < <(git --literal-pathspecs ls-tree --full-tree "$ref" -- "$p" 2>/dev/null) || return 1
     case $mode:$type in
@@ -277,7 +279,8 @@ git_resolve_blob() {
 
 encode_path() { jq -rn --arg p "$1" '$p | split("/") | map(@uri | gsub("!"; "%21") | gsub("\\*"; "%2A") | gsub("'"'"'"; "%27") | gsub("\\("; "%28") | gsub("\\)"; "%29")) | join("/")'; }
 
-# シンボリックリンクの指示ファイルは、リンク先だけを編集して基準を消せるので、リンク先のパスも控えて 5-4 の発火判定に使う
+# シンボリックリンクの指示ファイルは、リンク先 (連鎖の途中のリンクを含む) だけを編集して基準を消せるので、
+# 辿ったパスも控えて 5-4 の発火判定に使う
 LINKS="$WORK_DIR/link-targets.z"
 : >"$LINKS"
 note_link() { [ "$1" = "$2" ] || printf '%s\0' "$2" >>"$LINKS"; }
@@ -286,8 +289,7 @@ while IFS= read -r -d '' c; do
   case $USED_SOURCE in
     git)
       # ファイルであることまで確かめる (REVIEW.md という名前のディレクトリを拾わない。シンボリックリンクはリンク先で判定)
-      git_resolve_blob "$HEAD_SHA" "$c" || continue
-      note_link "$c" "$RESOLVED"
+      LINK_LOG=$LINKS git_resolve_blob "$HEAD_SHA" "$c" || continue
       ;;
     gh|gh-pr-diff)
       enc=$(encode_path "$c")
@@ -324,7 +326,7 @@ if [ "$USED_SOURCE" = git ]; then
       c=${e#*$'\t'}
       case $c in REVIEW.md|*/REVIEW.md|AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) ;; *) continue ;; esac
       case /$c in */node_modules/*|*/vendor/*) continue ;; esac
-      git_resolve_blob "$ref" "$c" && note_link "$c" "$RESOLVED"
+      LINK_LOG=$LINKS git_resolve_blob "$ref" "$c" || true
     done <"$WORK_DIR/tree.z"
   done
 fi

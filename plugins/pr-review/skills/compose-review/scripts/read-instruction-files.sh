@@ -157,10 +157,12 @@ fi
 # git_resolve_blob <ref> <path>: <ref> の tree 上で <path> をシンボリックリンクを辿って解決し、通常ファイルなら
 # 解決後のパスを RESOLVED に入れて 0 を返す (作業ツリーの Read / contents API がリンク先を読むのと揃える)。
 # 不在・ディレクトリ・リポジトリ外 (絶対パス / root より上) を指すリンク・8 段を超える連鎖は 1。
+# LINK_LOG が設定されていれば、辿った先のパス (連鎖の途中と最終) を NUL 区切りでそのファイルに追記する。
 RESOLVED=""
 git_resolve_blob() {
   local ref=$1 p=$2 hop=0 mode type rest part norm target
   while [ "$hop" -le 8 ]; do
+    if [ "$hop" -gt 0 ] && [ -n "${LINK_LOG:-}" ]; then printf '%s\0' "$p" >>"$LINK_LOG"; fi
     # --full-tree: cwd がサブディレクトリでも root 相対で引く / --literal-pathspecs: パス中の * ? [ を glob にしない
     read -r mode type rest < <(git --literal-pathspecs ls-tree --full-tree "$ref" -- "$p" 2>/dev/null) || return 1
     case $mode:$type in

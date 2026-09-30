@@ -332,6 +332,17 @@ printf -- '- 追記\n' >> CLAUDE.md
 git add -A; git commit -qm s4
 run OUT 0 env MODE=pr HEAD_SHA="$(git rev-parse HEAD)" BASE_SHA="$S5" SOURCE=git bash "$CHANGED"
 check "changed-files: CLAUDE.md の編集は名前で発火" "$OUT" '.instruction_files_touched_paths == ["CLAUDE.md"]'
+# 連鎖リンク (chain/REVIEW.md -> a.md -> b.md) の途中の a.md だけを付け替える PR でも発火する
+mkdir -p chain
+printf '## エスカレーション基準\n- chain の基準\n' > chain/b.md
+printf '# 基準なし\n' > chain/c.md
+ln -s a.md chain/REVIEW.md; ln -s b.md chain/a.md
+git add -A; git commit -qm chain
+S6=$(git rev-parse HEAD)
+rm chain/a.md; ln -s c.md chain/a.md
+git add -A; git commit -qm repoint
+run OUT 0 env MODE=pr HEAD_SHA="$(git rev-parse HEAD)" BASE_SHA="$S6" SOURCE=git bash "$CHANGED"
+check "changed-files: 連鎖リンクの途中だけを付け替えても 5-4 が発火" "$OUT" '.instruction_files_touched_paths == ["chain/a.md"]'
 cd "$R"
 
 # ========== jq の途中失敗を「見出しなし」「0 件」と取り違えない ==========
