@@ -21,7 +21,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 優先順位:
 
-1. `code-review` (Claude Code 組み込み) — 内部で Agent ツールによる finder/verifier の fan-out を行うため、Agent ツールが使えるコンテキストでのみ動く (sub-agent の中でもネスト上限の範囲内なら可。Agent を持たないホストや上限に達した階層では不可)。**ただし多くの環境ではモデルから呼び出せない** (後述「`code-review` が呼べない問題」)。
+1. `code-review` (Claude Code 組み込み) — 内部で Agent ツールによる finder/verifier の fan-out を行う版があるため、`compose-review` は Agent ツールが使えるコンテキストでだけこれを選ぶ (sub-agent の中でもネスト上限の範囲内なら可。Agent を持たないホストや上限に達した階層では選ばない)。**また、モデルから呼び出せない版・環境がある** (後述「`code-review` が呼べない問題」)。
 2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、`code-review` と同じ「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい。
 3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
 4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
@@ -33,7 +33,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
 - `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
 - `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
-- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (下記「外部レビューの手動併用」運用がこれに当たる)。
+- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (`code-review` を自動で併用した回と、下記「外部レビューの手動併用」運用がこれに当たる)。
 
 PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
@@ -69,12 +69,12 @@ Claude Code 組み込みの `code-review` は、版や環境によって skill �
 
 ### 外部レビューの手動併用 (`/code-review` を先に実行する運用)
 
-`code-review` は **ユーザーがスラッシュコマンドとして手で叩く分には制約を受けない**。そこで、`code-review` の findings をどうしても併用したい場合は次の順で実行する:
+`code-review` は **ユーザーがスラッシュコマンドとして手で叩く分には制約を受けない**。そこで、モデルから `code-review` を呼べない環境でその findings を併用したい場合は、次の順で実行する:
 
 1. `/code-review` を手動で実行する (レビュー対象を引数で指定。`--fix` / `--comment` は付けない)。
 2. **同じセッションのまま** `/run-pr-review` (または `/run-local-review`) を実行する。
 
-1 の findings はセッションのコンテキストに残っているため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用でき、実質的に「自前レビュー + `code-review`」の併用になる。この運用を取らない場合は優先順 2 の `scan-diff-findings` が自動で使われる。
+1 の findings はセッションのコンテキストに残っているため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用でき、実質的に「自前レビュー + `code-review`」の併用になる。モデルから `code-review` を呼べる環境では、この運用を取らなくても優先順 1 で自動的に併用される。呼べない環境でこの運用を取らない場合は、優先順 2 の `scan-diff-findings` が自動で使われる。
 
 ## caller プロジェクトのレビュー方針の置き方
 
@@ -226,7 +226,7 @@ permissions:
       --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(gh repo view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git fetch origin:*),Bash(git fetch https://github.com/*),Bash(git show:*),Bash(git cat-file:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*),Bash(grep:*),Bash(sed -E:*),Bash(date:*),Bash(mkdir:*),Bash(dirname:*)"
 ```
 
-> checkout の `fetch-depth: 0` は `compose-review` の git 主経路のためのもの。既定の `fetch-depth: 1` では共通祖先がローカルに無く `git diff <BASE_SHA>...<HEAD_SHA>` が `fatal: no merge base` になる (`fetch-depth: 0` の代わりにジョブ内で `git fetch --unshallow` を挟んでもよい)。checkout を置かない構成でも `gh` 経路への degrade でレビュー自体は動くが、SHA 解決・差分・指示ファイルの取得がすべて `gh` 頼みになり、**外部レビュースキルの併用 (`compose-review` 5-2) は ref range を渡せなくなる**。`code-review` を Skill ツールから呼べる環境なら PR URL を target にして併用は維持されるが、GitHub Actions のように `disable-model-invocation` で呼べない環境では解決順 2 も不成立になり、自前レビュー単独へ退化する (その場合は未併用である旨が総括 `body` に開示される)。品質を落としたくなければ checkout を置くこと。
+> checkout の `fetch-depth: 0` は `compose-review` の git 主経路のためのもの。既定の `fetch-depth: 1` では共通祖先がローカルに無く `git diff <BASE_SHA>...<HEAD_SHA>` が `fatal: no merge base` になる (`fetch-depth: 0` の代わりにジョブ内で `git fetch --unshallow` を挟んでもよい)。checkout を置かない構成でも `gh` 経路への degrade でレビュー自体は動くが、SHA 解決・差分・指示ファイルの取得がすべて `gh` 頼みになり、**外部レビュースキルの併用 (`compose-review` 5-2) は ref range を渡せなくなる**。`code-review` を Skill ツールから呼べる環境なら PR URL を target にして併用は維持されるが、呼べない環境 (`disable-model-invocation` を持つ版) では解決順 2 も不成立になり、自前レビュー単独へ退化する (その場合は未併用である旨が総括 `body` に開示される)。品質を落としたくなければ checkout を置くこと。
 
 > `Bash(sed -E:*)` は skill が remote URL / ref 名の抽出に使う読み取り専用の置換 (`sed -E 's#...#...#'`) のためのもの。skill は sed の `e` / `w` コマンド、`s///e` / `s///w` フラグ、`-i` を使わない。前方一致なので `-E` 以降の引数までは許可設定で制限できない点に注意し、より厳しくしたい場合は sed の許可を外して `OWNER` / `REPO` / `BASE_BRANCH` を caller から明示的に渡す運用にする (抽出が不要になる)。
 

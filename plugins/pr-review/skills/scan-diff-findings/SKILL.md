@@ -1,6 +1,6 @@
 ---
 name: scan-diff-findings
-description: 差分 (ref range / ブランチ / staged / worktree) を観点別 finder の fan-out → adversarial verify → マージでレビューし、`path` / `line` / 要約 / 重大度に正規化した findings JSON を `FINDINGS_PATH` に書き出す read-only レビュースキル。`compose-review` Step 5-2 が外部レビューとして併用する (`code-review` をモデルから呼べない環境での既定経路)。Agent ツールが無い環境では同じ観点を現在コンテキストで逐次適用する。ファイル編集 / GitHub 投稿 / working tree を変える git 操作は行わない。
+description: 差分 (ref range / ブランチ / staged / worktree) を観点別 finder の fan-out → adversarial verify → マージでレビューし、`path` / `line` / 要約 / 重大度に正規化した findings JSON を `FINDINGS_PATH` に書き出す read-only レビュースキル。`compose-review` Step 5-2 が外部レビューとして併用する (`code-review` を使えない場合の既定経路)。Agent ツールが無い環境では同じ観点を現在コンテキストで逐次適用する。ファイル編集 (`FINDINGS_PATH` への書き出しを除く) / GitHub 投稿 / working tree を変える git 操作は行わない。
 ---
 
 # scan-diff-findings skill

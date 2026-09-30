@@ -1,6 +1,6 @@
 ---
 name: compose-review
-description: 'PR 差分またはローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成し、`post-pr-review` のスキーマに揃った JSON を `HANDOFF_PATH` に書き出す read-only skill。`/pr-review-style-reference` とプロジェクト指示ファイル (REVIEW.md 等) でレビュー方針を決め、自前レビューに外部レビュースキル (`code-review` / `scan-diff-findings` 等) の指摘をマージする。通常は `run-pr-review` / `run-local-review` から現在コンテキストで直接呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない。'
+description: 'PR 差分またはローカルブランチ差分に対してレビュー本文 (body / event / comments[]) を生成し、`post-pr-review` のスキーマに揃った JSON を `HANDOFF_PATH` (省略時は temp パスを自動生成) に書き出す read-only skill。最終メッセージは JSON ではなく「そのファイルを Read して続行せよ」という継続指示なので、caller は戻ったらすぐそのファイルを Read して後続処理を続ける。`/pr-review-style-reference` とプロジェクト指示ファイル (REVIEW.md 等) でレビュー方針を決め、自前レビューに外部レビュースキル (`code-review` / `scan-diff-findings` 等) の指摘をマージする。通常は `run-pr-review` / `run-local-review` から現在コンテキストで直接呼ばれる。GitHub 投稿 / 過去スレッド resolve は行わない。'
 ---
 
 # compose-review skill
@@ -248,7 +248,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - **ローカル作業ツリーが PR ブランチと異なる / checkout していないこと** — 1 も 2 も ref range を target に取れるので作業ツリーの状態に依存しない (**例外**: checkout が無い / shallow で `git` の object や merge-base 自体が無く Step 3 / Step 4 が `gh` 経路に degrade した回は ref range を渡せない。この場合だけは 2 が不成立になり、下記「`scan-diff-findings` の呼び出し」の但し書きに従って 1 (PR URL) → 3 の順で試す)。
 
 - **解決順**:
-  1. `code-review` (Claude Code 組み込み) が当セッションで **Skill ツールから実際に呼び出せて**、**かつ** Agent/Task ツールが当コンテキストで利用可能なら → これを使う (`code-review` は内部で Agent ツールによる finder/verifier の fan-out を行うため Agent ツールが必要。本 skill が sub-agent の中で動いていても、ネスト上限の範囲内なら Agent は使える)。呼び出し可能性の判定は下記「`code-review` の呼び出し可能性判定」に従う。
+  1. `code-review` (Claude Code 組み込み) が当セッションで **Skill ツールから実際に呼び出せて**、**かつ** Agent/Task ツールが当コンテキストで利用可能なら → これを使う (`code-review` には内部で Agent ツールによる finder/verifier の fan-out を行う版があるため、Agent ツールがあることを条件にしている。本 skill が sub-agent の中で動いていても、ネスト上限の範囲内なら Agent は使える)。呼び出し可能性の判定は下記「`code-review` の呼び出し可能性判定」に従う。
   2. ↑が不可なら → **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキルを使う**。本 plugin は同梱の **`scan-diff-findings`** をこの枠の既定として提供している (観点別 finder の fan-out → adversarial verify → マージ、read-only、`disable-model-invocation` なし)。caller のリポジトリ / ユーザー設定に同等のレビュースキル (frontmatter に `disable-model-invocation` を持たず、read-only で findings を返すもの) があればそれを使ってもよい。呼び出し手順は下記「`scan-diff-findings` の呼び出し」。
   3. ↑も無ければ、ホスト coding agent の標準レビュースキル (例: **Codex の `/review`**) が当セッションで利用可能ならそれを使う (環境依存で存在しないことが多く、当てにはしない)。
   4. いずれも無ければ外部レビューは行わず、5-1 の自前レビュー単独で 5-3 へ進む。**この場合 5-5 の「外部レビュー未併用の開示」を `body` に必ず 1 文入れる** (黙って退化しない)。
@@ -258,7 +258,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - 呼び出して上記メッセージで拒否された場合も **1 は不成立** → **リトライせず** 2 へ進む (CLI レベルの構造的な拒否であり、引数や呼び方を変えても通らない)。
   - どちらのケースでも **5-1 単独へ退化してはならない**。「`code-review` が使えない」は「外部レビューが使えない」ではない。
   - **例外 (手動併用)**: ユーザーが同一セッションで先に `/code-review` を手動実行していれば、その findings は既に現在コンテキストに残っている。その場合は改めて呼ばず、**コンテキスト上の findings を 1 の結果として採用** して下記「正規化」に流す (この運用は plugin README の「外部レビューの手動併用」に記載)。
-    - ただし採用前に、**その findings が本 step のレビュー対象 (PR モードなら `<BASE_SHA>...<HEAD_SHA>`、ローカルモードなら Step 1 で確定した差分) を対象に実行されたものかを確認する**。`/code-review` は target を任意に取れるため、セッション前半に別ブランチ / 数コミット前の状態で実行された findings がそのまま本 PR の外部レビュー結果として採用されうる (`external_review` には対象範囲も実行時刻も含まれないので事後には区別できない)。**確認できなければ 1 は不成立**として採用せず 2 へ進む (古い findings を混ぜるより安全)。
+    - ただし採用前に、**その findings が本 step のレビュー対象 (PR モードなら `<BASE_SHA>...<HEAD_SHA>`、ローカルモードなら Step 1 で確定した差分) を対象に実行されたものかを確認する**。`/code-review` は target を任意に取れるため、セッション前半に別ブランチ / 数コミット前の状態で実行された findings がそのまま本 PR の外部レビュー結果として採用されうる (`external_review` には対象範囲も実行時刻も含まれないので事後には区別できない)。**確認できなければ手動の findings は採用しない** (古い findings を混ぜるより安全)。その上で、上の 2 つの判定で `code-review` を呼べるなら本 step の対象を target にして改めて呼び、呼べなければ 2 へ進む。
 - **`scan-diff-findings` の呼び出し**: Skill ツール (`skill: "scan-diff-findings"`) を **現在コンテキストで直接** 呼ぶ (sub-agent は立てない。fan-out は呼び先の責務)。引数は `KEY=VALUE` 1 行ずつ、長文 value (`EXTRA_FOCUS`) は末尾に置く:
 
   ```

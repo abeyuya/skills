@@ -29,8 +29,9 @@
 #   - 1 PR あたり GraphQL 1 query (基本) で reviewThreads + commits + files を一括取得。
 #   - reviewThreads が 50 件超の PR は after cursor で追加 query を発行。
 #   - 1 thread の comments が 50 件超の場合のみ node(id) で追加 query。
-#   - REST `pulls/{N}/commits` / `commits/{sha}` は全廃 (core 枠を数百 query 消費していたため)。
-#   - reactions は廃止 (信号価値が低くノード上限の圧迫が大きいため)。
+#   - REST `pulls/{N}/commits` / `commits/{sha}` は使わない (commit と files は上記 GraphQL で取れる。
+#     `commits/{sha}` は commit 数 × 1 query になり core 枠を数百 query 消費するため)。
+#   - reactions は取得しない (信号価値が低くノード上限の圧迫が大きいため)。
 #   - バグ修正PR (pr_kind=bugfix) のみ `gh pr diff` で 1 PR = 1 コール取得 (Step 3.5)。
 #     subset 限定 + MAX_BUGFIX_DIFFS 件 + DIFF_CHAR_CAP 文字で抑制するため core 枠への影響は限定的。
 #   - 既存 REVIEW.md の配置取得 (Step 0.5) は `gh repo view` + `gh api git/ref` + `gh api git/trees` の
@@ -569,10 +570,9 @@ jq '
          ] | length > 0) as $author_replied |
         # file_changed_after_comment 判定:
         #   PR 全体の files に当該 path が含まれ、かつコメント作成以降に少なくとも 1 commit があるか。
-        # 旧ロジック (commit 別 files の一致判定) と比較すると、コメント前 commit のみで完結した
-        # 変更を false positive として拾う精度劣化があるが、commit 別 files を取るために必要だった
-        # REST `commits/{sha}` (commit 数 × 1 query) を全廃できるため rate limit 観点で採用。
-        # 信号値の精度低下は Phase C の AI が body + diff_hunk で最終判断することで吸収する。
+        #   コメント前の commit だけで完結した変更も true になる (偽陽性あり)。commit 別の files は
+        #   REST `commits/{sha}` (commit 数 × 1 query) でしか取れず rate limit に達するため、この近似を採る。
+        #   偽陽性は Phase C の AI が body + diff_hunk を読んで最終判断する。
         (($pr_files | any(. == $cm.path))
           and ([$pr.commits[]? | select(.committed_at > $cm.created_at)] | length > 0)
         ) as $file_changed |
