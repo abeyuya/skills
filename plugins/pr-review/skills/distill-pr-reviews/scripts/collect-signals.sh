@@ -30,7 +30,7 @@
 #   - reviewThreads が 50 件超の PR は after cursor で追加 query を発行。
 #   - 1 thread の comments が 50 件超の場合のみ node(id) で追加 query。
 #   - REST `pulls/{N}/commits` / `commits/{sha}` は使わない (PR の commits と PR 全体の files は上記 GraphQL で取る。
-#     commit 別の files は `commits/{sha}` でしか取れず commit 数 × 1 query で core 枠を数百 query 消費するため、
+#     commit 別の files を `commits/{sha}` で引くと commit 数 × 1 query で core 枠を数百 query 消費するため、
 #     取得せずに近似する)。
 #   - reactions は取得しない (信号価値が低くノード上限の圧迫が大きいため)。
 #   - バグ修正PR (pr_kind=bugfix) のみ `gh pr diff` で 1 PR = 1 コール取得 (Step 3.5)。
@@ -571,8 +571,8 @@ jq '
          ] | length > 0) as $author_replied |
         # file_changed_after_comment 判定:
         #   PR 全体の files に当該 path が含まれ、かつコメント作成以降に少なくとも 1 commit があるか。
-        #   コメント前の commit だけで完結した変更も true になる (偽陽性あり)。commit 別の files は
-        #   REST `commits/{sha}` (commit 数 × 1 query) でしか取れず rate limit に達するため、この近似を採る。
+        #   コメント前の commit だけで完結した変更も true になる (偽陽性あり)。commit 別の files を
+        #   REST `commits/{sha}` (commit 数 × 1 query) で引くと rate limit に達するため、この近似を採る。
         #   偽陽性は Phase C の AI が body + diff_hunk を読んで最終判断する。
         (($pr_files | any(. == $cm.path))
           and ([$pr.commits[]? | select(.committed_at > $cm.created_at)] | length > 0)
