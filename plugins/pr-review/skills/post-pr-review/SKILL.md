@@ -120,7 +120,9 @@ caller (人 / 外部システム) は Payload を渡すだけで、投稿の実�
 
 ## 機械可読サマリ行 (`AI-REVIEW-RESULT`)
 
-本 skill は投稿する Review の `body` に **ラベル別指摘件数の機械可読サマリ行を必ず 1 行埋め込む**。CI (GitHub Actions の required status check 等) が「AI レビュー済みか / ブロッキング指摘が残っているか」を機械判定するための **公開契約 (CI がパースする契約)** として扱い、後方互換に注意して変更する (キー追加は可、既存キーの削除 / 意味変更 / 順序変更は契約変更扱い)。**この但し書きは本節が規定する 3 行すべて (`AI-REVIEW-RESULT` / `AI-REVIEW-EXTERNAL` / `AI-REVIEW-ESCALATE`) に適用される** — いずれも CI がパースする公開契約なので、フォーマット / キー / 挿入位置を変えるときは後方互換に注意する。
+本 skill は投稿する Review の `body` に **ラベル別指摘件数の機械可読サマリ行を必ず 1 行埋め込む**。CI (GitHub Actions の required status check 等) が「AI レビュー済みか / ブロッキング指摘が残っているか」を機械判定するための **公開契約 (CI がパースする契約)** として扱い、後方互換に注意して変更する (キー追加は可、既存キーの削除 / 意味変更 / 順序変更は契約変更扱い)。**この但し書きは本節が規定する 3 行すべて (`AI-REVIEW-RESULT` / `AI-REVIEW-EXTERNAL` / `AI-REVIEW-ESCALATE`) に適用される**。
+
+**本節の規則は `scripts/build-review-payload.sh` が機械的に実行する** (手順 1)。モデルが件数を数えたり行を手で組み立てたりしない — 1 回の数え間違いで must 指摘のある PR が required check を通ってしまうため。本節は契約の正典で、スクリプトはその実装 (規則を変えるときは両方と `scripts/test-build-review-payload.sh` を同時に更新する)。
 
 ### フォーマット
 
@@ -142,40 +144,34 @@ caller から `external_review` (prompt 経由では `EXTERNAL_REVIEW`。1 行�
 <!-- AI-REVIEW-EXTERNAL: skill=scan-diff-findings mode=agent verify_degraded=false finders=5/5 findings=9 omitted=0 -->
 ```
 
-- **異常系 (`LABEL_COUNTS` と同じ扱い)**: `EXTERNAL_REVIEW` が渡されたが **JSON として parse できない / 必須キー (`skill` / `mode`) を欠く / `mode` が enum 外** の場合は、**行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない (CI 側のパースが壊れた値を読むため)。`reason` は日本語自由文で空白・記号を含みうるため `LABEL_COUNTS` より壊れやすい前提で扱う。なお `reason` は本行には出力しない (人間向けの理由は総括本文の開示文が担う)。
-
-- 目的: レビュー生成側 (`compose-review`) が **外部レビュースキルを併用できたか / 縮退したか** を、Review body の日本語本文を読まずに CI から判定できるようにする。`AI-REVIEW-RESULT` が「指摘の件数」を機械可読にするのと同じ役割を「レビュー体制の健全性」について果たす。
-- キーと値: `skill` (未併用は `none`) / `mode` (`agent` / `partial` / `inline` / `empty` / `external` / `null`) / `verify_degraded` (`true` / `false` / `null`) / `finders` (`<finders>/<finders_expected>`。どちらかが `null` なら `finders=n/a`) / `findings` (整数) / `omitted` (整数。外部スキル側で件数上限により落とされた指摘数。`> 0` はこの経路だけで起きる縮退なので必ず出力する)。値に半角スペースを含めない (含む場合は `_` に置換する)。`external_review` に無いキーは出力しない。
-- CI 側は係留キー `AI-REVIEW-EXTERNAL` を前置してパースする (例: `AI-REVIEW-EXTERNAL:.*?skill=(\S+).*?mode=(\S+)`)。`skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はいずれも「レビュー体制が縮退している」シグナルで、必要なら再レビューを促す判断材料にできる。
-- **1 つの Review body にこの行も 1 行だけ**。`AI-REVIEW-RESULT` と同様、caller 由来の総括本文には入れない。
+- 目的: レビュー生成側 (`compose-review`) が **外部レビュースキルを併用できたか / 縮退したか** を、Review body の日本語本文を読まずに CI から判定できるようにする。
+- キーと値 (この順): `skill` (未併用は `none`) / `mode` (`agent` / `partial` / `inline` / `empty` / `external` / `null`) / `verify_degraded` (`true` / `false` / `null`) / `finders` (`<finders>/<finders_expected>`。どちらかが `null` なら `finders=n/a`) / `findings` (整数) / `omitted` (整数。外部スキル側で件数上限により落とされた指摘数)。値の半角スペース等の空白は `_` に置換する。`external_review` に無いキーは出力しない。`reason` は本行には出力しない (人間向けの理由は総括本文の開示文が担う)。
+- **異常系**: JSON として parse できない / 必須キー (`skill` / `mode`) を欠く / `mode` が enum 外 の場合は **行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない。
+- CI 側は係留キー `AI-REVIEW-EXTERNAL` を前置してパースする (例: `AI-REVIEW-EXTERNAL:.*?skill=(\S+).*?mode=(\S+)`)。`skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はいずれも「レビュー体制が縮退している」シグナル。
+- **1 つの Review body にこの行も 1 行だけ**。caller 由来の総括本文には入れない。
 
 ### エスカレーション行 (`AI-REVIEW-ESCALATE`)
 
-caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON) が渡された場合のみ、`AI-REVIEW-EXTERNAL` の **直後の行** (空行を挟まない。`AI-REVIEW-EXTERNAL` を出力しない場合は `AI-REVIEW-RESULT` の直後) に 1 行出力する。渡されなければ行ごと省略する (本 skill が値を捏造しない)。
+caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON。`reasons` は自由文なので **値に改行を含めない**) が渡された場合のみ、`AI-REVIEW-EXTERNAL` の **直後の行** (空行を挟まない。`AI-REVIEW-EXTERNAL` を出力しない場合は `AI-REVIEW-RESULT` の直後) に 1 行出力する。渡されなければ行ごと省略する。
 
 ```
 <!-- AI-REVIEW-ESCALATE: escalate=1 reasons=2 -->
 ```
 
-- 目的: レビュー生成側が「この PR は重要な判断を含むので人 (第三者) の確認が要る」と判定したかを、Review body の日本語本文を読まずに CI から判定できるようにする。**CI 側が該当者をレビュアーに追加するためのルーティング信号** であり、**マージをブロックするゲートではない** (本 skill の `event` は従来どおり常に `COMMENT`。`escalate=1` でも `REQUEST_CHANGES` にはしない)。required status check にするかどうかは caller 側の判断で、本 skill の既定にはしない。
-- キーと値: `escalate` (`1` / `0`。`escalation.escalate` が `true` なら `1`、`false` なら `0`) / `reasons` (`escalation.reasons` の **件数** (整数)。`reasons` が無い / 空配列なら `0`)。**理由の本文はこの行に載せない** — HTML コメントに長文 (改行や `-->` を含みうる自由文) を入れると 1 行契約が壊れるため。人間向けの理由はレビュー生成側が総括本文に `## エスカレーション` セクションとして出す。
-- `escalate=1` なのに `reasons=0` は「判定はしたが理由が渡っていない」状態を意味する (行としては有効。CI は `escalate` だけで分岐できる)。
-- **異常系 (`AI-REVIEW-EXTERNAL` と同じ扱い)**: `ESCALATION` が渡されたが **JSON として parse できない / `escalate` を欠く / `escalate` が boolean でない** 場合は、**行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない。`reasons` が配列でない場合は `reasons=0` として出力する (`escalate` が読めているなら行自体は出す)。
-- CI 側は係留キー `AI-REVIEW-ESCALATE` を前置してパースする (例: `AI-REVIEW-ESCALATE:.*?escalate=([01])`)。**行の有無だけを見て「判定が行われたか」を判断しない** — `run-pr-review` 経路では `escalate: true` の回だけ `ESCALATION` が転送される (エスカレーション基準を持たない caller の出力を変えないため。詳細は `run-pr-review` Step 4) ので、**行が無い状態は「エスカレーション不要」と「判定基準が無く判定なし」の両方を含む**。CI が分岐すべきは `escalate=1` の存在のみ。本 skill 自体は渡された値を忠実に `1` / `0` で描画するため、`escalate=0` の行を出したい caller (prompt 経由 / 外部システム) は `escalate: false` を明示的に渡せばよい。
-- **パース範囲を body 冒頭のサマリ行ブロックに限定する (本行固有の注意)**: `AI-REVIEW-RESULT` / `AI-REVIEW-EXTERNAL` は「最初のマッチを採用する」で守られる (本 skill が必ず body 冒頭に prepend するので、caller 本文側に同形の文字列が混ざっても先頭のマッチが本 skill の出力になる)。一方 **本行は常在しない**ため、行が出ていない回に総括本文中のフォーマット例 (本 plugin のドキュメント自体をレビューする PR など) が **唯一のマッチ**になりうる。CI は本行を **マーカー行から最初の区切り線 `---` までの範囲に限って** 探し、その外側のマッチは無視すること。
-- **1 つの Review body にこの行も 1 行だけ**。`AI-REVIEW-RESULT` と同様、caller 由来の総括本文には入れない。
+- 目的: レビュー生成側が「この PR は人 (第三者) の確認が要る」と判定したかを CI から判定できるようにする。**CI 側が該当者をレビュアーに追加するためのルーティング信号** であり、**マージをブロックするゲートではない** (`escalate=1` でも `event` は `COMMENT` のまま、レビュアーの追加も行わない。それは caller / CI の責務)。
+- キーと値: `escalate` (`escalation.escalate` が `true` なら `1`、`false` なら `0`) / `reasons` (`escalation.reasons` の **件数**。無い / 空配列なら `0`)。**理由の本文はこの行に載せない** (HTML コメントに自由文を入れると 1 行契約が壊れるため。人間向けの理由は総括本文の `## エスカレーション` セクションが担う)。`escalate=1` かつ `reasons=0` も有効な行。
+- **異常系**: JSON として parse できない / `escalate` を欠く / `escalate` が boolean でない 場合は **行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。`reasons` が配列でない場合は `reasons=0` として行を出す。
+- CI 側は係留キー `AI-REVIEW-ESCALATE` を前置してパースする (例: `AI-REVIEW-ESCALATE:.*?escalate=([01])`)。**行の有無だけで「判定が行われたか」を判断しない** — `run-pr-review` 経路では `escalate: true` の回だけ `ESCALATION` が転送される (詳細は `run-pr-review` Step 4) ので、行が無い状態は「エスカレーション不要」と「判定なし」の両方を含む。CI が分岐すべきは `escalate=1` の存在のみ。`escalate=0` の行を出したい caller は `escalate: false` を明示的に渡せばよい。
+- **パース範囲を body 冒頭のサマリ行ブロックに限定する (本行固有の注意)**: 本行は常在しないため、行が出ていない回に総括本文中のフォーマット例 (本 plugin のドキュメント自体をレビューする PR など) が唯一のマッチになりうる。CI は本行を **マーカー行から最初の区切り線 `---` までの範囲に限って** 探し、その外側のマッチは無視すること。
+- **1 つの Review body にこの行も 1 行だけ**。caller 由来の総括本文には入れない。
 
 ### 集計ルール
 
-1. caller から `LABEL_COUNTS` (Payload の `label_counts`) が渡されていれば **それを正典として採用する**。`MAX_INLINE_COMMENTS` による省略分を含む正確な件数を持つのは caller (レビュー生成側) だけなので、渡された値を本 skill 側で再計算・上書きしない。
-   - 標準 5 ラベル (`must` / `should` / `nit` / `question` / `pre_existing`) 以外のキーは `other` に合算する。標準ラベルのうち渡されなかったキーは `0` とみなす。
-   - JSON として parse できない / 値が非負整数でない場合は `LABEL_COUNTS` を無視して下記 2 の `comments[]` 集計にフォールバックし、その旨を caller への報告に 1 行残す (投稿自体は継続する)。
-   - **下限チェック (一方向の整合性検証)**: `label_counts` は `MAX_INLINE_COMMENTS` の省略分を含む集合の件数なので、**合計 ≧ `comments[]` の件数** が不変条件として成立する (省略は件数を増やす方向にしか働かない)。合計が `comments[]` 件数を**下回る**場合は caller 側の組み立て不整合 (例: `comments[]` に `[must]` 3 件を渡しつつ `label_counts` が `{}` や `{"must":0,...}`) と判断し、`LABEL_COUNTS` を無視して下記 2 の `comments[]` 集計にフォールバックし、その旨を caller への報告に 1 行残す。**合計が `comments[]` 件数以上なら正典採用のまま**再計算しない (省略分を保護するルール 1 の規定と両立する)。この検証が無いと、caller の不整合がそのまま `must=0` のサマリ行になり、must 指摘付きの PR が required check を通ってしまう。
-2. `LABEL_COUNTS` が無ければ **`comments[]` の各 `body` 先頭の重要度ラベルを本 skill 側で集計する**。
-   - 判定は `body` の **先頭**に対して正規表現 `^\[([A-Za-z_]+)\]` をマッチさせ (本文中に現れる `[must]` 等は数えない)、**捕捉したラベルを小文字化してから**標準ラベルと突合する (`[MUST]` のような大文字表記も `must` として数える。regex を小文字クラスに絞ると大文字表記が捕捉されず `other` に落ち、CI が `must=0` と誤判定しうる)。
-   - 標準 5 ラベル (`must` / `should` / `nit` / `question` / `pre_existing`) はそれぞれのキーへ加算する。
-   - **未知ラベル (caller 独自定義の `[blocker]` 等) / ラベル無しコメントは `other` に加算する** (無視して落とすと合計が `comments[]` 件数と合わなくなり、サマリ行から「集計漏れ」と「本当に指摘なし」を区別できなくなるため、`other` に寄せる方式を採る)。
-   - 重要度ラベル種別は caller が独自定義できる (`/pr-review-style-reference` 参照) 一方、サマリ行のキーは上記 6 つ固定。したがって独自ラベル運用の caller は下記「制約」に従い `LABEL_COUNTS` でのマッピングを行う。
+1. `LABEL_COUNTS` (`label_counts`) が渡されていれば **それを正典として採用する** (`MAX_INLINE_COMMENTS` の省略分を含む正確な件数を持つのは caller だけなので、再計算・上書きしない)。
+   - 標準 5 ラベル (`must` / `should` / `nit` / `question` / `pre_existing`) 以外のキーは `other` に合算する。渡されなかった標準ラベルは `0`。
+   - JSON として parse できない / object でない / 値が非負整数でない場合は無視して下記 2 にフォールバックし、その旨を caller への報告に 1 行残す。
+   - **下限チェック**: 合計が `comments[]` の件数を **下回る** 場合は caller 側の組み立て不整合 (例: `[must]` 3 件なのに `{}`) とみなし、下記 2 にフォールバックして報告に 1 行残す (省略は件数を増やす方向にしか働かないため、合計 ≧ `comments[]` 件数が不変条件)。合計が件数以上なら正典採用のまま。
+2. それ以外は **`comments[]` の各 `body` の先頭**に `^\[([A-Za-z_]+)\]` をマッチさせ、**捕捉したラベルを小文字化してから**標準 5 ラベルと突合して加算する (`[MUST]` も `must`。本文中の `[must]` は数えない)。**未知ラベル (`[blocker]` 等) / ラベル無しは `other` に加算する** (落とすと合計が `comments[]` 件数と合わず「集計漏れ」と「指摘なし」を区別できなくなるため)。独自ラベル運用の caller は下記「制約」に従い `LABEL_COUNTS` でマッピングする。
 
 ### CI 側の使い方 (参考)
 
@@ -210,13 +206,51 @@ caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON) �
 
 caller から `CHANNEL` が渡されていればそれを使う。未指定なら「GitHub アクセスチャネル (任意)」の解決手順で `gh` / `mcp` を確定する。どちらも使えなければ投稿せずエラーを caller に報告して停止する。
 
-### 1. `body` 先頭に AI 自動投稿マーカーと機械可読サマリ行を付与し、最終 Payload を確定する
+### 1. `scripts/build-review-payload.sh` で最終 Payload を組み立てる
 
-caller から渡された総括本文 (Markdown 可) は、マーカー → 機械可読サマリ行 → 区切り線 (`---`) の後ろに連結する。指摘なしの場合 (`comments` が `[]`) も同じマーカーとサマリ行を付ける (サマリ行は全キー `0` になる)。
+マーカー / 機械可読行の付与・ラベル別件数の集計・最終 Payload からのキー除外は、本 skill 配下の `scripts/build-review-payload.sh` (bash + jq) がすべて機械的に行う。本 step では **このスクリプトを Bash ツールから呼ぶだけ**。モデルが件数を数えたり `body` を手で連結したりしない (結果が入力だけで決まる処理なので、手作業にすると数え間違いがそのまま CI の判定を誤らせる)。
 
-サマリ行の件数は「機械可読サマリ行」節の集計ルールで確定する (`LABEL_COUNTS` があればそれを正典に、無ければ `comments[]` の先頭ラベルを集計。未知ラベル / ラベル無しは `other`)。
+スクリプトの絶対パスは **本 SKILL.md と同じディレクトリの `scripts/build-review-payload.sh`** で解決する (SKILL.md の絶対パスの dirname に `scripts/build-review-payload.sh` を連結する。`distill-pr-reviews` Step 1 と同じ規則で、開発時・`/plugin install` 後・`apm install` 後のいずれでも一意に決まる)。スクリプトは bash 3.2 互換 (`jq` は別途必要)。以下のコマンドは **この形のまま使い、引数や手順を変えない**。
 
-マーカー文言 (エージェント非依存・固定) とサマリ行の配置:
+1. **作業パスを取得する**:
+
+   ```bash
+   bash "<SKILL.md と同じディレクトリ>/scripts/build-review-payload.sh" --init
+   ```
+
+   stdout の 1 行が入力ファイルのパス (`<一意の temp ディレクトリ>/input.json`。ランダムサフィックス付きで並行実行でも衝突せず、ファイルは未作成なので `Write` の前に `Read` は要らない)。
+2. **入力 JSON を `Write` ツールでそのパスに書く** (`heredoc` や `cat` リダイレクトは使わない)。中身は caller から受け取った Payload をそのまま詰めた 1 つの JSON object:
+
+   ```json
+   {
+     "body": "<caller の総括本文そのまま (マーカー等は付けない)>",
+     "event": "COMMENT",
+     "comments": [ /* caller の comments[] をそのまま */ ],
+     "commit_id": "<COMMIT_ID。渡されなければキーごと省く>",
+     "label_counts": "<LABEL_COUNTS。渡されなければキーごと省く>",
+     "external_review": "<EXTERNAL_REVIEW。渡されなければキーごと省く>",
+     "escalation": "<ESCALATION。渡されなければキーごと省く>"
+   }
+   ```
+
+   - `label_counts` / `external_review` / `escalation` は受け取った 1 行 JSON を **文字列値のまま** 入れてよい (object でも可)。**壊れた値を直したり省いたりしない** — parse 可否と異常時の扱いはスクリプトが判定する。上記以外のキー (`mode` 等) は無視される。
+3. **スクリプトを実行する**:
+
+   ```bash
+   bash "<SKILL.md と同じディレクトリ>/scripts/build-review-payload.sh" "<--init が出力した input.json のパス>"
+   ```
+
+#### 出力の扱い
+
+- **exit 0**: stdout に報告 JSON が 1 行出る (同内容が同じディレクトリの `report.json` にもある。キー: `payload_path` / `counts` / `counts_source` / `lines` / `warnings`。スキーマはスクリプト冒頭コメント参照)。
+  - `payload_path` の `payload.json` が GitHub へ送る最終 Payload (`{commit_id?, body, event: "COMMENT", comments}`)。`body` はマーカー → 空行 → 機械可読行 (行間に空行なし) → 空行 → `---` → 空行 → caller の総括本文 の順に組み立て済み。**この内容を手で編集しない**。
+  - `counts_source`: `label_counts` (正典採用) / `comments` (`comments[]` から集計)。`lines.external` / `lines.escalate`: `emitted` (出力) / `absent` (入力に無く省略) / `omitted` (渡されたが異常値で省略)。
+  - **`warnings[]` の各要素は caller への報告に 1 行ずつ転記する** (投稿は止めない)。`action` は `fallback_to_comments` (`LABEL_COUNTS` を無視して `comments[]` 集計にした) / `line_omitted` (その入力の機械可読行を省略した) / `reasons_zeroed` (`reasons` が配列でなく `reasons=0` にした) / `forced_comment` (`event` を `COMMENT` に固定した)。`run-pr-review` は `line_omitted` / `fallback_to_comments` を自身の報告に転記する (同 Step 6)。
+- **exit 2** (入力不正: `body` が文字列でない / `comments` が配列でない / 入力が JSON でない 等): `payload.json` は書かれない。投稿せず、stderr のメッセージを caller に報告して停止する。
+
+`label_counts` / `external_review` / `escalation` / `mode` 等は最終 Payload に含まれない (GitHub の Review API が受け付けないキーで、`--input` に混ぜると 422 になる)。`commit_id` は `COMMIT_ID` が渡されたときだけ含まれる。インラインコメント (`comments[].body`) には個別マーカーを付けない (Review 本文側のマーカーで帰属は十分なため)。
+
+参考: マーカー文言 (エージェント非依存・固定) と組み立て後の `body` の形:
 
 ```markdown
 > **[AI 自動投稿]** このレビューは AI エージェントによって自動生成されました。レビュー内容の判断は AI が行っています。
@@ -230,44 +264,7 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 <caller から渡された総括本文 (指摘なし時は「特に指摘なし」相当)>
 ```
 
-サマリ行はマーカー行との間に **空行を 1 行入れる** (マーカーは blockquote なので直後の行に置くと lazy continuation で blockquote に取り込まれ、行の構造が崩れうる)。サマリ行の前後をこの形に固定することで、CI 側は「マーカー直後の 1 行」を安定してパースできる。
-
-`AI-REVIEW-EXTERNAL` 行は **`external_review` / `EXTERNAL_REVIEW` が渡されたときだけ** `AI-REVIEW-RESULT` の直後 (間に空行を入れず) に出力する (渡されなければ行ごと省略する。詳細は「機械可読サマリ行」節)。
-
-`AI-REVIEW-ESCALATE` 行は **`escalation` / `ESCALATION` が渡されたときだけ** `AI-REVIEW-EXTERNAL` の直後 (間に空行を入れず。`AI-REVIEW-EXTERNAL` を出力しない場合は `AI-REVIEW-RESULT` の直後) に出力する (渡されなければ行ごと省略する。詳細は「機械可読サマリ行」節)。`escalate=1` でも `event` は `COMMENT` のままで、レビュアーの追加は行わない (caller / CI の責務)。
-
-確定した最終 Payload のスキーマは以下のとおり (`body` は上記マーカー + サマリ行込みの文字列)。`CHANNEL=gh` ではこれを `/tmp/review.json` に **`Write` ツールで** 書き出す (`heredoc` や `cat` リダイレクトは使わない)。`CHANNEL=mcp` ではファイルには書き出さず、手順 2 の各ツール引数として直接渡す:
-
-```json
-{
-  "commit_id": "9f8e7d6c1a2b3c4d5e6f7890abcdef1234567890",
-  "body": "> **[AI 自動投稿]** このレビューは AI エージェントによって自動生成されました。レビュー内容の判断は AI が行っています。\n\n<!-- AI-REVIEW-RESULT: must=1 should=1 nit=0 question=0 pre_existing=0 other=0 -->\n\n---\n\n総括コメント本文 (Markdown可)",
-  "event": "COMMENT",
-  "comments": [
-    {
-      "path": "src/example.ts",
-      "line": 42,
-      "side": "RIGHT",
-      "body": "[should] ここの処理は..."
-    },
-    {
-      "path": "src/example.ts",
-      "start_line": 50,
-      "start_side": "RIGHT",
-      "line": 55,
-      "side": "RIGHT",
-      "body": "[must] この複数行ブロックは..."
-    }
-  ]
-}
-```
-
-- 単一行コメントは `path` / `line` / `side` を指定する。
-- 複数行範囲のコメントは上記に加えて `start_line` / `start_side` を併用する (`start_line` は `line` より前の行)。
-- `commit_id` は caller から `COMMIT_ID` が渡された場合のみ含める (詳細は「Public Payload Interface」セクションの「Payload スキーマ」参照)。
-- **`label_counts` / `LABEL_COUNTS` / `external_review` / `EXTERNAL_REVIEW` / `escalation` / `ESCALATION` は GitHub へ送る最終 Payload に含めない** (いずれも本 skill 内で `body` の機械可読行を組み立てるためだけに使う入力。GitHub の Review API が受け付けないキーであり `--input` に混ぜると 422 になる)。`compose-review` が出力する `mode` 等、本 skill の Payload スキーマに無いキーも同様に受け取っても最終 Payload には含めない。
-- 指摘がない場合: `body` はマーカー + 全キー `0` のサマリ行 (`<!-- AI-REVIEW-RESULT: must=0 should=0 nit=0 question=0 pre_existing=0 other=0 -->`) + 区切り線 + 「特に指摘なし」相当の文言、`comments` は `[]`、`event` は `COMMENT` で投稿する。指摘 0 件でもサマリ行を省略しない (CI が「レビュー実施済みで指摘ゼロ」を判別するための必須要件)。
-- インラインコメント (`comments[].body`) には個別マーカーを付けない (Review 本文側のマーカーで帰属は十分であり、`[must]` 等の重要度ラベルとの衝突や冗長さも避けるため)。
+マーカー行の後の空行は、blockquote の lazy continuation で機械可読行が取り込まれるのを防ぐためのもの。
 
 ### 2. CHANNEL に応じて「1 つの Review」として投稿する
 
@@ -275,25 +272,25 @@ caller から渡された総括本文 (Markdown 可) は、マーカー → 機�
 
 #### 2-a. `CHANNEL=gh` — `gh api` を 1 回だけ実行する
 
-手順 1 で書き出した `/tmp/review.json` を使い、1 回の API コールで投稿する:
+手順 1 の報告 JSON の `payload_path` をそのまま `--input` に渡し、1 回の API コールで投稿する:
 
 ```bash
 gh api \
   -X POST \
   -H "Accept: application/vnd.github+json" \
   /repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews \
-  --input /tmp/review.json
+  --input "<payload_path>"
 ```
 
 #### 2-b. `CHANNEL=mcp` — pending review を組み立てて submit する
 
-MCP には Payload 全体を 1 コールで受けるツールが無いため、pending review を組み立ててから 1 度に submit する (GitHub 上では 2-a と同じ 1 つの Review オブジェクトになる)。`comments` の有無で分岐する:
+MCP には Payload 全体を 1 コールで受けるツールが無いため、pending review を組み立ててから 1 度に submit する (GitHub 上では 2-a と同じ 1 つの Review オブジェクトになる)。手順 1 の `payload_path` を `Read` し、その `body` / `comments` / `commit_id` を **そのまま** 下記の各ツール引数に使う (値を書き換えない)。`comments` の有無で分岐する:
 
-- **`comments` が空配列 (`[]`) の場合 — 1 呼び出しで submit**: `mcp__github__pull_request_review_write` を method=`create` で呼ぶ。`owner` / `repo` / `pullNumber` に加え、`body` = 手順 1 のマーカー + 機械可読サマリ行込み総括本文、`event` = `"COMMENT"`、`commitID` = `commit_id` (Payload に含まれる場合のみ) を渡す (`event` を付けると作成と同時に submit される)。
+- **`comments` が空配列 (`[]`) の場合 — 1 呼び出しで submit**: `mcp__github__pull_request_review_write` を method=`create` で呼ぶ。`owner` / `repo` / `pullNumber` に加え、`body` = `payload.json` の `body`、`event` = `"COMMENT"`、`commitID` = `commit_id` (Payload に含まれる場合のみ) を渡す (`event` を付けると作成と同時に submit される)。
 - **`comments` が非空の場合 — pending review 組み立て**:
   1. **pending review 作成**: `mcp__github__pull_request_review_write` を method=`create` で、**`event` を省略して** 呼ぶ (event 省略で pending review になる)。`owner` / `repo` / `pullNumber` と、`commitID` = `commit_id` (Payload に含まれる場合のみ) をここで渡す。`body` はここでは渡さず submit 時に渡す。
      - **既存 pending review との衝突に注意**: GitHub は 1 ユーザー 1 PR につき pending review を 1 つしか持てない。`create` が「既に pending review がある」旨で失敗した場合、その既存 pending review は**別プロセス / 人間が作成した未 submit のドラフトかもしれない**ため、**勝手に `delete_pending` してはならない** (他者のドラフトを破壊する / add_comment が他者のドラフトに混入する危険)。この場合は投稿を中止し、「既存の未 submit pending review があるため投稿できない。手動で確認してほしい」と caller に報告して停止する。既存 pending review が明らかに本 skill 自身の直前の中断に由来すると確証できる場合に限り、`delete_pending` 後に再作成してよい。
-  2. **各インラインコメントを追加**: `comments[]` の各要素について `mcp__github__add_comment_to_pending_review` を呼ぶ: `owner` / `repo` / `pullNumber`、`path` / `body` / `subjectType`=`"LINE"`、`line` / `side`。複数行範囲コメントは加えて `startLine` = `start_line` / `startSide` = `start_side` を渡す。
-  3. **submit**: `mcp__github__pull_request_review_write` を method=`submit_pending` で呼ぶ: `owner` / `repo` / `pullNumber`、`body` = 手順 1 のマーカー + 機械可読サマリ行込み総括本文、`event` = `"COMMENT"`。
+  2. **各インラインコメントを追加**: `payload.json` の `comments[]` の各要素について `mcp__github__add_comment_to_pending_review` を呼ぶ: `owner` / `repo` / `pullNumber`、`path` / `body` / `subjectType`=`"LINE"`、`line` / `side`。複数行範囲コメントは加えて `startLine` = `start_line` / `startSide` = `start_side` を渡す。
+  3. **submit**: `mcp__github__pull_request_review_write` を method=`submit_pending` で呼ぶ: `owner` / `repo` / `pullNumber`、`body` = `payload.json` の `body`、`event` = `"COMMENT"`。
 
-**失敗時のクリーンアップ**: 2-b の組み立ては複数呼び出しに分かれるため、2-a の単一 atomic コールと違い途中失敗で pending review が宙に浮きうる。**本 skill が手順 1 で `create` に成功して以降** (= 本 skill 自身が作った pending review が存在する状態) にコメント追加または submit が失敗したら、`mcp__github__pull_request_review_write` を method=`delete_pending` (`owner` / `repo` / `pullNumber`) で **本 skill が作った pending review を破棄** してから caller にエラーを報告する (submit されないまま残った pending review は他の投稿の妨げになるため残さない)。手順 1 の `create` 自体が失敗したケース (上記の既存 pending review 衝突など) では本 skill は pending review を作っていないので `delete_pending` は呼ばない。
+**失敗時のクリーンアップ**: 2-b の組み立ては複数呼び出しに分かれるため、2-a の単一 atomic コールと違い途中失敗で pending review が宙に浮きうる。**本 skill が 2-b の 1 で `create` に成功して以降** (= 本 skill 自身が作った pending review が存在する状態) にコメント追加または submit が失敗したら、`mcp__github__pull_request_review_write` を method=`delete_pending` (`owner` / `repo` / `pullNumber`) で **本 skill が作った pending review を破棄** してから caller にエラーを報告する (submit されないまま残った pending review は他の投稿の妨げになるため残さない)。2-b の 1 の `create` 自体が失敗したケース (上記の既存 pending review 衝突など) では本 skill は pending review を作っていないので `delete_pending` は呼ばない。

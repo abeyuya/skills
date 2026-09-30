@@ -133,7 +133,7 @@ Step 1 の `OWNER` / `REPO` / `PR_NUMBER` / `CHANNEL` と Step 3 で得たレビ
 
 `label_counts` の転送は **Review body の機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=… -->`) の件数を正確にするため**に必要 (`post-pr-review` は `LABEL_COUNTS` が無ければ `comments[]` から集計するが、それでは `MAX_INLINE_COMMENTS` で省略された指摘が件数から落ちる)。サマリ行は CI (required status check 等) がパースする契約なので、`compose-review` が返した値をそのまま転送し、本 skill 側で再集計・加工しない。`COMMIT_ID` も CI が「head SHA に対するレビューか」を review の `commit_id` で判定する前提のため常時転送する。**値の決め方は Step 2 の head SHA の箇条に従う** (ここで別の規則を持たない。規則が 2 箇所にあると force-push race の回にどちらに従うかで転送値が揺れるため)。
 
-投稿の実行 (`CHANNEL` に応じた `gh api .../reviews --input` または MCP での pending review 組み立て) は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして `/tmp/review.json` を書いたり API を叩いたりしない。
+最終 Payload の組み立て (機械可読行の付与・件数集計。`post-pr-review` の `scripts/build-review-payload.sh` が担う) と投稿の実行 (`CHANNEL` に応じた `gh api .../reviews --input` または MCP での pending review 組み立て) は呼び先の `post-pr-review` 側で行うため、本 skill 側で先回りして Payload ファイルを書いたり API を叩いたりしない。上表の `LABEL_COUNTS` / `EXTERNAL_REVIEW` / `ESCALATION` は `compose-review` の値をそのまま渡せばよく、parse 可否の判定もスクリプトが行う (壊れた値を本 skill 側で直さない)。
 
 ### Step 5. `resolve-pr-threads` skill で過去スレッドを整理する
 
