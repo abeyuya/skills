@@ -85,6 +85,12 @@ eq "counts_source" '.counts_source' "label_counts" report
 eq "warnings なし" '.warnings | length' "0" report
 eq "label_counts を除外" 'has("label_counts")' "false"
 
+run "LABEL_COUNTS のキーは小文字化して突合" '{"body":"b","comments":[
+  {"path":"a","line":1,"side":"RIGHT","body":"[MUST] x"},
+  {"path":"a","line":2,"side":"RIGHT","body":"[MUST] y"}],"label_counts":{"MUST":2,"Should":1}}'
+eq "RESULT 行" "$LINES" '<!-- AI-REVIEW-RESULT: must=2 should=1 nit=0 question=0 pre_existing=0 other=0 -->'
+eq "counts_source" '.counts_source' "label_counts" report
+
 run "LABEL_COUNTS を object で渡す" '{"body":"b","comments":[],"label_counts":{"should":1}}'
 eq "RESULT 行" "$LINES" '<!-- AI-REVIEW-RESULT: must=0 should=1 nit=0 question=0 pre_existing=0 other=0 -->'
 

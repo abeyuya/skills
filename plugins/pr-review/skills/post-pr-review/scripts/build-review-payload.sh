@@ -123,7 +123,7 @@ result="$(jq -c --arg payload_path "$payload_path" '
           warn: [{input: "LABEL_COUNTS", action: "fallback_to_comments", reason: "値に非負整数でないものがある"}]}
        else
          (reduce ($lc | to_entries[]) as $e (zero;
-            .[std_key($e.key)] += $e.value)) as $mapped
+            .[std_key($e.key | ascii_downcase)] += $e.value)) as $mapped
          | ([$mapped[]] | add) as $sum
          | if $sum < ($comments | length) then
              {counts: $from_comments, source: "comments",

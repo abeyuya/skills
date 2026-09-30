@@ -168,7 +168,7 @@ caller から `escalation` (prompt 経由では `ESCALATION`。1 行の JSON。`
 ### 集計ルール
 
 1. `LABEL_COUNTS` (`label_counts`) が渡されていれば **それを正典として採用する** (`MAX_INLINE_COMMENTS` の省略分を含む正確な件数を持つのは caller だけなので、再計算・上書きしない)。
-   - 標準 5 ラベル (`must` / `should` / `nit` / `question` / `pre_existing`) 以外のキーは `other` に合算する。渡されなかった標準ラベルは `0`。
+   - キーは小文字化してから標準 5 ラベル (`must` / `should` / `nit` / `question` / `pre_existing`) と突合し (`MUST` も `must`。下記 2 と揃える)、それ以外のキーは `other` に合算する。渡されなかった標準ラベルは `0`。
    - JSON として parse できない / object でない / 値が非負整数でない場合は無視して下記 2 にフォールバックし、その旨を caller への報告に 1 行残す。
    - **下限チェック**: 合計が `comments[]` の件数を **下回る** 場合は caller 側の組み立て不整合 (例: `[must]` 3 件なのに `{}`) とみなし、下記 2 にフォールバックして報告に 1 行残す (省略は件数を増やす方向にしか働かないため、合計 ≧ `comments[]` 件数が不変条件)。合計が件数以上なら正典採用のまま。
 2. それ以外は **`comments[]` の各 `body` の先頭**に `^\[([A-Za-z_]+)\]` をマッチさせ、**捕捉したラベルを小文字化してから**標準 5 ラベルと突合して加算する (`[MUST]` も `must`。本文中の `[must]` は数えない)。**未知ラベル (`[blocker]` 等) / ラベル無しは `other` に加算する** (落とすと合計が `comments[]` 件数と合わず「集計漏れ」と「指摘なし」を区別できなくなるため)。独自ラベル運用の caller は下記「制約」に従い `LABEL_COUNTS` でマッピングする。
@@ -225,7 +225,7 @@ caller から `CHANNEL` が渡されていればそれを使う。未指定な�
    {
      "body": "<caller の総括本文そのまま (マーカー等は付けない)>",
      "event": "COMMENT",
-     "comments": [ /* caller の comments[] をそのまま */ ],
+     "comments": ["<caller の comments[] の各要素をそのまま>"],
      "commit_id": "<COMMIT_ID。渡されなければキーごと省く>",
      "label_counts": "<LABEL_COUNTS。渡されなければキーごと省く>",
      "external_review": "<EXTERNAL_REVIEW。渡されなければキーごと省く>",
