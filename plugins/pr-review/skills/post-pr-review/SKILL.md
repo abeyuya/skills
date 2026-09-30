@@ -146,7 +146,7 @@ caller から `external_review` (prompt 経由では `EXTERNAL_REVIEW`。1 行�
 
 - 目的: レビュー生成側 (`compose-review`) が **外部レビュースキルを併用できたか / 縮退したか** を、Review body の日本語本文を読まずに CI から判定できるようにする。
 - キーと値 (この順): `skill` (未併用は `none`) / `mode` (`agent` / `partial` / `inline` / `empty` / `external` / `null`) / `verify_degraded` (`true` / `false` / `null`) / `finders` (`<finders>/<finders_expected>`。どちらかが `null` なら `finders=n/a`) / `findings` (整数) / `omitted` (整数。外部スキル側で件数上限により落とされた指摘数)。値の半角スペース等の空白は `_` に置換する。`external_review` に無いキーは出力しない。`reason` は本行には出力しない (人間向けの理由は総括本文の開示文が担う)。
-- **異常系**: JSON として parse できない / 必須キー (`skill` / `mode`) を欠く / `mode` が enum 外 の場合は **行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない。
+- **異常系**: JSON として parse できない / 必須キー (`skill` / `mode`) を欠く / `mode` が enum 外 / 値が上記の型に合わない (`finders` / `finders_expected` / `findings` / `omitted` が非負整数でない、`verify_degraded` が boolean / null でない、`skill` が HTML コメント終端 `-->` を含む) の場合は **行ごと省略し、その旨を caller への報告に 1 行残す** (投稿自体は継続する)。壊れた値をそのまま埋め込まない。
 - CI 側は係留キー `AI-REVIEW-EXTERNAL` を前置してパースする (例: `AI-REVIEW-EXTERNAL:.*?skill=(\S+).*?mode=(\S+)`)。`skill=none` / `mode=inline|partial|empty` / `verify_degraded=true` はいずれも「レビュー体制が縮退している」シグナル。
 - **1 つの Review body にこの行も 1 行だけ**。caller 由来の総括本文には入れない。
 

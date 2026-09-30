@@ -124,7 +124,10 @@ eq "EXTERNAL 行" "$LINES"' | split("\n")[1]' '<!-- AI-REVIEW-EXTERNAL: skill=co
 run "EXTERNAL_REVIEW 最小 (skill=none, mode=null)" '{"body":"b","comments":[],"external_review":{"skill":"none","mode":null}}'
 eq "EXTERNAL 行" "$LINES"' | split("\n")[1]' '<!-- AI-REVIEW-EXTERNAL: skill=none mode=null -->'
 
-for broken in '{"skill":"x","mode":"turbo"}' '{"mode":"agent"}' '{"skill":"x"}' '"{broken"' '[]'; do
+for broken in '{"skill":"x","mode":"turbo"}' '{"mode":"agent"}' '{"skill":"x"}' '"{broken"' '[]' \
+  '{"skill":"a-->b","mode":"agent"}' '{"skill":"x","mode":"agent","findings":"3 -->"}' \
+  '{"skill":"x","mode":"agent","omitted":null}' '{"skill":"x","mode":"agent","verify_degraded":"no"}' \
+  '{"skill":"x","mode":"agent","finders":"5","finders_expected":5}'; do
   run "EXTERNAL_REVIEW 異常: $broken" '{"body":"b","comments":[],"external_review":'"$broken"'}'
   eq "行ごと省略" "$LINES" "$ZERO_LINE"
   eq "external omitted" '.lines.external' "omitted" report
@@ -185,6 +188,15 @@ for bad in '{"comments":[]}' '{"body":"b","comments":{}}' '{"body":"b"}' 'not js
   if [ "$rc" -eq 2 ]; then ok; else ng "$bad: exit $rc"; fi
   if [ ! -e "$(dirname "$input")/payload.json" ]; then ok; else ng "$bad: payload.json が書かれた"; fi
 done
+
+current="複数の JSON 値を連結した入力は exit 2"
+input="$(bash "$BUILD" --init)"
+printf '%s\n%s\n' '{"body":"a","comments":[]}' '{"body":"b","comments":[]}' > "$input"
+set +e
+bash "$BUILD" "$input" >/dev/null 2>&1
+rc=$?
+set -e
+if [ "$rc" -eq 2 ]; then ok; else ng "exit $rc"; fi
 
 current="--init は毎回別パスを返し、ファイルを作らない"
 a="$(bash "$BUILD" --init)"

@@ -72,7 +72,8 @@ fi
 
 input="$1"
 [ -f "$input" ] || die "入力ファイルが無い: $input"
-jq -e 'type == "object"' "$input" >/dev/null 2>&1 || die "入力が JSON object として parse できない: $input"
+jq -e -s 'length == 1 and (.[0] | type == "object")' "$input" >/dev/null 2>&1 \
+  || die "入力が単一の JSON object として parse できない: $input"
 jq -e '.body | type == "string"' "$input" >/dev/null || die "body が string でない"
 jq -e '.comments | type == "array"' "$input" >/dev/null || die "comments が配列でない"
 
@@ -148,6 +149,13 @@ result="$(jq -c --arg payload_path "$payload_path" '
         elif ($er.skill | type) != "string" or ($er.skill == "") then "skill が空でない string でない"
         elif ([null, "agent", "partial", "inline", "empty", "external"] | any(. == $er.mode) | not)
           then "mode が enum 外 (\($er.mode | tojson))"
+        elif ($er.skill | contains("-->")) then "skill に HTML コメント終端 --> を含む"
+        elif ($er | has("verify_degraded")) and ([$er.verify_degraded | type] | inside(["boolean", "null"]) | not)
+          then "verify_degraded が boolean / null でない"
+        elif ([$er.finders, $er.finders_expected] | map(select(. != null) | is_nonneg_int | not) | any)
+          then "finders / finders_expected が非負整数 / null でない"
+        elif (["findings", "omitted"] | map(. as $k | $er | has($k) and (.[$k] | is_nonneg_int | not)) | any)
+          then "findings / omitted が非負整数でない"
         else null
         end) as $err
      | if $err != null then
