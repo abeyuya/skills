@@ -321,6 +321,18 @@ cd sub   # cwd がサブディレクトリでも root 相対で解決する
 run OUT 0 env MODE=pr HEAD_SHA="$S4" BASE_SHA="$S3" SOURCE=git bash "$CHANGED"
 cd "$R"
 check "changed-files: シンボリックリンクの祖先 REVIEW.md はリンク先がファイルなら存在扱い (リポジトリ外・循環は除外)" "$OUT" '[.ancestor_review_md[].path] == ["sub/REVIEW.md"]'
+check "changed-files: 指示ファイルに触れない差分では発火しない" "$OUT" '.instruction_files_touched == false'
+cd "$T/r3"
+printf -- '- 追記\n' >> shared/REVIEW-body.md
+git add -A; git commit -qm s3
+S5=$(git rev-parse HEAD)
+run OUT 0 env MODE=pr HEAD_SHA="$S5" BASE_SHA="$S4" SOURCE=git bash "$CHANGED"
+check "changed-files: シンボリックリンク先 (祖先 REVIEW.md) だけの編集でも 5-4 が発火" "$OUT" '.instruction_files_touched and .instruction_files_touched_paths == ["shared/REVIEW-body.md"]'
+printf -- '- 追記\n' >> CLAUDE.md
+git add -A; git commit -qm s4
+run OUT 0 env MODE=pr HEAD_SHA="$(git rev-parse HEAD)" BASE_SHA="$S5" SOURCE=git bash "$CHANGED"
+check "changed-files: CLAUDE.md の編集は名前で発火" "$OUT" '.instruction_files_touched_paths == ["CLAUDE.md"]'
+cd "$R"
 
 # ========== jq の途中失敗を「見出しなし」「0 件」と取り違えない ==========
 echo "# 内部の失敗"

@@ -30,7 +30,8 @@
 #   ancestor_review_md  : 存在する祖先 REVIEW.md。root → 親 → 子 (`/` の少ない順) で
 #                         [{path, depth, changed_files_under}]。changed_files_under は Step 3 の間引きの優先度用
 #   excluded_review_md  : 改行を含む / JSON で正確に表せないため読まずに除外した REVIEW.md の件数 (body で開示)
-#   instruction_files_touched       : 5-4「判定基準の自己回避を防ぐ」の発火有無。list_degraded のときは
+#   instruction_files_touched       : 5-4「判定基準の自己回避を防ぐ」の発火有無 (指示ファイルがシンボリックリンクなら、
+#                                     リンク先の変更でも発火する)。list_degraded のときは
 #                                     rename の移動元が一覧に出ないため、安全側に倒して常に true
 #   instruction_files_touched_paths : 発火の根拠になったパス
 #   list_degraded    : gh pr diff --name-only で代替した回は true (パッチ見出し由来で quote が崩れうる。
@@ -276,11 +277,17 @@ git_resolve_blob() {
 
 encode_path() { jq -rn --arg p "$1" '$p | split("/") | map(@uri | gsub("!"; "%21") | gsub("\\*"; "%2A") | gsub("'"'"'"; "%27") | gsub("\\("; "%28") | gsub("\\)"; "%29")) | join("/")'; }
 
+# シンボリックリンクの指示ファイルは、リンク先だけを編集して基準を消せるので、リンク先のパスも控えて 5-4 の発火判定に使う
+LINKS="$WORK_DIR/link-targets.z"
+: >"$LINKS"
+note_link() { [ "$1" = "$2" ] || printf '%s\0' "$2" >>"$LINKS"; }
+
 while IFS= read -r -d '' c; do
   case $USED_SOURCE in
     git)
       # ファイルであることまで確かめる (REVIEW.md という名前のディレクトリを拾わない。シンボリックリンクはリンク先で判定)
       git_resolve_blob "$HEAD_SHA" "$c" || continue
+      note_link "$c" "$RESOLVED"
       ;;
     gh|gh-pr-diff)
       enc=$(encode_path "$c")
@@ -296,6 +303,8 @@ while IFS= read -r -d '' c; do
         || { exist_fatal="$exist_fatal$c: contents API の応答を解釈できない"$'\n'; continue; }
       # リンク先が通常ファイルのシンボリックリンクは GitHub が解決して type=file で返す。symlink のままなら解決できないリンク
       case $t in file) ;; *) continue ;; esac
+      # 解決されたリンクは、メタデータの path がリンク先になる
+      t=$(jq -r '.path // empty' <"$WORK_DIR/meta.json") && [ -n "$t" ] && note_link "$c" "$t"
       ;;
     local)
       [ -f "$c" ] || continue
@@ -303,6 +312,22 @@ while IFS= read -r -d '' c; do
   esac
   printf '%s\0' "$c" >>"$EXIST"
 done <"$CAND"
+
+# git 経路では、head / base の tree 全体からシンボリックリンクの指示ファイル (任意階層の REVIEW.md と root の 3 候補) を
+# 列挙してリンク先を控える (変更ファイルの祖先に無いリンクでも、リンク先の編集で基準は消せるため)。
+# gh 経路は tree を安く列挙できないので、上の存在確認で分かった head 側の祖先のリンク先だけを使う。
+if [ "$USED_SOURCE" = git ]; then
+  for ref in "$HEAD_SHA" "$BASE_SHA"; do
+    git ls-tree -r -z --full-tree "$ref" >"$WORK_DIR/tree.z" || write_fatal "git ls-tree -r $ref が失敗"
+    while IFS= read -r -d '' e; do
+      case $e in 120000' '*) ;; *) continue ;; esac
+      c=${e#*$'\t'}
+      case $c in REVIEW.md|*/REVIEW.md|AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) ;; *) continue ;; esac
+      case /$c in */node_modules/*|*/vendor/*) continue ;; esac
+      git_resolve_blob "$ref" "$c" && note_link "$c" "$RESOLVED"
+    done <"$WORK_DIR/tree.z"
+  done
+fi
 
 if [ -n "$exist_fatal" ]; then
   # 404 以外の失敗を候補不在と同じに扱うと、祖先の REVIEW.md とそこにしかない基準が黙って落ちる
@@ -316,8 +341,12 @@ TOUCHED="$WORK_DIR/touched.z"
 : >"$TOUCHED"
 while IFS= read -r -d '' p; do
   case $p in
-    REVIEW.md|*/REVIEW.md|AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) printf '%s\0' "$p" >>"$TOUCHED" ;;
+    REVIEW.md|*/REVIEW.md|AGENTS.md|.claude/CLAUDE.md|CLAUDE.md) printf '%s\0' "$p" >>"$TOUCHED"; continue ;;
   esac
+  # 指示ファイルのシンボリックリンク先を編集した場合も発火する
+  while IFS= read -r -d '' l; do
+    if [ "$p" = "$l" ]; then printf '%s\0' "$p" >>"$TOUCHED"; break; fi
+  done <"$LINKS"
 done <"$NAMES"
 
 # ---------- JSON 組み立て ----------
