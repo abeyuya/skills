@@ -25,7 +25,7 @@
 #   changed_files    : `--no-renames` 相当の一覧 (rename は移動元と移動先の両方)。祖先探索と 5-4 の判定に使った一覧
 #   range_files      : rename を既定のまま数えた一覧 (移動先のみ)。5-3 の範囲外除外と 5-2 リカバリの件数突合用
 #   changed_count / range_count : 上記の件数 (JSON に載せられないパスも含めた実件数)
-#   lossy_paths      : 不正な UTF-8 を含み JSON で正確に表せなかったパスの件数 (配列中は U+FFFD に化ける)
+#   lossy_paths      : changed_files のうち不正な UTF-8 を含み JSON で正確に表せなかったパスの件数 (配列中は U+FFFD に化ける)
 #   ancestor_candidates : 祖先 REVIEW.md の候補 (存在確認前・node_modules/ vendor/ 除外済み)。5-4 の base 側走査用
 #   ancestor_review_md  : 存在する祖先 REVIEW.md。root → 親 → 子 (`/` の少ない順) で
 #                         [{path, depth, changed_files_under}]。changed_files_under は Step 3 の間引きの優先度用
@@ -141,9 +141,11 @@ git_lists() {
 }
 
 gh_lists() {
-  local raw="$WORK_DIR/files.json" err cur
+  local raw="$WORK_DIR/files.json" err cur total got
   # force-push 検知: gh の一覧は常に PR の現 head のものなので、HEAD_SHA と一致しなければ使わない
-  if ! cur=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER" 2>"$WORK_DIR/gh.err" | jq -r '.head.sha // empty'); then
+  if ! gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER" >"$WORK_DIR/pull.json" 2>"$WORK_DIR/gh.err" \
+     || ! cur=$(jq -r '.head.sha // empty' <"$WORK_DIR/pull.json") \
+     || ! total=$(jq -r '.changed_files // empty' <"$WORK_DIR/pull.json"); then
     FATAL="gh api pulls/$PR_NUMBER が失敗: $(head -c 500 "$WORK_DIR/gh.err")"; return 1
   fi
   if [ "$cur" != "$HEAD_SHA" ]; then
@@ -155,6 +157,12 @@ gh_lists() {
     if ! jq -j '.[] | .filename, (.previous_filename // empty) | . + "\u0000"' <"$raw" >"$NAMES" \
        || ! jq -j '.[] | .filename | . + "\u0000"' <"$raw" >"$RANGE"; then
       FATAL="gh api pulls/$PR_NUMBER/files の応答を解釈できない"; return 1
+    fi
+    # pulls/<N>/files は 3000 件で打ち切られる。欠けた一覧を完全なものとして扱うと、
+    # 切り捨て側の REVIEW.md で 5-4 が発火せず、祖先 REVIEW.md も黙って抜けるので fatal にする
+    got=$(jq -s 'map(length) | add // 0' <"$raw") || { FATAL="gh api pulls/$PR_NUMBER/files の応答を解釈できない"; return 1; }
+    if [ -n "$total" ] && [ "$got" != "$total" ]; then
+      FATAL="gh api pulls/$PR_NUMBER/files が $got 件しか返さない (PR の変更ファイルは $total 件。API の上限で打ち切られた可能性)"; return 1
     fi
     USED_SOURCE=gh
     return 0
@@ -309,7 +317,7 @@ jq -n \
       list_degraded: $list_degraded,
       changed_count: ($n | length),
       range_count: ($rng[0] | length),
-      lossy_paths: ([$n[], $rng[0][]] | map(select(lossy)) | unique | length),
+      lossy_paths: ($n | map(select(lossy)) | length),
       changed_files: $n,
       range_files: $rng[0],
       ancestor_candidates: $cand[0],

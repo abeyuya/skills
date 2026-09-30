@@ -76,7 +76,7 @@ EOF
 {
   printf '# apps\n\n'
   i=1; while [ $i -le 70 ]; do printf 'line %d\n' "$i"; i=$((i + 1)); done
-  printf '   ## エスカレーション基準 (apps)\n\n- 公開 API の変更\n### 下位\n- 下位の項目\n## 次の節\n- 対象外'
+  printf '   ## エスカレーション基準 (apps)\n\n- 公開 API の変更\n### 下位\n- 下位の項目\n##\n- 対象外 (空の見出しでもセクションは終わる)'
 } > apps/REVIEW.md
 
 printf '# web\n' > apps/web/REVIEW.md
@@ -190,7 +190,8 @@ if [ "${STUB_FAIL:-}" = 403 ]; then echo "gh: Forbidden (HTTP 403)" >&2; exit 1;
 cd "$STUB_REPO"
 case $url in
   repos/o/r/pulls/7)
-    printf '{"head":{"sha":"%s"}}' "$STUB_HEAD" ;;
+    n=${STUB_CHANGED_FILES:-$(git diff --name-only -z "$STUB_BASE...$STUB_HEAD" | tr -cd '\0' | wc -c | tr -d ' ')}
+    printf '{"head":{"sha":"%s"},"changed_files":%s}' "$STUB_HEAD" "$n" ;;
   repos/o/r/pulls/7/files)
     # 2 ページに分けて返す (--paginate の連結を再現)。rename は previous_filename 付き
     git diff --name-status -z "$STUB_BASE...$STUB_HEAD" | jq -Rs '
@@ -226,6 +227,8 @@ check "gh 経路: 5-4 発火" "$OUT" '.instruction_files_touched'
 
 run OUT 3 env PATH="$STUB:$PATH" STUB_FAIL_CONTENTS='apps/REVIEW.md' MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
 check "gh 経路: 404 以外 (500) は fatal" "$OUT" '.fatal | test("404 以外")'
+run OUT 3 env PATH="$STUB:$PATH" STUB_CHANGED_FILES=3500 MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
+check "gh 経路: files が PR の変更ファイル数に足りなければ fatal (3000 件の打ち切り)" "$OUT" '.fatal | test("打ち切られた")'
 run OUT 3 env PATH="$STUB:$PATH" STUB_FAIL=403 MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
 check "gh 経路: 403 は fatal (0 件と読まない)" "$OUT" '.fatal != null'
 run OUT 3 env PATH="$STUB:$PATH" MODE=pr HEAD_SHA="$MISSING" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
