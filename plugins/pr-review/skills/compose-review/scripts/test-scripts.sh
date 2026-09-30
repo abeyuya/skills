@@ -273,6 +273,25 @@ run OUT 0 env SOURCE=local bash "$READ" --root
 check "root は最初に見つかった 1 つだけ (AGENTS.md)" "$OUT" '.root_selected == "AGENTS.md" and ([.files[] | select(.status == "present") | .path] == ["AGENTS.md"])'
 cd "$R"
 
+# ========== jq の途中失敗を「見出しなし」「0 件」と取り違えない ==========
+echo "# 内部の失敗"
+FJ="$T/fakejq"
+mkdir -p "$FJ"
+REAL_JQ=$(command -v jq)
+cat > "$FJ/jq" <<FAKEJQ
+#!/usr/bin/env bash
+# 引数に JQ_FAIL_ON の文字列を含む呼び出しだけ jq のコンパイルエラー相当 (exit 3) で落とす
+for a in "\$@"; do case \$a in *"\$JQ_FAIL_ON"*) echo "fake jq: fail" >&2; exit 3 ;; esac; done
+exec "$REAL_JQ" "\$@"
+FAKEJQ
+chmod +x "$FJ/jq"
+run OUT 3 env PATH="$FJ:$PATH" JQ_FAIL_ON='end_line: $end_line' SOURCE=git REF="$HEAD" bash "$READ" --ancestors "$CF"
+check "セクションの JSON 化が落ちたら fatal (見出しなしにしない)" "$OUT" '.fatal | test("JSON 化")'
+run OUT 1 env PATH="$FJ:$PATH" JQ_FAIL_ON='instruction_files_touched_paths:' MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" SOURCE=git bash "$CHANGED"
+[ -z "$OUT" ] && ok "最後の JSON 化が落ちたら exit 1 で JSON を返さない (fatal の 3 と区別)" || ng "内部エラーは exit 1" "$OUT"
+run OUT 3 env PATH="$FJ:$PATH" JQ_FAIL_ON='split("\u0000")' MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" SOURCE=git bash "$CHANGED"
+check "一覧の JSON 化が落ちたら fatal (0 件にしない)" "$OUT" '.fatal | test("JSON 化")'
+
 # ========== render-instruction-links.sh ==========
 echo "# render-instruction-links.sh"
 SHA=0123456789abcdef0123456789abcdef01234567

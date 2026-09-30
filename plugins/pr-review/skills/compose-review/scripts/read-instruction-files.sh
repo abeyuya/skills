@@ -33,7 +33,7 @@
 #                   content_path は全文を保存した一時ファイル。line_count はその行数 (Read の突き合わせ用)
 #   has_escalation_heading : present な files のどれかに escalation_sections があるか
 #
-# exit: 0 = 正常 / 3 = fatal (JSON は書き出し済み) / 2 = 引数エラー (JSON なし)
+# exit: 0 = 正常 / 3 = fatal (JSON は書き出し済み) / 2 = 引数エラー (JSON なし) / 1 = 内部エラー (JSON なし)
 #
 # bash 互換要件: **bash 3.2 (macOS 標準の /bin/bash) で動くこと** (distill-pr-reviews/scripts/collect-signals.sh と同じ)。
 #   NG: mapfile / readarray, declare -A, ${var^^} / ${var,,}, wait -n, coproc。
@@ -43,8 +43,21 @@
 
 set -euo pipefail
 
+# 想定外の失敗 (jq / git の異常終了など) は exit 1 に揃え、書きかけの JSON を残さない。
+# jq 自身の終了コード (2 / 3 / 5) が、このスクリプトの「引数エラー」「fatal」と取り違えられないようにするため。
+EXIT_KIND=""
+on_exit() {
+  local rc=$?
+  if [ "$rc" -ne 0 ] && [ -z "$EXIT_KIND" ]; then
+    [ -n "${OUTPUT_PATH:-}" ] && rm -f "$OUTPUT_PATH"
+    echo "[read-instruction-files] internal error (exit $rc)" >&2
+    exit 1
+  fi
+}
+trap on_exit EXIT
+
 log() { echo "[read-instruction-files] $*" >&2; }
-die_usage() { echo "[read-instruction-files] usage error: $*" >&2; exit 2; }
+die_usage() { EXIT_KIND=usage; echo "[read-instruction-files] usage error: $*" >&2; exit 2; }
 
 SOURCE="${SOURCE:-}"
 REF="${REF:-}"
@@ -90,10 +103,14 @@ add_path() {
 add_from_json() {
   # $1 = json file, $2 = jq filter (文字列を出す), $3 = role
   [ -f "$1" ] || die_usage "JSON が見つからない: $1"
-  local p
+  local p z
+  z=$(mktemp "${TMPDIR:-/tmp}/compose-review-paths-XXXXXX")
+  # プロセス置換だと jq の失敗が「0 件」に化けるので、一時ファイルに書いて終了コードを確かめる
+  jq -j "$2 | . + \"\\u0000\"" "$1" >"$z" || die_usage "JSON からパスを読めない: $1"
   while IFS= read -r -d '' p; do
     add_path "$p" "$3"
-  done < <(jq -j "$2 | . + \"\\u0000\"" "$1")
+  done <"$z"
+  rm -f "$z"
 }
 
 while [ $# -gt 0 ]; do
@@ -114,6 +131,7 @@ fi
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 
 write_fatal() {
+  EXIT_KIND=fatal
   jq -n --arg source "$SOURCE" --arg ref "$REF" --arg fatal "$1" \
     '{source: $source, ref: (if $ref == "" then null else $ref end), fatal: $fatal}' >"$OUTPUT_PATH"
   log "FATAL: $1"
@@ -210,20 +228,27 @@ process() {
   out="$WORK_DIR/files/$i.txt"
   if ! fetch_one "$p" "$out"; then
     jq -nc --arg path "$p" --arg roles "${roles[$i]}" \
-      '{path: $path, roles: ($roles | split(" ")), status: "absent", content_path: null, line_count: null, escalation_sections: []}' >>"$ENTRIES"
+      '{path: $path, roles: ($roles | split(" ")), status: "absent", content_path: null, line_count: null, escalation_sections: []}' >>"$ENTRIES" \
+      || write_fatal "結果の JSON 化 (jq) が失敗: $p"
     return 1
   fi
   lc=$(grep -c '' "$out" || true)
   sec="$WORK_DIR/files/$i.sections.jsonl"
   : >"$sec"
-  LC_ALL=C awk "$HEADING_AWK" "$out" | while IFS="$(printf '\t')" read -r s e lv title; do
-    text=$(sed -n "${s},${e}p" "$out"; printf x)
+  # awk / jq の失敗を「見出しなし」と取り違えないよう、パイプの中ではなく main shell で回し、失敗は fatal にする
+  # (process は if の中で呼ばれ set -e が効かないので、失敗は明示的に拾う)
+  LC_ALL=C awk "$HEADING_AWK" "$out" >"$sec.tsv" || write_fatal "見出しの検出 (awk) が失敗: $p"
+  while IFS="$(printf '\t')" read -r s e lv title; do
+    text=$(sed -n "${s},${e}p" "$out"; printf x) || write_fatal "セクションの抽出 (sed) が失敗: $p"
     text=${text%x}
-    jq -nc --argjson line "$s" --argjson end "$e" --argjson level "$lv" --arg title "$title" --arg text "$text" \
-      '{line: $line, end_line: $end, level: $level, title: $title, text: $text}' >>"$sec"
-  done
+    jq -nc --argjson line "$s" --argjson end_line "$e" --argjson level "$lv" --arg title "$title" --arg text "$text" \
+      '{line: $line, end_line: $end_line, level: $level, title: $title, text: $text}' >>"$sec" \
+      || write_fatal "セクションの JSON 化 (jq) が失敗: $p"
+  done <"$sec.tsv"
+  [ "$(grep -c '' "$sec")" = "$(grep -c '' "$sec.tsv")" ] || write_fatal "検出した見出しとセクションの件数が合わない: $p"
   jq -nc --arg path "$p" --arg roles "${roles[$i]}" --arg cp "$out" --argjson lc "$lc" --slurpfile secs "$sec" \
-    '{path: $path, roles: ($roles | split(" ")), status: "present", content_path: $cp, line_count: $lc, escalation_sections: $secs}' >>"$ENTRIES"
+    '{path: $path, roles: ($roles | split(" ")), status: "present", content_path: $cp, line_count: $lc, escalation_sections: $secs}' >>"$ENTRIES" \
+    || write_fatal "結果の JSON 化 (jq) が失敗: $p"
   return 0
 }
 

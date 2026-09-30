@@ -34,7 +34,7 @@
 #   instruction_files_touched_paths : 発火の根拠になったパス
 #   list_degraded    : gh pr diff --name-only で代替した回は true (パッチ見出し由来で quote が崩れうる)
 #
-# exit: 0 = 正常 / 3 = fatal (JSON は書き出し済み。.fatal に理由) / 2 = 引数エラー (JSON なし)
+# exit: 0 = 正常 / 3 = fatal (JSON は書き出し済み。.fatal に理由) / 2 = 引数エラー (JSON なし) / 1 = 内部エラー (JSON なし)
 #
 # bash 互換要件: **bash 3.2 (macOS 標準の /bin/bash) で動くこと** (distill-pr-reviews/scripts/collect-signals.sh と同じ)。
 #   NG: mapfile / readarray, declare -A, ${var^^} / ${var,,}, wait -n, coproc。
@@ -45,8 +45,21 @@
 
 set -euo pipefail
 
+# 想定外の失敗 (jq / git の異常終了など) は exit 1 に揃え、書きかけの JSON を残さない。
+# jq 自身の終了コード (2 / 3 / 5) が、このスクリプトの「引数エラー」「fatal」と取り違えられないようにするため。
+EXIT_KIND=""
+on_exit() {
+  local rc=$?
+  if [ "$rc" -ne 0 ] && [ -z "$EXIT_KIND" ]; then
+    [ -n "${OUTPUT_PATH:-}" ] && rm -f "$OUTPUT_PATH"
+    echo "[changed-files] internal error (exit $rc)" >&2
+    exit 1
+  fi
+}
+trap on_exit EXIT
+
 log() { echo "[changed-files] $*" >&2; }
-die_usage() { echo "[changed-files] usage error: $*" >&2; exit 2; }
+die_usage() { EXIT_KIND=usage; echo "[changed-files] usage error: $*" >&2; exit 2; }
 
 MODE="${MODE:-}"
 SOURCE="${SOURCE:-auto}"
@@ -105,6 +118,7 @@ HEAD_OBJ=false
 BASE_OBJ=false
 
 write_fatal() {
+  EXIT_KIND=fatal
   jq -n --arg mode "$MODE" --arg fatal "$1" --arg source "$USED_SOURCE" \
     '{mode: $mode, source: (if $source == "" then null else $source end), fatal: $fatal}' > "$OUTPUT_PATH"
   log "FATAL: $1"
@@ -259,6 +273,11 @@ done <"$NAMES"
 # NUL 区切りのファイルを jq -Rs で読み、NUL で split する (不正な UTF-8 は U+FFFD に置き換わる)。
 
 zlist='split("\u0000") | map(select(length > 0))'
+# プロセス置換の中の失敗は検知できないので、先に一時ファイルへ変換して終了コードを確かめる
+for z in NAMES RANGE CAND EXIST TOUCHED; do
+  eval "zf=\$$z"
+  jq -Rs "$zlist" <"$zf" >"$zf.json" || write_fatal "一覧の JSON 化 (jq) が失敗: $z"
+done
 
 jq -n \
   --arg mode "$MODE" \
@@ -268,11 +287,11 @@ jq -n \
   --argjson head_object "$HEAD_OBJ" \
   --argjson base_object "$BASE_OBJ" \
   --argjson list_degraded "$LIST_DEGRADED" \
-  --slurpfile names <(jq -Rs "$zlist" <"$NAMES") \
-  --slurpfile rng <(jq -Rs "$zlist" <"$RANGE") \
-  --slurpfile cand <(jq -Rs "$zlist" <"$CAND") \
-  --slurpfile exist <(jq -Rs "$zlist" <"$EXIST") \
-  --slurpfile touched <(jq -Rs "$zlist" <"$TOUCHED") \
+  --slurpfile names "$NAMES.json" \
+  --slurpfile rng "$RANGE.json" \
+  --slurpfile cand "$CAND.json" \
+  --slurpfile exist "$EXIST.json" \
+  --slurpfile touched "$TOUCHED.json" \
   '
   def lossy: test("�");
   def depth: [scan("/")] | length;

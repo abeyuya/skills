@@ -28,14 +28,27 @@
 #     "scopes": [{"path": "apps/web/", "rendered": "`apps/web/`"}]  // 適用範囲のコードスパン (同じ規則。リンクなし)
 #   }
 #
-# exit: 0 = 正常 / 2 = 入力エラー
+# exit: 0 = 正常 / 2 = 入力エラー / 1 = 内部エラー (JSON なし)
 #
 # bash 互換要件: **bash 3.2 (macOS 標準の /bin/bash) で動くこと** (distill-pr-reviews/scripts/collect-signals.sh と同じ)。
 #   描画はすべて jq で行う (文字数は jq の length = コードポイント数)。
 
 set -euo pipefail
 
-die_usage() { echo "[render-instruction-links] usage error: $*" >&2; exit 2; }
+# 想定外の失敗 (jq / git の異常終了など) は exit 1 に揃え、書きかけの JSON を残さない。
+# jq 自身の終了コード (2 / 3 / 5) が、このスクリプトの「引数エラー」「fatal」と取り違えられないようにするため。
+EXIT_KIND=""
+on_exit() {
+  local rc=$?
+  if [ "$rc" -ne 0 ] && [ -z "$EXIT_KIND" ]; then
+    [ -n "${OUTPUT_PATH:-}" ] && rm -f "$OUTPUT_PATH"
+    echo "[render-instruction-links] internal error (exit $rc)" >&2
+    exit 1
+  fi
+}
+trap on_exit EXIT
+
+die_usage() { EXIT_KIND=usage; echo "[render-instruction-links] usage error: $*" >&2; exit 2; }
 
 command -v jq >/dev/null 2>&1 || die_usage "jq が見つからない"
 
