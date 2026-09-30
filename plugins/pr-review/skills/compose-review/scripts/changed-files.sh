@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # compose-review skill / 変更ファイル一覧・祖先 REVIEW.md の列挙・5-4 の発火判定 (deterministic)。
 #
-# SKILL.md「共通規約: 変更ファイル一覧の取得」の処理をまとめて行い、結果を JSON 1 つに書き出す。
+# SKILL.md「共通規約: 決定的な処理はスクリプトで行う」の `changed-files.sh` の処理をまとめて行い、結果を JSON 1 つに書き出す。
 # モデルが NUL 区切り・quote・改行・404 と FATAL の区別を文章で再現しなくて済むようにするためのスクリプト。
 #
 # 入力 (環境変数):
