@@ -128,6 +128,8 @@ mkdir -p "$WORK_DIR/files"
 if [ -z "$OUTPUT_PATH" ]; then
   OUTPUT_PATH="$WORK_DIR/result.json"
 fi
+# 後で repo root に cd するので、相対パスは呼び出し時の cwd 基準の絶対パスにしておく
+case $OUTPUT_PATH in /*) ;; *) OUTPUT_PATH="$PWD/$OUTPUT_PATH" ;; esac
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 
 write_fatal() {
@@ -163,6 +165,18 @@ fetch_one() {
       ;;
     gh)
       enc=$(encode_path "$p")
+      # contents API はディレクトリにも 200 で一覧 (JSON) を返すので、先にメタデータの type でファイルであることを確かめる
+      # (確かめないと、PR 作成者が名前を決められる一覧 JSON を本文として取り込む)
+      if ! gh api "repos/$OWNER/$REPO/contents/$enc?ref=$REF" >"$out.meta" 2>"$out.err"; then
+        err=$(head -c 500 "$out.err")
+        case $err in
+          *'HTTP 404'*) return 1 ;;
+          *) write_fatal "gh api contents/$p?ref=$REF が 404 以外で失敗: $err" ;;
+        esac
+      fi
+      t=$(jq -r 'if type == "object" then .type // "" else "dir" end' <"$out.meta") \
+        || write_fatal "gh api contents/$p?ref=$REF の応答を解釈できない"
+      case $t in file|symlink) ;; *) return 1 ;; esac
       if ! gh api -H 'Accept: application/vnd.github.raw' "repos/$OWNER/$REPO/contents/$enc?ref=$REF" >"$out" 2>"$out.err"; then
         err=$(head -c 500 "$out.err")
         case $err in

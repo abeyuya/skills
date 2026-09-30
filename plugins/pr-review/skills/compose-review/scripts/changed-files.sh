@@ -103,6 +103,8 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/compose-review-files-XXXXXX")
 if [ -z "$OUTPUT_PATH" ]; then
   OUTPUT_PATH="$WORK_DIR/result.json"
 fi
+# 後で repo root に cd するので、相対パスは呼び出し時の cwd 基準の絶対パスにしておく
+case $OUTPUT_PATH in /*) ;; *) OUTPUT_PATH="$PWD/$OUTPUT_PATH" ;; esac
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 
 NAMES="$WORK_DIR/names.z"   # --no-renames の一覧 (NUL 区切り)
@@ -247,12 +249,17 @@ while IFS= read -r -d '' c; do
       ;;
     gh|gh-pr-diff)
       enc=$(encode_path "$c")
-      if ! err=$(gh api --silent -H 'Accept: application/vnd.github.raw' "repos/$OWNER/$REPO/contents/$enc?ref=$HEAD_SHA" 2>&1); then
+      # contents API はディレクトリにも 200 で一覧を返すので、メタデータの type でファイルであることまで確かめる
+      if ! gh api "repos/$OWNER/$REPO/contents/$enc?ref=$HEAD_SHA" >"$WORK_DIR/meta.json" 2>"$WORK_DIR/gh.err"; then
+        err=$(head -c 300 "$WORK_DIR/gh.err")
         case $err in
           *'HTTP 404'*) continue ;;
-          *) exist_fatal="$exist_fatal$c: $(printf '%s' "$err" | head -c 300)"$'\n'; continue ;;
+          *) exist_fatal="$exist_fatal$c: $err"$'\n'; continue ;;
         esac
       fi
+      t=$(jq -r 'if type == "object" then .type // "" else "dir" end' <"$WORK_DIR/meta.json") \
+        || { exist_fatal="$exist_fatal$c: contents API の応答を解釈できない"$'\n'; continue; }
+      case $t in file|symlink) ;; *) continue ;; esac
       ;;
     local)
       [ -f "$c" ] || continue

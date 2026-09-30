@@ -177,12 +177,12 @@ cat > "$STUB/gh" <<'EOF'
 set -euo pipefail
 [ "${1:-}" = api ] || { echo "stub: unsupported: $*" >&2; exit 1; }
 shift
-url=""; silent=false
+url=""; silent=false; raw=false
 while [ $# -gt 0 ]; do
   case $1 in
     --paginate) shift ;;
     --silent) silent=true; shift ;;
-    -H) shift 2 ;;
+    -H) case $2 in *raw*) raw=true ;; esac; shift 2 ;;
     *) url=$1; shift ;;
   esac
 done
@@ -206,9 +206,13 @@ case $url in
     enc=${url#repos/o/r/contents/}; ref=${enc##*\?ref=}; enc=${enc%\?ref=*}
     path=$(printf '%b' "$(printf '%s' "$enc" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"; printf x); path=${path%x}
     if [ -n "${STUB_FAIL_CONTENTS:-}" ] && [ "$path" = "$STUB_FAIL_CONTENTS" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    # GitHub と同じく、ディレクトリにも 200 で一覧 (JSON 配列) を返す。raw 指定でもディレクトリは一覧になる
     t=$(git cat-file -t "$ref:$path" 2>/dev/null || true)
-    if [ "$t" != blob ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
-    $silent || git cat-file blob "$ref:$path" ;;
+    case $t in
+      blob) if $raw; then $silent || git cat-file blob "$ref:$path"; else $silent || printf '{"type":"file"}'; fi ;;
+      tree) $silent || printf '[{"type":"file","name":"x"}]' ;;
+      *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+    esac ;;
   *) echo "stub: unknown url $url" >&2; exit 1 ;;
 esac
 EOF
@@ -234,8 +238,11 @@ check "gh 経路: 403 は fatal (0 件と読まない)" "$OUT" '.fatal != null'
 run OUT 3 env PATH="$STUB:$PATH" MODE=pr HEAD_SHA="$MISSING" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
 check "gh 経路: PR の現 head と HEAD_SHA が違えば fatal" "$OUT" '.fatal | test("一致しない")'
 
-run OUT 0 env PATH="$STUB:$PATH" SOURCE=gh REF="$HEAD" OWNER=o REPO=r bash "$READ" --root -- 'a#b?c/REVIEW.md' 'no/such/REVIEW.md'
+run OUT 0 env PATH="$STUB:$PATH" SOURCE=gh REF="$HEAD" OWNER=o REPO=r bash "$READ" --root -- 'a#b?c/REVIEW.md' 'no/such/REVIEW.md' 'dir/REVIEW.md'
 check "read gh: # ? を含むパスを取得 / 不在は absent" "$OUT" '.root_selected == "REVIEW.md" and ([.files[] | select(.path == "a#b?c/REVIEW.md") | .status] == ["present"]) and ([.files[] | select(.path == "no/such/REVIEW.md") | .status] == ["absent"])'
+check "read gh: REVIEW.md という名前のディレクトリは absent (一覧 JSON を本文にしない)" "$OUT" '[.files[] | select(.path == "dir/REVIEW.md") | .status] == ["absent"]'
+GP=$(jq -r '.files[] | select(.path == "a#b?c/REVIEW.md") | .content_path' "$OUT")
+[ "$(cat "$GP")" = "# hash" ] && ok "read gh: raw の本文を保存" || ng "read gh: raw の本文を保存" "$(cat "$GP")"
 run OUT 3 env PATH="$STUB:$PATH" STUB_FAIL=403 SOURCE=gh REF="$HEAD" OWNER=o REPO=r bash "$READ" --root
 check "read gh: 403 は fatal" "$OUT" '.fatal | test("404 以外")'
 cd "$R"

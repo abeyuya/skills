@@ -175,7 +175,7 @@ SOURCE=gh REF='<HEAD_SHA>' OWNER='<OWNER>' REPO='<REPO>' bash '<SCRIPTS>/read-in
 SOURCE=local bash '<SCRIPTS>/read-instruction-files.sh' --root --ancestors '<CHANGED_JSON>'
 ```
 
-スクリプトは `--root` で root の 4 候補を優先順に試して最初に見つかった 1 つだけを取り (`root_selected`)、`--ancestors` で `ancestor_review_md[]` の各ファイルを取る。`SOURCE=git` は先に `<HEAD_SHA>^{commit}` の存在を確かめ、無ければ fatal にする (`git show` は object 不在でも path 不在と同じ fatal を返すので、確かめずに走査すると全候補が「不在」に見えて方針なし・`escalate: false` のまま投稿されるため)。`SOURCE=gh` は raw の contents API を `?ref=<HEAD_SHA>` 付きで引き、**404 だけを候補不在とし、401 / 403 / 5xx / ネットワークエラーは fatal** にする。
+スクリプトは `--root` で root の 4 候補を優先順に試して最初に見つかった 1 つだけを取り (`root_selected`)、`--ancestors` で `ancestor_review_md[]` の各ファイルを取る。`SOURCE=git` は先に `<HEAD_SHA>^{commit}` の存在を確かめ、無ければ fatal にする (`git show` は object 不在でも path 不在と同じ fatal を返すので、確かめずに走査すると全候補が「不在」に見えて方針なし・`escalate: false` のまま投稿されるため)。`SOURCE=gh` は contents API を `?ref=<HEAD_SHA>` 付きで引き (ファイルであることをメタデータで確かめてから raw で本文を取る)、**404 だけを候補不在とし、401 / 403 / 5xx / ネットワークエラーは fatal** にする。
 
 - **PR モードは cwd の作業ツリーを読まない** (cwd の remote が PR と同一リポジトリでも同じ。`Read` で cwd を見ない)。`run-pr-review` は checkout しないので、cwd の作業ツリーは通常 base 相当で、PR で新設・編集された指示ファイルを反映できない。cwd を先に見て「あったから採用」とすると head 側の内容を古い内容で上書きし、差分が指示ファイルを触っていない PR では 5-4 の base/head 突き合わせも発火しないので、head 側にしかない `エスカレーション基準` 見出しを取りこぼす。例外は設けない。
 - `SOURCE=git` と `SOURCE=gh` の両方が fatal (head 側をどの経路でも読めない) のときだけ「失敗時」に従い error 停止する (指示ファイルを読めないまま投稿すると、方針なし・`escalate: false` が「基準なし」と区別できないため。head object も `gh` も無い状態では Step 4 の差分取得自体が成立しないので、この停止で失うレビューは無い)。候補ファイルが存在しない (`status: "absent"`) のは正常系。
