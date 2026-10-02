@@ -82,7 +82,7 @@ markdown ファイルが完全版、チャットは要約版で、両者は内�
 - 差分モード: <commit / staged / worktree / none>
 - 対象コミット: <ここは `diff_mode="commit"` のとき `<commit_count> 件 (<base_branch>..HEAD)` (例: `3 件 (main..HEAD)`)、それ以外 (`staged` / `worktree` / `none`) のとき `0 件 (コミット未作成)` と固定文字列で書き込む。機械的な置換ではなく `diff_mode` で分岐する>
 - インライン指摘: <count> 件
-- 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` / `finders_expected` のいずれかが `null` なら `finder …` を省く** (`fanout` を返さない `code-review` 等を併用した回 (`mode` は `"external"`、`code-review` が fan-out しなかった回は `"inline"`) では必ず `null` になり、`null/null` では取得不能なのか 0 観点なのか判別できないため)。`mode="inline"` なら末尾に ` ※独立性は限定的`、`mode="partial"` なら ` ※観点欠落あり`、`mode="empty"` なら ` ※外部は対象差分なしと判定`、`verify_degraded=true` なら ` ※外部由来の指摘は未検証` を付ける。`skill == "none"` なら `未併用 (<reason>)`。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
+- 外部レビュー併用: <`compose-review` の `external_review` から組み立てる。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` / `finders_expected` のいずれかが `null` なら `finder …` を省く** (`fanout` を返さない `code-review` 等を併用した回では、`mode` の値を問わず必ず `null` になり、`null/null` では取得不能なのか 0 観点なのか判別できないため)。`mode="inline"` なら末尾に ` ※独立性は限定的`、`mode="partial"` なら ` ※観点欠落あり`、`mode="empty"` なら ` ※外部は対象差分なしと判定`、`verify_degraded=true` なら ` ※外部由来の指摘は未検証` を付ける。`skill == "none"` なら `未併用 (<reason>)`。`external_review` が欠落していれば `不明 (compose-review が external_review を返さず)`>
 
 ## 総括
 
