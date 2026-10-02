@@ -15,7 +15,8 @@
 #     "body": string,                 必須。caller の総括本文 (マーカー / 機械可読行は付けない)
 #     "event": "COMMENT",             任意。何が来ても最終 Payload は "COMMENT" 固定
 #     "comments": [ ... ],            必須。空配列可。要素はそのまま最終 Payload に渡す
-#     "commit_id": string,            任意。空 / null なら最終 Payload に含めない
+#     "commit_id": string,            任意。空 / null なら最終 Payload に含めない (渡されなかった扱い)。
+#                                     string 以外なら含めず warnings に commit_id_dropped を積む
 #     "label_counts": object|string,  任意。LABEL_COUNTS。受け取った 1 行 JSON をそのまま文字列で入れてもよい
 #     "external_review": object|string, 任意。EXTERNAL_REVIEW。同上
 #     "escalation": object|string     任意。ESCALATION。同上
@@ -35,8 +36,8 @@
 #                         "lines": {"result": "emitted",
 #                                   "external": "emitted" | "absent" | "omitted",
 #                                   "escalate": "emitted" | "absent" | "omitted"},
-#                         "warnings": [{"input": "LABEL_COUNTS" | "EXTERNAL_REVIEW" | "ESCALATION" | "event",
-#                                       "action": "fallback_to_comments" | "line_omitted" | "reasons_zeroed" | "forced_comment",
+#                         "warnings": [{"input": "LABEL_COUNTS" | "EXTERNAL_REVIEW" | "ESCALATION" | "event" | "COMMIT_ID",
+#                                       "action": "fallback_to_comments" | "line_omitted" | "reasons_zeroed" | "forced_comment" | "commit_id_dropped",
 #                                       "reason": string}]
 #                       }
 #                       `absent` = 入力に無かったので出していない / `omitted` = 渡されたが異常値で省略した。
@@ -207,6 +208,10 @@ result="$(jq -c --arg payload_path "$payload_path" '
        [{input: "event", action: "forced_comment", reason: "event \($in.event | tojson) は使えないため COMMENT に固定"}]
      else [] end) as $event_warn
 
+  | (if ($in.commit_id != null) and (($in.commit_id | type) != "string") then
+       [{input: "COMMIT_ID", action: "commit_id_dropped", reason: "commit_id が string でない (\($in.commit_id | tojson)) ため最終 Payload に含めない"}]
+     else [] end) as $commit_warn
+
   # ---- 手順 1: body の組み立て ----
   | ("> **[AI 自動投稿]** このレビューは AI エージェントによって自動生成されました。レビュー内容の判断は AI が行っています。\n\n"
      + ([$result_line, $ext.line, $esc.line] | map(select(. != null)) | join("\n"))
@@ -223,7 +228,7 @@ result="$(jq -c --arg payload_path "$payload_path" '
         counts: $lcres.counts,
         counts_source: $lcres.source,
         lines: {result: "emitted", external: $ext.state, escalate: $esc.state},
-        warnings: ($lcres.warn + $ext.warn + $esc.warn + $event_warn)
+        warnings: ($lcres.warn + $ext.warn + $esc.warn + $event_warn + $commit_warn)
       }
     }
 ' "$input")" || die "jq による組み立てに失敗"

@@ -175,10 +175,15 @@ eq "範囲コメントはそのまま" '.comments[0] | "\(.start_line) \(.start_
 eq "RESULT 行" "$LINES" '<!-- AI-REVIEW-RESULT: must=1 should=0 nit=0 question=0 pre_existing=0 other=0 -->'
 eq "caller 本文は区切り線の後ろ" '.body | split("\n\n---\n\n")[1]' "$(printf '総括\n本文')"
 
-run "commit_id が空文字 / null" '{"body":"b","comments":[],"commit_id":""}'
+run "commit_id が空文字" '{"body":"b","comments":[],"commit_id":""}'
 eq "commit_id を含めない" 'has("commit_id")' "false"
+eq "警告しない (渡されなかった扱い)" '.warnings | length' "0" report
 run "commit_id が null" '{"body":"b","comments":[],"commit_id":null}'
 eq "commit_id を含めない" 'has("commit_id")' "false"
+eq "警告しない (渡されなかった扱い)" '.warnings | length' "0" report
+run "commit_id が string でない" '{"body":"b","comments":[],"commit_id":123}'
+eq "commit_id を含めない" 'has("commit_id")' "false"
+eq "warning" '.warnings[0] | "\(.input) \(.action)"' "COMMIT_ID commit_id_dropped" report
 
 # ---------------------------------------------------------------------------
 run "event が COMMENT 以外" '{"body":"b","event":"APPROVE","comments":[]}'
