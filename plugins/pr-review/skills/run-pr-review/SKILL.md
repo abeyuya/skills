@@ -78,7 +78,7 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 #### 外部レビューの手動併用 (任意, ユーザー向け運用)
 
-`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` が `disable-model-invocation` を持つため **モデルからは Skill ツール経由で呼べない**。自動経路では代わりに同梱の `scan-diff-findings` が使われる。`code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
+`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` を解決順 1 で使えるコンテキスト (モデルから Skill ツール経由で呼べ、かつ Agent/Task ツールが使える) ではそれを使い、使えない場合 (`disable-model-invocation` を持つ版、Agent が使えない階層など) は同梱の `scan-diff-findings` を使う。後者の場合に `code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
 
 #### 渡す引数
 
@@ -147,7 +147,7 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 
 - 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
 - インライン指摘件数 / ラベル別件数内訳 (優先度順、`[must]` / `[should]` 等、件数>0 のもの)
-- **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`mode="external"` の手動 `/code-review` 併用では必ず `null` になるため、`null/null` と描画すると取得不能なのか 0 観点なのか判別できない)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
+- **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`mode="external"` (`fanout` を返さない `code-review` 等を併用した回。自動・手動を問わない) では必ず `null` になるため、`null/null` と描画すると取得不能なのか 0 観点なのか判別できない)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明` と明記する)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
 - **エスカレーション判定の結果** (`compose-review` の `escalation` から 1 行。`escalate: true` なら `エスカレーション: 要 (理由 <reasons の件数> 件)`、`false` なら `エスカレーション: 不要`。フィールド欠落 / 壊れていた場合は `エスカレーション判定: 不明 (compose-review が escalation を返さず)` と明記する)。これは「その PR を人に見てもらうべきか」の信号なので、`escalate: true` の回を caller が見落とさないよう **常に 1 行報告する** (マージをブロックする判定ではない点も含意として変えない)
 - resolve したスレッド件数 (Step 5 の戻り値)
 - **Step 2 の head SHA 照合で停止した場合は、投稿も resolve もしていないことを先頭に明記する** (レビューした head / API の現 head の両 SHA を 1 行で併記し、再実行を促す。Review URL・インライン指摘件数・resolve 件数はこの回は出さない。外部レビュー併用とエスカレーション判定の行は `compose-review` の結果としてこの回も出す)
