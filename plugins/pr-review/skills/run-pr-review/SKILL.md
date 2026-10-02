@@ -10,7 +10,7 @@ PR レビュー一式 (PR 情報取得 → compose-review でレビュー本文�
 `compose-review` は **sub-agent を立てず現在コンテキストで直接呼ぶ** (Step 3 参照)。理由は次の 3 つ:
 
 1. **結果を同期的に受け取る必要がある**: ホストは sub-agent を background 化することがある (`run_in_background: false` が無視される事例をリモート実行環境で実測。`scan-diff-findings` Step 2)。`compose-review` が background 化されると本 skill は完了を待ってターンを明け渡すしかなく、headless CI ではそのまま投稿されずに終わりうる。finder の background 化は `compose-review` 5-1 の自前レビューが取りこぼしを補うが、`compose-review` 自体の background 化を補う仕組みは無い。
-2. **手動 `/code-review` の findings を採用する運用** (plugin README「外部レビューの手動併用」/ `compose-review` 5-2 の例外) は、同じコンテキストに findings が残っていることが前提。sub-agent からは親のコンテキストが見えない。
+2. **手動 `/code-review` の findings を採用する運用** (`compose-review` 5-2「`code-review` の呼び出し可能性判定」の例外) は、同じコンテキストに findings が残っていることが前提。sub-agent からは親のコンテキストが見えない。
 3. Agent ツールを持たない caller / ホストでも同じ手順で動き、sub-agent 起動のオーバーヘッドも無い。
 
 「外部レビューの fan-out を成立させるため」は理由ではない。sub-agent のネスト起動が可能なので (既定でメイン会話から 3 階層まで。`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` で変更可)、上限の範囲内なら sub-agent の中でも fan-out は動く。トレードオフとして、大きい PR 差分 + 外部レビューの実行が orchestrator のコンテキストを膨らませる点は許容する。
@@ -78,7 +78,7 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 #### 外部レビューの手動併用 (任意, ユーザー向け運用)
 
-`compose-review` Step 5-2 の外部レビュー併用は、Claude Code 組み込みの `code-review` を解決順 1 で使えるコンテキスト (モデルから Skill ツール経由で呼べ、かつ Agent/Task ツールが使える) ではそれを使い、使えない場合 (`disable-model-invocation` を持つ版、Agent が使えない階層など) は同梱の `scan-diff-findings` を使う。後者の場合に `code-review` の findings を併用したい場合、ユーザーは **同一セッションで先に `/code-review` を手動実行** (`--fix` / `--comment` は付けない) してから本 skill を呼べばよい。1 回目の findings がコンテキストに残るため、`compose-review` はそれを外部レビュー結果として採用できる (詳細は plugin README「外部レビューの手動併用」)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
+`compose-review` Step 5-2 が `code-review` を自動で使う条件と、使えないときに同一セッションで先に `/code-review` を手動実行してその findings を併用する手順は、`compose-review` 5-2「`code-review` の呼び出し可能性判定」を参照 (正典)。本 skill 側で `code-review` を呼ぶ実装は持たない (Step 5-2 の責務)。
 
 #### 渡す引数
 

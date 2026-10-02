@@ -9,9 +9,9 @@ description: 差分 (ref range / ブランチ / staged / worktree) を観点別 
 
 ## なぜ本 skill があるか
 
-`compose-review` Step 5-2 は「自前レビュー (5-1) に加えてもう 1 系統の指摘を得る」ために外部レビュースキルを 1 つ併用する設計だが、その第 1 候補である Claude Code 組み込みの `code-review` は、版や環境によって skill 定義の frontmatter に `disable-model-invocation: true` を持ち、**その場合はモデルから Skill ツール経由で呼び出せない** (CLI の Skill ツール検証段階で `cannot be used with Skill tool due to disable-model-invocation` として拒否され、モデルに提示される available-skills 一覧からも除外される)。これは CLI 側の設定 / 権限設定でオプトインできる類の制約ではないため、そうした環境では `code-review` に依存した解決順だけだと 5-2 が不成立になり、外部レビュー併用が黙って無効化される。
+`compose-review` Step 5-2 は「自前レビュー (5-1) に加えてもう 1 系統の指摘を得る」ために外部レビュースキルを 1 つ併用する設計だが、その第 1 候補である Claude Code 組み込みの `code-review` は、版や環境によってモデルから呼べず、Agent ツールが使えないコンテキストでは選ばれない (判定の正典は `compose-review` 5-2「`code-review` の呼び出し可能性判定」)。`code-review` に依存した解決順だけだと、そうした環境で 5-2 が不成立になり、外部レビュー併用が黙って無効化される。
 
-本 skill は **リポジトリ / ユーザー管理下にあり、`disable-model-invocation` を持たない** ため、モデルから Skill ツール経由で確実に呼べる。`code-review` が呼べない環境でも 5-2 を成立させるための正規の代替経路。
+本 skill は **リポジトリ / ユーザー管理下にあり、`disable-model-invocation` を持たない** ため、モデルから Skill ツール経由で確実に呼べる。`code-review` を使えない環境でも 5-2 を成立させるための正規の代替経路。
 
 - 本 skill に `disable-model-invocation` を付けてはならない (付けたら同じ問題を再生産する)。
 - `code-review` が (手動 `/code-review` 実行等で) 既に使える状況ではそちらを優先してよい。優先順の正典は `compose-review` Step 5-2。
