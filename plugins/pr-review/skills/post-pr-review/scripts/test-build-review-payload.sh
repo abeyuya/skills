@@ -127,6 +127,9 @@ run "EXTERNAL_REVIEW finders が null / 無いキーは出さない / mode=null"
   "external_review":{"skill":"code-review","mode":"external","verify_degraded":null,"finders":null,"finders_expected":null,"findings":2}}'
 eq "EXTERNAL 行" "$LINES"' | split("\n")[1]' '<!-- AI-REVIEW-EXTERNAL: skill=code-review mode=external verify_degraded=null finders=n/a findings=2 -->'
 
+run "EXTERNAL_REVIEW 小数表記の整数は正規化" '{"body":"b","comments":[],"external_review":{"skill":"x","mode":"agent","finders":5.0,"finders_expected":5e0,"findings":9.0,"omitted":0.0}}'
+eq "EXTERNAL 行" "$LINES"' | split("\n")[1]' '<!-- AI-REVIEW-EXTERNAL: skill=x mode=agent finders=5/5 findings=9 omitted=0 -->'
+
 run "EXTERNAL_REVIEW 最小 (skill=none, mode=null)" '{"body":"b","comments":[],"external_review":{"skill":"none","mode":null}}'
 eq "EXTERNAL 行" "$LINES"' | split("\n")[1]' '<!-- AI-REVIEW-EXTERNAL: skill=none mode=null -->'
 

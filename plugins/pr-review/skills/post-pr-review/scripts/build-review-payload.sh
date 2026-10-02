@@ -93,6 +93,8 @@ result="$(jq -c --arg payload_path "$payload_path" '
   def render_value:
     if type == "string" then gsub("\\s"; "_")
     elif type == "null" then "null"
+    # 整数値は正規化する (jq 1.7 は 9.0 / 5e0 の表記を tojson で保持するため、CI の \d+ に合わなくなる)
+    elif type == "number" then (if . == floor then floor else . end | tostring)
     else tojson | gsub("\\s"; "_")
     end;
   def std_key($k): if (labels | any(. == $k)) then $k else "other" end;
