@@ -30,7 +30,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 - `skill == "none"` → 外部レビュー未併用。
 - `mode == "inline"` → 外部レビューが、同じモデルが同じ会話を引き継いで行う自己レビューになった (`scan-diff-findings` が Agent ツール不可で逐次自己適用にフォールバックした、または `code-review` が fan-out せずに実行された。自前レビューとの独立性が限定的)。
-- `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
+- `mode == "partial"` (`scan-diff-findings` は `finders < finders_expected`、`code-review` は起動した finder の一部の結果が戻らなかった回) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
 - `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
 - `verify_degraded == true` → 外部スキルの verify が全件成立しなかった、または走らなかった (指摘は未検証)。
 - 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` (かつ `verify_degraded != true`) は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため。`code-review` (手動併用を含む) の `mode` / `verify_degraded` は、呼ぶ前の条件ではなく、実際に fan-out / verify したかで決まる (規則は [`skills/compose-review/SKILL.md`](skills/compose-review/SKILL.md) Step 5-2「`code-review` の結果の分類」)。
