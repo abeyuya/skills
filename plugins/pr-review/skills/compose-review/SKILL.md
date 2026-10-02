@@ -326,25 +326,29 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
     - **ツール呼び出しでカード表示に返した版** (ReportFindings 等。findings を本文に出さない): そのツール呼び出しの入力 `{level, findings[]}` が現在コンテキストに残っているので、それを読む。各要素の `file` → `path`、`line` → `line`、`summary` / `failure_scenario` → 指摘の要約と根拠、`category` (`correctness` / `simplification` / `efficiency` / `reuse` / `altitude` / `conventions` / `test-coverage` 等) → 下のラベル付与、`verdict` → 下の「`code-review` の verify の反映」、`level` → 5-5 の `## レビュー観点`。`findings` が空配列なら正常な 0 件 (外部が対象差分なしと返した `empty` ではない)。`short_summary` と、`--fix` 後の再報告で使う `outcome` は使わない。
     - **JSON 配列で返した版** (`[{file, line, summary, failure_scenario}]`): 同じ対応で読む。`verdict` / `category` / `level` は無い。
     - **1 行 1 件のテキストで返した版** (`path/to/file.ext:123 — <要約と失敗の具体例>`。指摘なしは `(none)`): 各行から `path` / `line` / 要約を取り出す。
-    - **findings の中身を読み取れない** (カードにしか出ておらず、ツール呼び出しの入力も本文も見えない / background に回って結果が戻らない / 上のどの形でもない) 場合は **0 件と読まない**。`code-review` の失敗として解決順 1 を不成立にし、2 へ進む (0 件と取り違えると、外部レビューが空振りした回が「正常に併用して指摘なし」として記録される)。
+    - **findings の中身を読み取れない** (カードにしか出ておらず、ツール呼び出しの入力も本文も見えない / background に回って結果が戻らない / 上のどの形でもない) 場合は **0 件と読まない**。`code-review` の失敗として解決順 1 を不成立にし、2 へ進む (0 件と取り違えると、外部レビューが空振りした回が「正常に併用して指摘なし」として記録される)。手動併用の findings が読めない回は、上の手動併用の例外で「確認できなければ」と同じ扱いにする (解決順 1 の条件を満たせば改めて呼び、満たさなければ 2 へ進む)。
   - 外部スキルの出力に本 skill 互換の重要度ラベルが無い場合 (例: `code-review` の出力は配列順 = 重大度のみでラベル無し) は、Step 2 のスタイル参考ガイド + Step 3 の `REVIEW.md` 方針で `[must]` / `[should]` / `[nit]` / `[question]` を付与する (correctness 上位は `[must]` / `[should]`、cleanup / altitude 下位は `[nit]` を基準にし (`category` があればそれで correctness と cleanup を見分ける)、`REVIEW.md` が必須化する観点は昇格)。`code-review` の指摘には、ここで付けたラベルに次の verify の反映を重ねる。
   - **`code-review` の verify の反映**: `code-review` は版・モデル・level によって verify をしない (`low` や、サブエージェントを使わないレシピなど) うえ、verify で成立条件を確かめきれなかった指摘 (`PLAUSIBLE`) も残す。未検証の指摘をそのまま `[must]` / `[should]` にすると `label_counts` を通じて required check を誤って止めうるので、指摘ごとに次のとおり扱う (`scan-diff-findings` の `confidence` と揃える):
     - `verdict: "CONFIRMED"` (verify で成立を確かめた) → `confirmed` 相当。付けたラベルのまま。
     - `verdict: "PLAUSIBLE"`、または verdict が無い → `unverified` 相当。`failure_scenario` を差分から自分で追認できなければ 1 段下げる (`[must]` → `[should]`、`[should]` → `[nit]`)。追認できればそのまま。
-    - verdict は、ReportFindings の `verdict` か、`code-review` の手順を現在コンテキストで実行して自分で verifier を起動した回はその票から取る。JSON 配列とテキストの出力は verdict を持たないので、自分で票を見ていなければ verdict 無しとして扱う。
+    - verdict は、ReportFindings の `verdict` か、`code-review` の手順を現在コンテキストで実行して自分で verify 段を回した回 (verifier の起動でも自己適用でもよい) はその票から取る (下記「`code-review` の結果の分類」)。JSON 配列とテキストの出力は verdict を持たないので、自分で票を見ていなければ verdict 無しとして扱う。
   - 指摘本文は `[label] <要約>。<根拠 / 再現>` をスタイル参考ガイドの日本語トーンで整形する。
   - `code-review` / `scan-diff-findings` 以外 (Codex `/review` 等) の出力形式は環境依存で未確定なため、得られた構造から `path` / `line` / 要約 / 重大度を抽出して同様に正規化する。形式が読み取れない部分は安全側 (取りこぼし回避) で残す。
-- **`code-review` の結果の分類 (fan-out / verify)**: `code-review` は `fanout` を返さないので、Step 6 の `external_review.mode` / `verify_degraded` は、呼ぶ前の条件 (解決順 1 の Agent 条件) ではなく **実際に起きたこと** で決める。手動 `/code-review` の findings を採用した回も同じ規則で決める。
-  - **`mode`**:
-    - fan-out しなかったと分かる回 → `"inline"`。同一モデル・同一コンテキストでの自己レビューで 5-1 との独立性が下がっているので、`scan-diff-findings` の `inline` と同じく 5-5 で開示する。次のどれかに当たれば「fan-out しなかった」と判断する: `code-review` の手順を現在コンテキストで実行して finder / verifier の sub-agent を 1 つも起動しなかった / 手順の見出し (`<level> effort → …` の 1 行) や起動時の通知、出力が、サブエージェントを使わない実行 (`inline`・`single-pass`・`1 diff pass`・`No subagents`・`do NOT spawn subagents` 等) だと示している。level だけでは決めない (版やモデルによって、`low` 以外の level でもサブエージェントを使わないレシピがある)。
-    - それ以外 (fan-out したと分かる回と、どちらとも判断できない回) → `"external"`。判断できない回を `"inline"` に倒さないのは、fan-out するレシピでも fork で走った回は中身が見えず、毎回開示が出てしまうため (ラベルは上の verify の反映で安全側に倒れている。判断材料を増やすため、下の自己申告を頼む)。
-  - **`verify_degraded`** (上から順に評価する):
-    - 指摘が 0 件 → `false` (`scan-diff-findings` と同じ。未検証の指摘が無い)。
-    - verify が走らなかったと分かる回 → `true`。5-5 で開示する。判断材料: ReportFindings の findings のどれにも `verdict` が無い / 手順の見出しや通知、出力が verify なし (`no verify`・`no subagent verify`・`Do NOT run verifiers` 等) を示している / 現在コンテキストで実行して verifier を起動しなかった。
-    - verify が走ったと分かる回 (`verdict` を持つ指摘がある / 自分で verifier を起動した) → `false`。
-    - どちらとも判断できない回 (JSON 配列だけが返り、実行の中身が見えない等) → `null`。
-  - `finders` / `finders_expected` は両方 `null` のまま (`code-review` は観点数を返さない)。
-  - **fork で実行された回の自己申告**: `code-review` が別コンテキスト (fork) で実行されると、本 skill からは sub-agent を起動したかも verify したかも見えない。fork は現在の会話を引き継ぐので、**fork 側で `code-review` を実行している場合は、レポートの先頭に `実行形態: level=<実際に走った level> / sub-agent: あり|なし / verify: あり|なし` を 1 行書く**。本 skill はレポート先頭のこの行を上の判断材料に使い (`sub-agent: なし` / `あり` → fan-out しなかった / した、`verify: なし` / `あり` → verify が走らなかった / 走った、`level` → 5-5 の `## レビュー観点`)、行が無ければ他の材料で判断し、それも無ければ判断できない回として扱う。
+- **`code-review` の結果の分類 (実行形態)**: `code-review` は `fanout` を返さないので、Step 6 の `external_review.mode` / `verify_degraded` は、呼ぶ前の条件 (解決順 1 の Agent 条件) ではなく **実際に起きたこと** で決める。手動 `/code-review` の findings を採用した回も同じ規則で決める。まず次の 2 つを `あり` / `なし` / `不明` で決め (実行形態)、`mode` / `verify_degraded` / 指摘ごとの扱いはすべてここから導く:
+  - **finder 段のサブエージェント** (候補を探す段で finder の sub-agent を起動したか):
+    - `なし` の材料: `code-review` の手順を現在コンテキストで実行して finder の sub-agent を起動しなかった / 手順の見出し (`<level> effort → …` の 1 行) や起動時の通知、出力が、finder 段をサブエージェントなしで回す実行 (`inline`・`single-pass`・`1 diff pass`・`No subagents`・finder への `do NOT spawn subagents` 等) だと示している / 下の自己申告が `sub-agent: なし`。
+    - `あり` の材料: 自分で finder の sub-agent を起動した / 自己申告が `sub-agent: あり`。
+    - どちらの材料も無ければ `不明`。level だけでは決めない (版やモデルによって、`low` 以外の level でもサブエージェントを使わないレシピがある)。キーワードは finder 段についての記述にだけ当てる (verify 段だけがサブエージェントを使わない、またはその逆のレシピがありうるため)。
+  - **verify 段** (候補ごとに CONFIRMED / PLAUSIBLE / REFUTED の票を付ける段を回したか。verifier の sub-agent でも、同一コンテキストでの自己適用でもよい。票を付けない自己チェックは verify 段に数えない):
+    - `あり` の材料: `verdict` を持つ指摘がある / 自分で verify 段を回した / 自己申告が `verify: あり`。
+    - `なし` の材料: ReportFindings の findings のどれにも `verdict` が無い / 手順の見出しや通知、出力が verify なし (`no verify`・`no subagent verify`・`Do NOT run verifiers` 等) を示している / 現在コンテキストで実行して verify 段を回さなかった / 自己申告が `verify: なし`。
+    - どちらの材料も無ければ `不明`。
+  - **fork で実行された回の自己申告**: `code-review` が別コンテキスト (fork) で実行されると、本 skill からは上の材料がほとんど見えない。fork は現在の会話を引き継ぐので、**fork 側で `code-review` を実行している場合は、レポートの先頭に `実行形態: level=<実際に走った level> / sub-agent: あり|なし / verify: あり|なし` を 1 行書く**。本 skill はレポート先頭のこの行を上の材料に使い、`level` は 5-5 の `## レビュー観点` に使う。この行があっても、続く JSON 配列やテキストは上の「`code-review` の出力の読み取り」どおりに読む。手動 `/code-review` は本 skill を読み込む前に走ることが多く、その回はこの行が付かない (他の材料で決める)。
+  - **実行形態から決める値**:
+    - `mode`: finder 段が `なし` → `"inline"`。同一モデル・同一コンテキストでの自己レビューで 5-1 との独立性が下がっているので、`scan-diff-findings` の `inline` と同じく 5-5 で開示する。`あり` / `不明` → `"external"`。`不明` を `"inline"` に倒さないのは、fan-out するレシピでも fork で走った回は中身が見えず、毎回開示が出てしまうため (ラベルは上の verify の反映で安全側に倒れている。材料を増やすため上の自己申告を頼む)。
+    - `verify_degraded` (上から順に評価する): 指摘が 0 件 → `false` (`scan-diff-findings` と同じ。未検証の指摘が無い)。verify 段が `なし` → `true` (5-5 で開示する)。`あり` → `false`。`不明` → `null`。
+    - 指摘ごとの verdict (上の「`code-review` の verify の反映」): verify 段が `あり` で票が分かる指摘はその票、それ以外は verdict 無しとして扱う。
+    - `finders` / `finders_expected` は両方 `null` のまま (`code-review` は観点数を返さない)。
 - **外部レビュー結果の記録 (機械可読 + 開示)**: 5-2 の結末を **Step 6 の `external_review` フィールドとして必ず記録する** (併用できた場合も、できなかった場合も)。あわせて、未併用 / 縮退の場合は **どの候補がなぜ使えなかったか、どう縮退したかを 1 行で保持** し 5-5 の開示文に使う (例: 「`code-review` は `disable-model-invocation` で Skill ツールから呼べず、`scan-diff-findings` も未インストール」「`code-review` はサブエージェントを使わず同一コンテキストで実行され、verify も走らなかった」)。
   - `external_review` は「黙って退化していないか」を caller / CI が **本文を読まずに判定できる** ようにするためのフィールド。開示文 (5-5) は人間向け、`external_review` は機械向けで、**両方必須** (prose だけに頼ると 1 文の書き漏らしで検知不能に戻る)。算出規則は Step 6 参照。
 
