@@ -29,7 +29,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 `compose-review` は 5-2 の結末を **機械可読フィールド `external_review`** (8 キー固定: `{"skill": "scan-diff-findings"|"code-review"|…|"none", "mode": "agent"|"partial"|"inline"|"empty"|"external"|null, "verify_degraded": true|false|null, "finders": N|null, "finders_expected": N|null, "findings": N, "omitted": N, "reason": "…"|null}`。正典は [`skills/compose-review/SKILL.md`](skills/compose-review/SKILL.md) Step 6) としてハンドオフ JSON に必ず含める。人間向けの開示文 (総括 `body`) と機械向けの `external_review` の両方を必須にしているのは、開示が prose だけだと 1 文の書き漏らしで「黙って退化していた」状態に戻るため。`run-pr-review` は Step 6 の報告に、`run-local-review` は markdown ヘッダと報告にこの値を必ず載せる。
 
 - `skill == "none"` → 外部レビュー未併用。
-- `mode == "inline"` → 外部レビューが同一コンテキストでの自己レビューになった (`scan-diff-findings` が Agent ツール不可で逐次自己適用にフォールバックした、または `code-review` が fan-out せずに実行された。自前レビューとの独立性が限定的)。
+- `mode == "inline"` → 外部レビューが、同じモデルが同じ会話を引き継いで行う自己レビューになった (`scan-diff-findings` が Agent ツール不可で逐次自己適用にフォールバックした、または `code-review` が fan-out せずに実行された。自前レビューとの独立性が限定的)。
 - `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
 - `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
 - `verify_degraded == true` → 外部スキルの verify が全件成立しなかった、または走らなかった (指摘は未検証)。
