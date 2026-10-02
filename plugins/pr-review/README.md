@@ -22,7 +22,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 優先順位:
 
 1. `code-review` (Claude Code 組み込み) — 選ぶ条件と使えないときの扱いは後述「`code-review` を自動で併用できない場合」。
-2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、`code-review` と同じ「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい。
+2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい (その場合も `disable-model-invocation` は付けない。付けるとモデルから呼べず、解決順 2 が黙って不成立になる)。
 3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
 4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
 
