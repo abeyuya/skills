@@ -35,7 +35,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
 - 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (`code-review` を自動で併用した回と、下記「外部レビューの手動併用」運用がこれに当たる)。
 
-PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` SKILL.md の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
+PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` の [`references/machine-readable-lines.md`](skills/post-pr-review/references/machine-readable-lines.md) の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
 外部レビュースキルは **read-only** で呼ぶ (投稿 / 自動修正フラグは付けない。`code-review` なら `--comment` / `--fix` を付けない)。`REVIEW.md` 等のプロジェクト方針は `code-review` / ホスト標準スキルには渡さない (scope 引数専用で free-text 非対応) が、`scan-diff-findings` は `EXTRA_FOCUS` で観点を free text で受け取れる。いずれの経路でも最終的なラベル付け・正規化は `compose-review` 側の責務。
 
@@ -135,7 +135,7 @@ Payload (caller が渡す JSON 相当) の概要:
 
 ## 機械可読サマリ行 (CI からの機械判定)
 
-`post-pr-review` は投稿する Review の `body` に、ラベル別指摘件数の **機械可読サマリ行を必ず 1 行埋め込む** (指摘 0 件でも省略しない)。「AI レビュー済みかつブロッキング指摘なし」を CI の required status check で判定する用途を想定した **公開契約** で、正典は [`skills/post-pr-review/SKILL.md`](skills/post-pr-review/SKILL.md#機械可読サマリ行-ai-review-result) の「機械可読サマリ行」節。
+`post-pr-review` は投稿する Review の `body` に、ラベル別指摘件数の **機械可読サマリ行を必ず 1 行埋め込む** (指摘 0 件でも省略しない)。「AI レビュー済みかつブロッキング指摘なし」を CI の required status check で判定する用途を想定した **公開契約** で、正典は [`skills/post-pr-review/references/machine-readable-lines.md`](skills/post-pr-review/references/machine-readable-lines.md)。
 
 ```
 <!-- AI-REVIEW-RESULT: must=0 should=1 nit=2 question=0 pre_existing=0 other=0 -->

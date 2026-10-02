@@ -46,7 +46,7 @@
 #         2 = 入力不正 (引数 / ファイル不在 / JSON 不正 / body が string でない / comments が配列でない)。
 #             この場合 payload.json は書かない。
 #
-# 規則の正典は ../SKILL.md の「機械可読サマリ行」節。本スクリプトはその実装で、両者は同期させる。
+# 規則の正典は ../references/machine-readable-lines.md。本スクリプトはその実装で、両者は同期させる。
 #
 # bash 互換要件: **bash 3.2 (macOS 標準の /bin/bash) で動くこと**
 #   (../../distill-pr-reviews/scripts/collect-signals.sh と同じ要件)。
