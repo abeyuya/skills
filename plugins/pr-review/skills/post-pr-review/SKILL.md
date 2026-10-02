@@ -118,7 +118,9 @@ comments:
 
 caller (人 / 外部システム) は Payload を渡すだけで、投稿の実行 (CHANNEL の解決・`gh api` / MCP ツール呼び出し) は本 skill が行う。`LABEL_COUNTS` は任意なので省略してよい (省略時は `comments[]` から集計)。
 
-## 機械可読行 (要約)
+## 機械可読サマリ行 (`AI-REVIEW-RESULT`)
+
+本節は要約。正典は下記リンク先 (他 skill の「機械可読サマリ行」節への参照もそちらを指す)。
 
 `body` の冒頭 (マーカーと区切り線 `---` の間) に、CI がパースする機械可読行を埋め込む。**組み立ては手順 1 のスクリプトが行い、モデルは件数を数えたり行を書いたりしない**。フォーマット・キー順・集計ルール・異常系・CI 側の使い方の正典は [`references/machine-readable-lines.md`](references/machine-readable-lines.md) (公開契約。変えるときは後方互換に注意し、スクリプトとテストも同時に更新する)。
 

@@ -338,7 +338,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
 - `MAX_INLINE_COMMENTS` が正の整数なら `comments[]` を N 件以下に絞る (優先度: `[must]` > `[should]` > `[nit]` > `[question]` > `[pre_existing]`)。N 超過で省略があれば `body` の `## 指摘内訳` 末尾に「省略件数 + ラベル別内訳」を 1 文添える (`body` 最後尾は 5-5 の `## レビュー観点` なので、そこに混ぜない)。
 - **`label_counts` の確定**: 上記の絞り込みを行う **前** の最終指摘全体 (= マージ・重複排除・範囲外除外まで済ませ、`MAX_INLINE_COMMENTS` による省略だけを適用していない集合) について、ラベル別件数を集計して `label_counts` として保持し Step 6 の出力に含める。これは `post-pr-review` が Review body に埋め込む機械可読サマリ行 (`AI-REVIEW-RESULT`) の正典値になるため、**省略された指摘も件数に含める** (`comments[]` からの再集計では省略分が落ち、CI 側の判定件数が実際より小さくなるため本 skill から引き回す)。
   - キーは `must` / `should` / `nit` / `question` / `pre_existing` / `other` の 6 つで、件数 0 のキーも `0` を明示して必ず全て出す。
-  - 標準 5 ラベル以外のラベル (プロジェクト指示ファイルで独自定義されたラベル等) やラベル無しの指摘は `other` に加算する。ただし独自ラベルが標準ラベルと同義なら (例: `[blocker]` = 修正必須) **対応する標準キーに寄せて集計する** — CI は `must` / `should` を見るため、`other` に落とすとブロッキング指摘が 0 件と誤判定されるリスクがある (詳細は `post-pr-review` の `references/machine-readable-lines.md`)。
+  - 標準 5 ラベル以外のラベル (プロジェクト指示ファイルで独自定義されたラベル等) やラベル無しの指摘は `other` に加算する。ただし独自ラベルが標準ラベルと同義なら (例: `[blocker]` = 修正必須) **対応する標準キーに寄せて集計する** — CI は `must` / `should` を見るため、`other` に落とすとブロッキング指摘が 0 件と誤判定されるリスクがある (詳細は `post-pr-review` の「機械可読サマリ行」節)。
   - 差分なし / 指摘なしの場合は全キー `0` の `label_counts` を出す (省略しない)。
 
 #### 5-4. エスカレーション判定
@@ -472,11 +472,11 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   - `reason`: 未併用 / 縮退 (`inline` / `partial` / `empty` / `verify_degraded` / `omitted > 0`) の理由 1 行 (5-5 の開示文と同旨)。正常に併用できた場合は `null`。
   - 差分なしで 5-2 自体を skip した場合は `{"skill": "none", "mode": null, "verify_degraded": null, "finders": 0, "finders_expected": 0, "findings": 0, "omitted": 0, "reason": "対象差分なしのため 5-2 を実施せず"}` とする。
   - caller は本フィールドを **本文を読まずに退化を検知する手段** として使える (`skill == "none"` なら未併用、`mode == "inline"` なら独立性縮退、`mode == "partial"` なら観点欠落、`mode == "empty"` なら scope 不一致、`verify_degraded == true` なら未検証)。未知のフィールドとして無視する caller があっても構わないが、欠落を理由に処理を止めてはならない。
-  - **PR 経路での到達範囲**: `run-pr-review` は本フィールドを `post-pr-review` に `EXTERNAL_REVIEW` として転送し、`post-pr-review` が Review body に機械可読行 `<!-- AI-REVIEW-EXTERNAL: ... -->` として埋め込む (詳細は `post-pr-review` の `references/machine-readable-lines.md`)。これにより GitHub 上にも機械判定できる痕跡が残り、CI は body の prose を読まずに退化を検知できる。
+  - **PR 経路での到達範囲**: `run-pr-review` は本フィールドを `post-pr-review` に `EXTERNAL_REVIEW` として転送し、`post-pr-review` が Review body に機械可読行 `<!-- AI-REVIEW-EXTERNAL: ... -->` として埋め込む (詳細は `post-pr-review` の「機械可読サマリ行」節)。これにより GitHub 上にも機械判定できる痕跡が残り、CI は body の prose を読まずに退化を検知できる。
 - `escalation` は **両モードで必ず含める** (5-4 の判定結果。`label_counts` と同じ扱い)。キーは `escalate` (boolean) / `reasons` (文字列配列) の 2 つ固定:
   - `escalate: false` のとき `reasons` は **空配列**。`escalate: true` のとき `reasons` は 1 件以上。
   - **プロジェクト指示ファイルを読み込めなかった / `エスカレーション基準` 見出しが無い場合も `{"escalate": false, "reasons": []}` を返す** (フィールド自体は省略しない。opt-in の条件は見出しの存在で機械的に決まる。5-4 参照)。差分なしの場合も同じ。
-  - PR モードでは `run-pr-review` が **`escalate: true` の回だけ** `post-pr-review` の `ESCALATION` に転送し、Review body の機械可読行 `<!-- AI-REVIEW-ESCALATE: escalate=1 reasons=2 -->` になる (`escalate: false` の回に転送すると、この機能を使っていない caller の Review body にも行が増えて出力が変わるため。詳細は `run-pr-review` Step 4 / `post-pr-review` の `references/machine-readable-lines.md`)。CI はこの行を読んで該当者をレビュアーに追加できる。**誰をレビュアーに追加するかは caller 側の責務** で、本 skill / `post-pr-review` はレビュアー追加を行わない。ローカルモードでは投稿が無いため必須の消費者はいないが、出力形式を両モードで揃えるため同じく含める (caller は無視してよい)。
+  - PR モードでは `run-pr-review` が **`escalate: true` の回だけ** `post-pr-review` の `ESCALATION` に転送し、Review body の機械可読行 `<!-- AI-REVIEW-ESCALATE: escalate=1 reasons=2 -->` になる (`escalate: false` の回に転送すると、この機能を使っていない caller の Review body にも行が増えて出力が変わるため。詳細は `run-pr-review` Step 4 / `post-pr-review` の「機械可読サマリ行」節)。CI はこの行を読んで該当者をレビュアーに追加できる。**誰をレビュアーに追加するかは caller 側の責務** で、本 skill / `post-pr-review` はレビュアー追加を行わない。ローカルモードでは投稿が無いため必須の消費者はいないが、出力形式を両モードで揃えるため同じく含める (caller は無視してよい)。
   - `escalate` は **指摘件数と独立** (5-4)。`label_counts` が全キー `0` でも `escalate: true` はありうるので、caller は「指摘があるか」で `escalation` を上書き・再判定しない。
 - `base_branch` / `diff_mode` / `commit_count` は **ローカルモードのみ** 含める。`diff_mode` は `"commit"` / `"staged"` / `"worktree"` / `"none"` のいずれか。`commit_count` の取得手順は Step 4 ローカルモードに集約 (`git rev-list --count <base>..HEAD`、`staged` / `worktree` / `none` 時は `0` 固定)。
 - 単一行コメントは `path` / `line` / `side` を指定。複数行は加えて `start_line` / `start_side` を併用 (`start_line` は `line` より前)。
