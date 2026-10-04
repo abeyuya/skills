@@ -21,19 +21,19 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 
 優先順位:
 
-1. `code-review` (Claude Code 組み込み) — 内部で Agent ツールによる finder/verifier の fan-out を行う版があるため、`compose-review` は Agent ツールが使えるコンテキストでだけこれを選ぶ (sub-agent の中でもネスト上限の範囲内なら可。Agent を持たないホストや上限に達した階層では選ばない)。**また、モデルから呼び出せない版・環境がある** (後述「`code-review` が呼べない問題」)。
-2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、`code-review` と同じ「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい。
+1. `code-review` (Claude Code 組み込み) — 選ぶ条件と、使えないときの扱い (手動併用を含む) は [`skills/compose-review/SKILL.md`](skills/compose-review/SKILL.md) Step 5-2「`code-review` の呼び出し可能性判定」を参照。
+2. `scan-diff-findings` (本 plugin 同梱) — **リポジトリ / ユーザー管理下の、モデル呼び出し可能なレビュースキル**の枠。1 が使えない環境での正規経路で、「観点別 finder の fan-out → adversarial verify → マージ」構成を持つ。Agent ツールが無い環境でも現在コンテキストでの逐次自己適用にフォールバックするため、1 の失敗モード (Agent 依存 / `disable-model-invocation`) を引き継がない。caller 側リポジトリに同等の read-only レビュースキルがあればそれを使ってもよい (その場合も `disable-model-invocation` は付けない。付けるとモデルから呼べず、解決順 2 が黙って不成立になる)。
 3. ホスト coding agent の標準レビュースキル (例: Codex の `/review`) — 環境依存で存在しないことが多く、当てにはしない。
 4. いずれも無ければ自前レビュー単独。**この場合 `compose-review` は「外部レビュー未併用」の事実と理由を総括 `body` (`## 総合判断` 末尾) に 1 文記載する** (黙って自前単独へ退化しない)。
 
 `compose-review` は 5-2 の結末を **機械可読フィールド `external_review`** (8 キー固定: `{"skill": "scan-diff-findings"|"code-review"|…|"none", "mode": "agent"|"partial"|"inline"|"empty"|"external"|null, "verify_degraded": true|false|null, "finders": N|null, "finders_expected": N|null, "findings": N, "omitted": N, "reason": "…"|null}`。正典は [`skills/compose-review/SKILL.md`](skills/compose-review/SKILL.md) Step 6) としてハンドオフ JSON に必ず含める。人間向けの開示文 (総括 `body`) と機械向けの `external_review` の両方を必須にしているのは、開示が prose だけだと 1 文の書き漏らしで「黙って退化していた」状態に戻るため。`run-pr-review` は Step 6 の報告に、`run-local-review` は markdown ヘッダと報告にこの値を必ず載せる。
 
 - `skill == "none"` → 外部レビュー未併用。
-- `mode == "inline"` → 外部スキルが Agent ツール不可で同一コンテキストの逐次自己適用にフォールバックした (自前レビューとの独立性が限定的)。
-- `mode == "partial"` (= `finders < finders_expected`) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
+- `mode == "inline"` → 外部レビューが、同じモデルが同じ会話を引き継いで行う自己レビューになった (`scan-diff-findings` が Agent ツール不可で逐次自己適用にフォールバックした、または `code-review` が fan-out せずに実行された。自前レビューとの独立性が限定的)。
+- `mode == "partial"` (`scan-diff-findings` は `finders < finders_expected`、`code-review` は起動した finder の一部の結果が戻らなかった回) → fan-out したが一部の観点の結果しか得られなかった (網羅性が限定的)。
 - `mode == "empty"` → 外部スキルは応答したが「対象差分なし」を返した (scope 不一致で実質未併用)。
-- `verify_degraded == true` → 外部スキルの adversarial verify が全件成立しなかった (指摘は未検証)。
-- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため (`code-review` を自動で併用した回と、下記「外部レビューの手動併用」運用がこれに当たる)。
+- `verify_degraded == true` → 外部スキルの verify が全件成立しなかった、または走らなかった (指摘は未検証)。
+- 上記の縮退は総括 `body` の開示対象。**`mode == "agent"` (かつ verify 正常) と `mode == "external"` (かつ `verify_degraded != true`) は開示不要** — `"external"` は `code-review` / Codex `/review` 等が `fanout` 相当の内訳を返さないだけで縮退ではないため。`code-review` (手動併用を含む) の `mode` / `verify_degraded` は、呼ぶ前の条件ではなく、実際に fan-out / verify したかで決まる (規則は [`skills/compose-review/SKILL.md`](skills/compose-review/SKILL.md) Step 5-2「`code-review` の結果の分類」)。
 
 PR 経路では `run-pr-review` が `external_review` を `post-pr-review` に転送し、Review body に `<!-- AI-REVIEW-EXTERNAL: skill=… mode=… verify_degraded=… finders=n/m findings=n omitted=n -->` の 1 行として埋め込まれる。これにより GitHub 上にも機械可読な痕跡が残り、CI は総括本文の prose を読まずに「外部レビューが併用されたか / 縮退したか」を判定できる (詳細は `post-pr-review` の [`references/machine-readable-lines.md`](skills/post-pr-review/references/machine-readable-lines.md) の「外部レビュー行 (`AI-REVIEW-EXTERNAL`)」節)。
 
@@ -54,27 +54,12 @@ run-pr-review / run-local-review    (caller のコンテキスト)
 - ネスト上限に達した階層で呼ばれた場合、Agent が使えないため `scan-diff-findings` は現在コンテキストでの逐次自己適用に縮退し、`external_review.mode=inline` として開示される。
 - orchestrator が `compose-review` を sub-agent ではなく直接呼ぶのは fan-out のためではない。理由は次の 3 つ:
   1. background 化されると結果を同期的に受け取れず、投稿前 / 出力前に停止しうる。
-  2. 手動 `/code-review` の findings を同じコンテキストで採用する運用 (後述) が成立しなくなる。
+  2. 手動 `/code-review` の findings を同じコンテキストで採用する運用 (後述「`code-review` を自動で併用できない場合」) が成立しなくなる。
   3. Agent を持たない caller / ホストでも同じ手順で動く。
 
-### `code-review` が呼べない問題 (`disable-model-invocation`)
+### `code-review` を自動で併用できない場合
 
-Claude Code 組み込みの `code-review` は、版や環境によって skill 定義の frontmatter に `disable-model-invocation: true` を持ち、**その場合はモデルから Skill ツール経由で呼び出せない** (モデルから呼べる版もあるため、`compose-review` は呼べるかどうかを決め打ちせず実行時に判定する)。
-
-- Skill ツールの検証段階で `Skill code-review cannot be used with Skill tool due to disable-model-invocation` として拒否される。
-- モデルに提示される available-skills 一覧からも除外されるため、そもそも候補として見えない。
-- この挙動は skill 定義の frontmatter が唯一の入力源で、settings.json のオプトインや `permissions.allow` では解除できない (検証が権限判定より前段のため)。
-
-つまり `code-review` を第 1 候補に置いた解決順だけでは、そうした環境では外部レビュー併用が構造的に不成立になる。`scan-diff-findings` (優先順 2) はこの枠を埋めるために用意されており、**`disable-model-invocation` を持たない** ことが要件そのもの。同種の自前レビュースキルを追加する場合も同様に付けてはならない。
-
-### 外部レビューの手動併用 (`/code-review` を先に実行する運用)
-
-`code-review` は **ユーザーがスラッシュコマンドとして手で叩く分には制約を受けない**。そこで、`compose-review` が `code-review` を自動で使えない場合 (モデルから呼べない版、Agent ツールが使えない階層など) にその findings を併用したいときは、次の順で実行する:
-
-1. `/code-review` を手動で実行する (レビュー対象を引数で指定。`--fix` / `--comment` は付けない)。
-2. **同じセッションのまま** `/run-pr-review` (または `/run-local-review`) を実行する。
-
-1 の findings はセッションのコンテキストに残っているため、`compose-review` Step 5-2 はそれを外部レビュー結果として採用でき、実質的に「自前レビュー + `code-review`」の併用になる。モデルから `code-review` を呼べ、かつ Agent ツールが使えるコンテキストでは、この運用を取らなくても優先順 1 で自動的に併用される。それ以外でこの運用を取らない場合は、優先順 2 の `scan-diff-findings` が自動で使われる。
+`code-review` を呼べるかどうかの判定 (`disable-model-invocation` を持つ版・環境の扱いを含む)、選ぶ条件、使えないときに `/code-review` を先に手で実行してその findings を併用する手順は、[`skills/compose-review/SKILL.md`](skills/compose-review/SKILL.md) Step 5-2「`code-review` の呼び出し可能性判定」を正典とする。
 
 ## caller プロジェクトのレビュー方針の置き方
 
@@ -226,7 +211,7 @@ permissions:
       --allowedTools "Read,Write,Glob,Grep,Agent,Task,Skill,Bash(gh api:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(gh repo view:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git fetch origin:*),Bash(git fetch https://github.com/*),Bash(git show:*),Bash(git cat-file:*),Bash(git ls-remote:*),Bash(git rev-list:*),Bash(git rev-parse:*),Bash(git symbolic-ref:*),Bash(git remote:*),Bash(grep:*),Bash(sed -E:*),Bash(date:*),Bash(mkdir:*),Bash(dirname:*)"
 ```
 
-> checkout の `fetch-depth: 0` は `compose-review` の git 主経路のためのもの。既定の `fetch-depth: 1` では共通祖先がローカルに無く `git diff <BASE_SHA>...<HEAD_SHA>` が `fatal: no merge base` になる (`fetch-depth: 0` の代わりにジョブ内で `git fetch --unshallow` を挟んでもよい)。checkout を置かない構成でも `gh` 経路への degrade でレビュー自体は動くが、SHA 解決・差分・指示ファイルの取得がすべて `gh` 頼みになり、**外部レビュースキルの併用 (`compose-review` 5-2) は ref range を渡せなくなる**。`code-review` を Skill ツールから呼べ、かつ Agent ツールが使えるコンテキストなら PR URL を target にして併用は維持されるが、それ以外 (`disable-model-invocation` を持つ版、Agent が使えない階層など) では解決順 2 も不成立になり、自前レビュー単独へ退化する (その場合は未併用である旨が総括 `body` に開示される)。品質を落としたくなければ checkout を置くこと。
+> checkout の `fetch-depth: 0` は `compose-review` の git 主経路のためのもの。既定の `fetch-depth: 1` では共通祖先がローカルに無く `git diff <BASE_SHA>...<HEAD_SHA>` が `fatal: no merge base` になる (`fetch-depth: 0` の代わりにジョブ内で `git fetch --unshallow` を挟んでもよい)。checkout を置かない構成でも `gh` 経路への degrade でレビュー自体は動くが、SHA 解決・差分・指示ファイルの取得がすべて `gh` 頼みになり、**外部レビュースキルの併用 (`compose-review` 5-2) は ref range を渡せなくなる**。`code-review` を解決順 1 で使えるコンテキスト (条件は `compose-review` 5-2「`code-review` の呼び出し可能性判定」) なら PR URL を target にして併用は維持されるが、それ以外では解決順 2 も不成立になり、自前レビュー単独へ退化する (その場合は未併用である旨が総括 `body` に開示される)。品質を落としたくなければ checkout を置くこと。
 
 > `Bash(sed -E:*)` は skill が remote URL / ref 名の抽出に使う読み取り専用の置換 (`sed -E 's#...#...#'`) のためのもの。skill は sed の `e` / `w` コマンド、`s///e` / `s///w` フラグ、`-i` を使わない。前方一致なので `-E` 以降の引数までは許可設定で制限できない点に注意し、より厳しくしたい場合は sed の許可を外して `OWNER` / `REPO` / `BASE_BRANCH` を caller から明示的に渡す運用にする (抽出が不要になる)。
 
