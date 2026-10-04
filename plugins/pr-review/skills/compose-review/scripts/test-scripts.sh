@@ -460,6 +460,31 @@ run OUT 2 bash "$FINAL" - < <(echo '{"comments": ["x"]}')
 run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"blocker": "critical"}}')
 [ -z "$OUT" ] && ok "label_map の値が標準ラベルでなければ入力エラー" || ng "label_map の値が標準ラベルでなければ入力エラー"
 
+cat > "$T/fc2.json" <<'EOF'
+{"comments": [
+  {"path": "a", "line": 1, "body": "[要修正] a"},
+  {"path": "b", "line": 2, "body": "[must-fix] b"},
+  {"path": "c", "line": 3, "body": "ラベルなし"}],
+ "label_map": {"要修正": "must", "[Must-Fix]": "should"}}
+EOF
+run OUT 0 env MAX_INLINE_COMMENTS=1 bash "$FINAL" "$T/fc2.json"
+check "非 ASCII・ハイフン入りの独自ラベルも label_map で寄せる / 環境変数の MAX_INLINE_COMMENTS は読まない" "$OUT" '.label_counts == {must: 1, should: 1, nit: 0, question: 0, pre_existing: 0, other: 1} and .max_inline_comments == "unlimited"'
+run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"blocker": "must", "[BLOCKER]": "nit"}}')
+[ -z "$OUT" ] && ok "label_map のキーが正規化後に重複すれば入力エラー" || ng "label_map のキーが正規化後に重複すれば入力エラー"
+run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"[]": "must"}}')
+[ -z "$OUT" ] && ok "label_map の空キーは入力エラー" || ng "label_map の空キーは入力エラー"
+mkdir -p "$T/fcdir"
+run OUT 2 bash "$FINAL" "$T/fcdir"
+[ -z "$OUT" ] && ok "入力がディレクトリなら入力エラー" || ng "入力がディレクトリなら入力エラー"
+cp "$T/fc2.json" "$T/a=b.json"
+run OUT 0 bash "$FINAL" -- "$T/a=b.json"
+check "= を含むパスは -- の後に置ける" "$OUT" '.label_counts.must == 1'
+before=$(ls "$TMPDIR" | grep -c '^compose-review-finalize-' || true)
+run OUT 0 bash -c 'cd "$1" && bash "$2" OUTPUT_PATH=out/rel.json "$3"' _ "$T" "$FINAL" "$T/fc2.json"
+[ "$OUT" = "$T/out/rel.json" ] && [ -f "$T/out/rel.json" ] && ok "相対の OUTPUT_PATH は絶対パスにして出す" || ng "相対の OUTPUT_PATH は絶対パスにして出す" "$OUT"
+after=$(ls "$TMPDIR" | grep -c '^compose-review-finalize-' || true)
+[ "$before" = "$after" ] && ok "OUTPUT_PATH を指定した回は作業ディレクトリを残さない" || ng "OUTPUT_PATH を指定した回は作業ディレクトリを残さない" "$before -> $after"
+
 # ========== read-only ==========
 [ "$(git -C "$R" rev-parse HEAD)" = "$HEAD" ] && [ -z "$(git -C "$R" status --porcelain)" ] \
   && ok "テスト後もリポジトリの HEAD と作業ツリーは変わっていない" || ng "read-only"

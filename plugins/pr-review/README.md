@@ -173,7 +173,7 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 
 例外は `distill-pr-reviews`: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり、bash からは MCP ツールを呼べないため **gh チャネル専用** (gh が使えない環境では実行できない)。
 
-なお PR 差分と指示ファイルの取得 (`compose-review`) は **pure-git (read-only fetch + `git diff` / `git show`) が主経路** で、どちらのチャネルにも依存しない。ただし git が使えない / head object を fetch できない環境では `gh` 経路に degrade する (詳細は `compose-review` Step 3 / Step 4)。変更ファイル一覧・祖先 `REVIEW.md` の列挙・指示ファイルの全文取得と `エスカレーション基準` 見出しの検出・「参照した指示ファイル」のリンク描画は、入力で結果が決まる処理なので bash + jq スクリプト (`skills/compose-review/scripts/`) に切り出してある (`gh` 経路への degrade もスクリプトが行う)。スクリプトのテストは `bash plugins/pr-review/skills/compose-review/scripts/test-scripts.sh` で実行できる (一時 git リポジトリと `gh` のスタブで検証する)。
+なお PR 差分と指示ファイルの取得 (`compose-review`) は **pure-git (read-only fetch + `git diff` / `git show`) が主経路** で、どちらのチャネルにも依存しない。ただし git が使えない / head object を fetch できない環境では `gh` 経路に degrade する (詳細は `compose-review` Step 3 / Step 4)。変更ファイル一覧・祖先 `REVIEW.md` の列挙・指示ファイルの全文取得と `エスカレーション基準` 見出しの検出・「参照した指示ファイル」のリンク描画・件数上限の適用と `label_counts` の集計は、入力で結果が決まる処理なので bash + jq スクリプト (`skills/compose-review/scripts/`) に切り出してある (`gh` 経路への degrade もスクリプトが行う)。スクリプトのテストは `bash plugins/pr-review/skills/compose-review/scripts/test-scripts.sh` で実行できる (一時 git リポジトリと `gh` のスタブで検証する)。
 
 ## 利用方法 (GitHub Actions)
 
