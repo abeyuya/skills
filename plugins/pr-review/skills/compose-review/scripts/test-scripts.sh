@@ -214,7 +214,14 @@ case $url in
     # GitHub と同じく、ディレクトリにも 200 で一覧 (JSON 配列) を返す。raw 指定でもディレクトリは一覧になる
     t=$(git cat-file -t "$ref:$path" 2>/dev/null || true)
     case $t in
-      blob) if $raw; then $silent || git cat-file blob "$ref:$path"; else $silent || printf '{"type":"file"}'; fi ;;
+      blob)
+        # GitHub と同じく、リポジトリ内の通常ファイルを指すシンボリックリンクは解決して返す (path はリンク先。1 段・同階層基準のみ)
+        mode=$(git ls-tree --full-tree "$ref" -- "$path" | cut -d' ' -f1)
+        if [ "$mode" = 120000 ]; then
+          tgt=$(git cat-file blob "$ref:$path")
+          case $path in */*) path=${path%/*}/$tgt ;; *) path=$tgt ;; esac
+        fi
+        if $raw; then $silent || git cat-file blob "$ref:$path"; else $silent || jq -nc --arg p "$path" '{type: "file", path: $p}'; fi ;;
       tree) $silent || printf '[{"type":"file","name":"x"}]' ;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     esac ;;
@@ -233,6 +240,17 @@ check "object が無ければ auto で gh 経路に degrade" "$OUT" '.source == 
 check "gh 経路: rename の移動元と移動先 / 改行を含む filename も 1 件" "$OUT" '.changed_count == 10 and .range_count == 9 and (.changed_files | index(["nl\ndir/z.txt"]))'
 check "gh 経路: 祖先 REVIEW.md が git 経路と同じ (# ? バッククォート 非 ASCII を URL エンコードして確認)" "$OUT" '[.ancestor_review_md[].path] == ["REVIEW.md", "`tick`/REVIEW.md", "a#b?c/REVIEW.md", "apps/REVIEW.md", "new/REVIEW.md", "日本語 dir/REVIEW.md", "apps/web/REVIEW.md"] and .excluded_review_md == 1'
 check "gh 経路: 5-4 発火" "$OUT" '.instruction_files_touched'
+# gh 経路: root の CLAUDE.md がリンクで、リンク先だけを編集した PR でも発火する (変更ファイルの祖先に無くても)
+R4="$T/r4"; mkdir -p "$R4/docs"; cd "$R4"; git init -q
+git config user.email test@example.com; git config user.name test; git config commit.gpgsign false
+printf '## エスカレーション基準\n- 基準\n' > docs/rules.md
+ln -s docs/rules.md CLAUDE.md
+git add -A; git commit -qm b; B4=$(git rev-parse HEAD)
+printf -- '- 追記\n' >> docs/rules.md
+git add -A; git commit -qm h; H4=$(git rev-parse HEAD)
+cd "$EMPTY"
+run OUT 0 env PATH="$STUB:$PATH" STUB_REPO="$R4" STUB_HEAD="$H4" STUB_BASE="$B4" bash "$CHANGED" MODE=pr HEAD_SHA="$H4" BASE_SHA="$B4" OWNER=o REPO=r PR_NUMBER=7
+check "gh 経路: root の CLAUDE.md のリンク先だけの編集でも 5-4 が発火 (引数で渡す形)" "$OUT" '.source == "gh" and .instruction_files_touched_paths == ["docs/rules.md"]'
 
 run OUT 3 env PATH="$STUB:$PATH" STUB_FAIL_CONTENTS='apps/REVIEW.md' MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" OWNER=o REPO=r PR_NUMBER=7 bash "$CHANGED"
 check "gh 経路: 404 以外 (500) は fatal" "$OUT" '.fatal | test("404 以外")'
@@ -256,8 +274,11 @@ cd "$R"
 
 # ========== read-instruction-files.sh (git / local) ==========
 echo "# read-instruction-files.sh"
-run CF 0 env MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" SOURCE=git bash "$CHANGED"
-run OUT 0 env SOURCE=git REF="$HEAD" bash "$READ" --root --ancestors "$CF"
+run CF 0 bash "$CHANGED" MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" SOURCE=git
+check "KEY=VALUE の引数でも渡せる" "$CF" '.source == "git" and .changed_count == 10'
+run OUT 2 bash "$CHANGED" MODE=pr HEAD_SHA="$HEAD" BASE_SHA="$BASE" BOGUS=1
+[ -z "$OUT" ] && ok "不明な引数は引数エラー" || ng "不明な引数は引数エラー"
+run OUT 0 bash "$READ" SOURCE=git REF="$HEAD" --root --ancestors "$CF"
 check "root_selected=REVIEW.md で roles に root と ancestor" "$OUT" '.root_selected == "REVIEW.md" and (.files[0].roles == ["root", "ancestor"])'
 check "コードフェンス内の見出しは拾わない" "$OUT" '(.files[] | select(.path == "REVIEW.md") | .escalation_sections) == []'
 check "末尾の本物の見出しを拾う (インデント 3 スペース)" "$OUT" '(.files[] | select(.path == "apps/REVIEW.md") | .escalation_sections | map(.line)) == [73]'

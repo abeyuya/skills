@@ -4,7 +4,7 @@
 # SKILL.md「共通規約: 決定的な処理はスクリプトで行う」の `changed-files.sh` の処理をまとめて行い、結果を JSON 1 つに書き出す。
 # モデルが NUL 区切り・quote・改行・404 と FATAL の区別を文章で再現しなくて済むようにするためのスクリプト。
 #
-# 入力 (環境変数):
+# 入力 (環境変数、または同名の KEY=VALUE 引数。引数が優先):
 #   MODE          : pr | local (必須)
 #   --- PR モード ---
 #   HEAD_SHA / BASE_SHA : Step 1 で確定した 40 桁の commit SHA (必須)
@@ -32,8 +32,8 @@
 #                         [{path, depth, changed_files_under}]。changed_files_under は Step 3 の間引きの優先度用
 #   excluded_review_md  : 改行を含む / JSON で正確に表せないため読まずに除外した REVIEW.md の件数 (body で開示)
 #   instruction_files_touched       : 5-4「判定基準の自己回避を防ぐ」の発火有無 (PR モードの git 経路では、指示ファイルが
-#                                     シンボリックリンクならリンク先の変更でも発火する。gh 経路は変更ファイルの祖先にある
-#                                     リンクだけ、ローカルモードはリンク先を見ない)。list_degraded のときは
+#                                     シンボリックリンクならリンク先の変更でも発火する。gh 経路は変更ファイルの祖先と
+#                                     root の 3 候補のリンクだけ、ローカルモードはリンク先を見ない)。list_degraded のときは
 #                                     rename の移動元が一覧に出ないため、安全側に倒して常に true
 #   instruction_files_touched_paths : 発火の根拠になったパス
 #   list_degraded    : gh pr diff --name-only で代替した回は true (パッチ見出し由来で quote が崩れうる。
@@ -76,6 +76,25 @@ PR_NUMBER="${PR_NUMBER:-}"
 DIFF_MODE="${DIFF_MODE:-}"
 BASE_BRANCH="${BASE_BRANCH:-}"
 OUTPUT_PATH="${OUTPUT_PATH:-}"
+
+# 同じ値は KEY=VALUE の引数でも渡せる (引数が環境変数より優先)。SKILL.md は引数で渡す:
+# コマンドが `bash <script>` で始まるので、許可設定 (--allowedTools) の前方一致にかかる
+while [ $# -gt 0 ]; do
+  case $1 in
+    MODE=*) MODE=${1#*=} ;;
+    SOURCE=*) SOURCE=${1#*=} ;;
+    HEAD_SHA=*) HEAD_SHA=${1#*=} ;;
+    BASE_SHA=*) BASE_SHA=${1#*=} ;;
+    OWNER=*) OWNER=${1#*=} ;;
+    REPO=*) REPO=${1#*=} ;;
+    PR_NUMBER=*) PR_NUMBER=${1#*=} ;;
+    DIFF_MODE=*) DIFF_MODE=${1#*=} ;;
+    BASE_BRANCH=*) BASE_BRANCH=${1#*=} ;;
+    OUTPUT_PATH=*) OUTPUT_PATH=${1#*=} ;;
+    *) die_usage "不明な引数: $1" ;;
+  esac
+  shift
+done
 
 command -v jq >/dev/null 2>&1 || die_usage "jq が見つからない"
 
@@ -328,8 +347,8 @@ done <"$CAND"
 
 # git 経路では、head / base の tree 全体からシンボリックリンクの指示ファイル (任意階層の REVIEW.md と root の 3 候補) を
 # 列挙してリンク先を控える (変更ファイルの祖先に無いリンクでも、リンク先の編集で基準は消せるため)。
-# gh 経路は tree を安く列挙できないので、上の存在確認で分かった head 側の祖先のリンク先だけを使う
-# (変更ファイルの祖先に無いリンクは検知できない)。ローカルモードはリンク先を控えない (5-4 の base 突き合わせ自体が任意)。
+# gh 経路は tree を安く列挙できないので、上の存在確認で分かった head 側の祖先と root の 3 候補のリンク先だけを使う
+# (それ以外の、変更ファイルの祖先に無いリンクは検知できない)。ローカルモードはリンク先を控えない (5-4 の base 突き合わせ自体が任意)。
 if [ "$USED_SOURCE" = git ]; then
   for ref in "$HEAD_SHA" "$BASE_SHA"; do
     git ls-tree -r -z --full-tree "$ref" >"$WORK_DIR/tree.z" || write_fatal "git ls-tree -r $ref が失敗"
@@ -340,6 +359,22 @@ if [ "$USED_SOURCE" = git ]; then
       case /$c in */node_modules/*|*/vendor/*) continue ;; esac
       resolve_links "$ref" "$c" || true
     done <"$WORK_DIR/tree.z"
+  done
+elif [ "$USED_SOURCE" = gh ] || [ "$USED_SOURCE" = gh-pr-diff ]; then
+  # root の 3 候補は毎回方針として読まれるので、変更ファイルの祖先に無くても head 側のリンク先を控える
+  # (root の REVIEW.md は全変更ファイルの祖先候補なので、上の存在確認で控え済み)
+  for r in AGENTS.md .claude/CLAUDE.md CLAUDE.md; do
+    enc=$(encode_path "$r")
+    if ! gh api "repos/$OWNER/$REPO/contents/$enc?ref=$HEAD_SHA" >"$WORK_DIR/meta.json" 2>"$WORK_DIR/gh.err"; then
+      err=$(head -c 300 "$WORK_DIR/gh.err")
+      case $err in
+        *'HTTP 404'*) continue ;;
+        *) exist_fatal="$exist_fatal$r: $err"$'\n'; continue ;;
+      esac
+    fi
+    t=$(jq -r 'if type == "object" and .type == "file" then .path // empty else empty end' <"$WORK_DIR/meta.json") \
+      || { exist_fatal="$exist_fatal$r: contents API の応答を解釈できない"$'\n'; continue; }
+    [ -n "$t" ] && note_link "$r" "$t"
   done
 fi
 

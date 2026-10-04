@@ -7,7 +7,7 @@
 #   - `エスカレーション基準` を含む ATX 見出し (フェンスドコードブロックの内側は除外) とその配下のセクション本文
 # を求めて JSON に書き出す。取得元と探索元が必ず一致するので、打ち切り・取得元の食い違いが起きない。
 #
-# 入力 (環境変数):
+# 入力 (環境変数、または同名の KEY=VALUE 引数。引数が優先):
 #   SOURCE : git | gh | local (必須)
 #            git   = `git cat-file blob <REF>:<path>` (PR モード。cwd の作業ツリーは読まない)
 #            gh    = `gh api -H 'Accept: application/vnd.github.raw' repos/<OWNER>/<REPO>/contents/<path>?ref=<REF>`
@@ -67,18 +67,6 @@ OUTPUT_PATH="${OUTPUT_PATH:-}"
 
 command -v jq >/dev/null 2>&1 || die_usage "jq が見つからない"
 
-case $SOURCE in
-  git|gh)
-    printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$' || die_usage "REF が 40 桁の SHA ではない: '$REF'"
-    ;;
-  local) ;;
-  *) die_usage "SOURCE は git / gh / local: '$SOURCE'" ;;
-esac
-if [ "$SOURCE" = gh ]; then
-  printf '%s' "$OWNER" | grep -Eq '^[A-Za-z0-9._-]+$' || die_usage "OWNER が不正: '$OWNER'"
-  printf '%s' "$REPO" | grep -Eq '^[A-Za-z0-9._-]+$' || die_usage "REPO が不正: '$REPO'"
-fi
-
 # ---------- 対象パスの収集 ----------
 # paths[i] と roles[i] を並行配列で持つ (bash 3.2 に連想配列が無いため)。
 
@@ -119,10 +107,28 @@ while [ $# -gt 0 ]; do
     # SOURCE=local は後で repo root に cd するので、JSON のパスは呼び出し時の cwd 基準の絶対パスにしておく
     --ancestors) [ $# -ge 2 ] || die_usage "--ancestors に JSON が無い"; ANC_JSON=$2; case $ANC_JSON in /*) ;; *) ANC_JSON="$PWD/$ANC_JSON" ;; esac; shift 2 ;;
     --candidates) [ $# -ge 2 ] || die_usage "--candidates に JSON が無い"; CAND_JSON=$2; case $CAND_JSON in /*) ;; *) CAND_JSON="$PWD/$CAND_JSON" ;; esac; shift 2 ;;
+    # 環境変数と同じ値は KEY=VALUE の引数でも渡せる (引数が優先。コマンドを `bash <script>` で始められる)
+    SOURCE=*) SOURCE=${1#*=}; shift ;;
+    REF=*) REF=${1#*=}; shift ;;
+    OWNER=*) OWNER=${1#*=}; shift ;;
+    REPO=*) REPO=${1#*=}; shift ;;
+    OUTPUT_PATH=*) OUTPUT_PATH=${1#*=}; shift ;;
     --) shift; break ;;
     *) die_usage "不明な引数: $1 (任意のパスは -- の後に置く)" ;;
   esac
 done
+
+case $SOURCE in
+  git|gh)
+    printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$' || die_usage "REF が 40 桁の SHA ではない: '$REF'"
+    ;;
+  local) ;;
+  *) die_usage "SOURCE は git / gh / local: '$SOURCE'" ;;
+esac
+if [ "$SOURCE" = gh ]; then
+  printf '%s' "$OWNER" | grep -Eq '^[A-Za-z0-9._-]+$' || die_usage "OWNER が不正: '$OWNER'"
+  printf '%s' "$REPO" | grep -Eq '^[A-Za-z0-9._-]+$' || die_usage "REPO が不正: '$REPO'"
+fi
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/compose-review-instr-XXXXXX")
 mkdir -p "$WORK_DIR/files"
