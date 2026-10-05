@@ -112,6 +112,8 @@ err=$(jq -s -r "$defs"'
         then "label_map のキーは空でなく、改行と ] を含まないラベル名"
       elif ([$e[].key | norm] | length) != ([$e[].key | norm] | unique | length)
         then "label_map のキーが大文字小文字と [ ] を無視すると重複している"
+      elif ($e | any(.key | norm as $k | std | index([$k])))
+        then "label_map のキーに標準ラベルは置けない (標準ラベルを別の標準ラベルへ付け替えると must / should の件数を下げられるため)"
       elif ($e | all(.value | type == "string" and (norm as $v | std | index([$v]))) | not)
         then "label_map の値は must / should / nit / question / pre_existing のいずれか"
       else "" end

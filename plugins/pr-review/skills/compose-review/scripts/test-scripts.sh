@@ -473,6 +473,8 @@ run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"blocker": "m
 [ -z "$OUT" ] && ok "label_map のキーが正規化後に重複すれば入力エラー" || ng "label_map のキーが正規化後に重複すれば入力エラー"
 run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"[]": "must"}}')
 [ -z "$OUT" ] && ok "label_map の空キーは入力エラー" || ng "label_map の空キーは入力エラー"
+run OUT 2 bash "$FINAL" - < <(echo '{"comments": [{"path": "a", "line": 1, "body": "[must] a"}], "label_map": {"MUST": "nit"}}')
+[ -z "$OUT" ] && ok "label_map のキーに標準ラベルを置けば入力エラー (must を nit に付け替えさせない)" || ng "label_map のキーに標準ラベルを置けば入力エラー (must を nit に付け替えさせない)"
 mkdir -p "$T/fcdir"
 run OUT 2 bash "$FINAL" "$T/fcdir"
 [ -z "$OUT" ] && ok "入力がディレクトリなら入力エラー" || ng "入力がディレクトリなら入力エラー"
