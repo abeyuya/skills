@@ -22,7 +22,7 @@
 #   MAX_INLINE_COMMENTS : 省略 / `unlimited` なら上限なし。正の整数でない値は上限なしとして扱い warnings に残す
 #   OUTPUT_PATH         : 結果 JSON の書き出し先。省略時は一意の temp ディレクトリ配下の result.json
 #
-# ラベルは comments[].body 先頭 (前置きの空白と書式文字は飛ばす) の `[...]` (改行と `]` を含まない 1 文字以上) を取り、
+# ラベルは comments[].body 先頭 (全角を半角に揃えたうえで、前置きの空白と書式文字は飛ばす) の `[...]` (改行と `]` を含まない 1 文字以上) を取り、
 # label_map のキーと同じ規則で正規化する。ラベルの正規化: 書式文字 (Unicode Cf。ゼロ幅文字・双方向制御など) を
 # 位置によらず除き、全角英数記号 (U+FF01〜FF5E) と全角空白を半角に揃え、小文字化し、前後の空白と `[` `]` を除く
 # (`[ must]` / `[[MUST]]` / `[ＭＵＳＴ]` / ゼロ幅文字を挟んだ `[must]` も must)。全角以外の同形異字 (別の文字体系の
@@ -140,7 +140,7 @@ jq --arg max "$MAX_INLINE_COMMENTS" "$defs"'
      else {limit: null, warn: ["MAX_INLINE_COMMENTS が正の整数でも unlimited でもない (\($max | tojson)) ため上限なしとして扱った"]}
      end) as $lim
   | [ .comments | to_entries[]
-      | ([.value.body // "" | gsub("^[\\s\\p{Cf}]+"; "") | capture("^\\[(?<l>[^\\]\\n]+)\\]") | .l][0] // "" | norm) as $raw
+      | ([.value.body // "" | fold | gsub("^[\\s\\p{Cf}]+"; "") | capture("^\\[(?<l>[^\\]\\n]+)\\]") | .l][0] // "" | norm) as $raw
       | (if $raw == "" then "" else ($map[$raw] // $raw) end) as $mapped
       | {i: .key, c: .value, k: (if ($mapped | is_std) then $mapped else "other" end)} ] as $all
   | (reduce $all[] as $e ({must: 0, should: 0, nit: 0, question: 0, pre_existing: 0, other: 0}; .[$e.k] += 1)) as $counts

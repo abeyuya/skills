@@ -473,7 +473,7 @@ run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"blocker": "m
 [ -z "$OUT" ] && ok "label_map のキーが正規化後に重複すれば入力エラー" || ng "label_map のキーが正規化後に重複すれば入力エラー"
 run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"[]": "must"}}')
 [ -z "$OUT" ] && ok "label_map の空キーは入力エラー" || ng "label_map の空キーは入力エラー"
-for lm in '{"MUST": "nit"}' '{" must": "nit"}' '{"[should]": "pre_existing"}' '{"mu​st": "question"}' '{"ＭＵＳＴ": "nit"}' '{"nit": "must"}' '{"nit": "question"}'; do
+for lm in '{"MUST": "nit"}' '{" must": "nit"}' '{"[should]": "pre_existing"}' '{"mu\u200bst": "question"}' '{"ＭＵＳＴ": "nit"}' '{"nit": "must"}' '{"nit": "question"}'; do
   run OUT 2 bash "$FINAL" - < <(echo '{"comments": [{"path": "a", "line": 1, "body": "[must] a"}], "label_map": '"$lm"'}')
   [ -z "$OUT" ] && grep -q '付け替える' "$T/last.err" \
     && ok "標準ラベルの付け替えは入力エラー: $lm" || ng "標準ラベルの付け替えは入力エラー: $lm" "$(cat "$T/last.err")"
@@ -482,15 +482,16 @@ cat > "$T/fc3.json" <<'EOF'
 {"comments": [
   {"path": "a", "line": 1, "body": "[ must] a"},
   {"path": "b", "line": 2, "body": "[[MUST]] b"},
-  {"path": "c", "line": 3, "body": "[mu​st] c"},
+  {"path": "c", "line": 3, "body": "[mu\u200bst] c"},
   {"path": "d", "line": 4, "body": "[ＭＵＳＴ] d"},
-  {"path": "e", "line": 5, "body": " ​[should] e"},
+  {"path": "e", "line": 5, "body": " \u200b[should] e"},
+  {"path": "h", "line": 8, "body": "\u3000［must］ h"},
   {"path": "f", "line": 6, "body": "[nit] f"},
   {"path": "g", "line": 7, "body": "[blocker] g"}],
  "label_map": {"must": "must", "blocker": "must"}}
 EOF
 run OUT 0 bash "$FINAL" "$T/fc3.json"
-check "空白・二重括弧・書式文字・全角・前置きの空白があっても標準ラベルとして数え、恒等の対応は受け付ける" "$OUT" '.label_counts == {must: 5, should: 1, nit: 1, question: 0, pre_existing: 0, other: 0}'
+check "空白・二重括弧・書式文字・全角 (括弧を含む)・前置きの空白があっても標準ラベルとして数え、恒等の対応は受け付ける" "$OUT" '.label_counts == {must: 6, should: 1, nit: 1, question: 0, pre_existing: 0, other: 0}'
 mkdir -p "$T/fcdir"
 run OUT 2 bash "$FINAL" "$T/fcdir"
 [ -z "$OUT" ] && ok "入力がディレクトリなら入力エラー" || ng "入力がディレクトリなら入力エラー"
