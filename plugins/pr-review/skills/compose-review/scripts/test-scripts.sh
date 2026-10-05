@@ -473,8 +473,21 @@ run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"blocker": "m
 [ -z "$OUT" ] && ok "label_map のキーが正規化後に重複すれば入力エラー" || ng "label_map のキーが正規化後に重複すれば入力エラー"
 run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"[]": "must"}}')
 [ -z "$OUT" ] && ok "label_map の空キーは入力エラー" || ng "label_map の空キーは入力エラー"
-run OUT 2 bash "$FINAL" - < <(echo '{"comments": [{"path": "a", "line": 1, "body": "[must] a"}], "label_map": {"MUST": "nit"}}')
-[ -z "$OUT" ] && ok "label_map のキーに標準ラベルを置けば入力エラー (must を nit に付け替えさせない)" || ng "label_map のキーに標準ラベルを置けば入力エラー (must を nit に付け替えさせない)"
+for lm in '{"MUST": "nit"}' '{" must": "nit"}' '{"[should]": "pre_existing"}' '{"must​": "question"}'; do
+  run OUT 2 bash "$FINAL" - < <(echo '{"comments": [{"path": "a", "line": 1, "body": "[must] a"}], "label_map": '"$lm"'}')
+  [ -z "$OUT" ] && grep -q '格下げ' "$T/last.err" \
+    && ok "標準ラベルの格下げは入力エラー: $lm" || ng "標準ラベルの格下げは入力エラー: $lm" "$(cat "$T/last.err")"
+done
+cat > "$T/fc3.json" <<'EOF'
+{"comments": [
+  {"path": "a", "line": 1, "body": "[ must] a"},
+  {"path": "b", "line": 2, "body": "[[MUST]] b"},
+  {"path": "c", "line": 3, "body": "[nit] c"},
+  {"path": "d", "line": 4, "body": "[question] d"}],
+ "label_map": {"must": "must", "nit": "should", "blocker": "must"}}
+EOF
+run OUT 0 bash "$FINAL" "$T/fc3.json"
+check "空白・二重括弧のラベルも標準ラベルとして数え、恒等・格上げの対応は受け付ける" "$OUT" '.label_counts == {must: 2, should: 1, nit: 0, question: 1, pre_existing: 0, other: 0}'
 mkdir -p "$T/fcdir"
 run OUT 2 bash "$FINAL" "$T/fcdir"
 [ -z "$OUT" ] && ok "入力がディレクトリなら入力エラー" || ng "入力がディレクトリなら入力エラー"

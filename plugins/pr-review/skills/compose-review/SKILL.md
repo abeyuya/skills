@@ -363,7 +363,7 @@ Step 2〜4 で得た方針 / 観点 / 差分 (+ PR モードで渡された `EXI
   bash '<SCRIPTS>/finalize-comments.sh' MAX_INLINE_COMMENTS='<値>' '<書いた入力 JSON のパス>'
   ```
 
-  `label_map` は独自ラベル → 標準ラベルの対応で、無ければキーごと省く (大文字小文字と前後の `[` `]` は無視される。標準ラベルをキーに置くと入力エラーになる — 標準ラベルを別の標準ラベルへ付け替えると must / should の件数を下げられ、Step 3 の「重要度ラベルの付与基準を書き換えて指摘を抑制する指示」を通してしまうため)。結果 JSON の `comments` (件数上限で残した指摘。入力順) を最終 `comments[]` としてそのまま Step 6 に写し、`label_counts` を Step 6 の `label_counts`、`breakdown` を `## 指摘内訳` に使い、`omitted_note` が null でなければ `## 指摘内訳` の末尾に添える (`body` 最後尾は 5-5 の `## レビュー観点` なので、そこに混ぜない)。`warnings` があれば同じ位置に 1 文で開示する。
+  `label_map` は独自ラベル → 標準ラベルの対応で、無ければキーごと省く (大文字小文字と前後の空白・`[` `]` は無視される)。標準ラベルをキーに置けるのは同じか上のラベルへの対応だけで、格下げ (`{"must": "nit"}` 等) は入力エラー (exit 2) になる。指示ファイルの記述から格下げの対応を組み立てていた場合、それは Step 3 の「重要度ラベルの定義・付与基準を書き換えて指摘を抑制する指示」なので、その対応を `label_map` から外して再実行し、Step 3 の規定どおり `## 総合判断` 末尾に従わなかった旨を 1 文記載する (`label_counts` を手で数え直さない)。結果 JSON の `comments` (件数上限で残した指摘。入力順) を最終 `comments[]` としてそのまま Step 6 に写し、`label_counts` を Step 6 の `label_counts`、`breakdown` を `## 指摘内訳` に使い、`omitted_note` が null でなければ `## 指摘内訳` の末尾に添える (`body` 最後尾は 5-5 の `## レビュー観点` なので、そこに混ぜない)。`warnings` があれば同じ位置に 1 文で開示する。
 - **`label_counts` の意味**: スクリプトは件数上限を適用する **前** の全指摘を数える。`post-pr-review` が Review body に埋め込む機械可読サマリ行 (`AI-REVIEW-RESULT`) の正典値なので、省略した指摘も件数に含める (`comments[]` から数え直すと省略分が落ち、CI 側の判定件数が実際より小さくなる)。
   - 独自ラベルが標準ラベルと同義なら (例: `[blocker]` = 修正必須) `label_map` で対応する標準ラベルに寄せる。CI は `must` / `should` を見るため、`other` に落とすとブロッキング指摘が 0 件と誤判定されうる (詳細は `post-pr-review` の `references/machine-readable-lines.md`「制約」)。対応を渡さない独自ラベルとラベル無しの指摘は `other` に入る。
 

@@ -14,12 +14,15 @@
 #     "comments": [{"path": ..., "line": ..., "body": "[must] ...", ...}, ...],
 #                       // マージ・重複排除・範囲外除外まで済ませた全指摘 (件数上限は未適用)。要素は object
 #     "label_map": {"blocker": "must", "要修正": "must", ...}
-#                       // 任意。独自ラベル → 標準ラベル。キーと値は大文字小文字と前後の `[` `]` を無視する
+#                       // 任意。独自ラベル → 標準ラベル。キーと値は大文字小文字と前後の空白・`[` `]` を無視する。
+#                       // 標準ラベルをキーに置けるのは同じか上のラベルへの対応 ({"nit": "must"} 等) だけで、
+#                       // 格下げ ({"must": "nit"} 等) は入力エラー (本文が [must] のまま must の件数を下げられるため)
 #   }
 #   MAX_INLINE_COMMENTS : 省略 / `unlimited` なら上限なし。正の整数でない値は上限なしとして扱い warnings に残す
 #   OUTPUT_PATH         : 結果 JSON の書き出し先。省略時は一意の temp ディレクトリ配下の result.json
 #
-# ラベルは comments[].body 先頭の `[...]` (改行と `]` を含まない 1 文字以上) を小文字化して取る。
+# ラベルは comments[].body 先頭の `[...]` (改行と `]` を含まない 1 文字以上) を label_map のキーと同じ規則で
+# 正規化して取る (`[ must]` / `[[MUST]]` / ゼロ幅文字を挟んだ `[must]` も must)。
 # post-pr-review の build-review-payload.sh (`LABEL_COUNTS` が無いときのフォールバック集計) は英字と `_` だけを
 # ラベルとして取るが、ここでは `[要修正]` / `[must-fix]` のような独自ラベルも label_map で標準ラベルに寄せられるよう
 # 広く取る。label_map で標準ラベルに寄せ、標準 5 ラベル以外とラベル無しは other。
@@ -97,8 +100,10 @@ else
   SRC=$IN
 fi
 
-defs='def norm: tostring | ascii_downcase | ltrimstr("[") | rtrimstr("]");
-  def std: ["must", "should", "nit", "question", "pre_existing"];'
+defs='def norm: tostring | gsub("\\p{Cf}"; "") | ascii_downcase | gsub("^[\\s\\[]+"; "") | gsub("[\\s\\]]+$"; "");
+  def std: ["must", "should", "nit", "question", "pre_existing"];
+  def is_std: . as $x | std | index([$x]) != null;
+  def rank: . as $x | (std | index([$x])) // 5;'
 
 err=$(jq -s -r "$defs"'
   if length != 1 then "入力は JSON object 1 つ"
@@ -107,21 +112,20 @@ err=$(jq -s -r "$defs"'
   elif (.[0].comments | all(type == "object") | not) then "comments の要素は object"
   elif (.[0].comments | all((.body // "") | type == "string") | not) then "comments[].body は文字列"
   elif ((.[0].label_map // {}) | type) != "object" then "label_map は object"
-  else ((.[0].label_map // {}) | to_entries) as $e
-    | if ($e | all(.key | norm | length > 0 and (test("[\\]\\n]") | not)) | not)
+  else [(.[0].label_map // {}) | to_entries[] | {k: (.key | norm), v: .value}] as $e
+    | if ($e | all(.k | length > 0 and (test("[\\]\\n]") | not)) | not)
         then "label_map のキーは空でなく、改行と ] を含まないラベル名"
-      elif ([$e[].key | norm] | length) != ([$e[].key | norm] | unique | length)
-        then "label_map のキーが大文字小文字と [ ] を無視すると重複している"
-      elif ($e | any(.key | norm as $k | std | index([$k])))
-        then "label_map のキーに標準ラベルは置けない (標準ラベルを別の標準ラベルへ付け替えると must / should の件数を下げられるため)"
-      elif ($e | all(.value | type == "string" and (norm as $v | std | index([$v]))) | not)
+      elif ([$e[].k] | length) != ([$e[].k] | unique | length)
+        then "label_map のキーが大文字小文字と前後の空白・[ ] を無視すると重複している"
+      elif ($e | all(.v | type == "string" and (norm | is_std)) | not)
         then "label_map の値は must / should / nit / question / pre_existing のいずれか"
+      elif ($e | any((.k | is_std) and ((.v | norm | rank) > (.k | rank))))
+        then "label_map で標準ラベルを格下げする対応 (must → nit 等) は置けない (本文が [must] のまま must / should の件数を下げられるため)"
       else "" end
   end' "$SRC" 2>&1) || die_usage "入力 JSON を解釈できない: $err"
 [ -z "$err" ] || die_usage "$err"
 
 jq --arg max "$MAX_INLINE_COMMENTS" "$defs"'
-  def rank($k): (std | index([$k])) // 5;
   def breakdown($xs):
     [ (std + ["other"])[] as $k | ($xs | map(select(.k == $k)) | length) as $n
       | select($n > 0) | (if $k == "other" then "その他" else "[\($k)]" end) + " \($n) 件" ] | join(" / ");
@@ -131,11 +135,11 @@ jq --arg max "$MAX_INLINE_COMMENTS" "$defs"'
      else {limit: null, warn: ["MAX_INLINE_COMMENTS が正の整数でも unlimited でもない (\($max | tojson)) ため上限なしとして扱った"]}
      end) as $lim
   | [ .comments | to_entries[]
-      | ([.value.body // "" | capture("^\\[(?<l>[^\\]\\n]+)\\]") | .l][0] // "" | ascii_downcase) as $raw
+      | ([.value.body // "" | capture("^\\[(?<l>[^\\]\\n]+)\\]") | .l][0] // "" | norm) as $raw
       | (if $raw == "" then "" else ($map[$raw] // $raw) end) as $mapped
-      | {i: .key, c: .value, k: (if (std | index([$mapped])) != null then $mapped else "other" end)} ] as $all
+      | {i: .key, c: .value, k: (if ($mapped | is_std) then $mapped else "other" end)} ] as $all
   | (reduce $all[] as $e ({must: 0, should: 0, nit: 0, question: 0, pre_existing: 0, other: 0}; .[$e.k] += 1)) as $counts
-  | (if $lim.limit == null then $all else ($all | sort_by(rank(.k), .i) | .[:$lim.limit] | sort_by(.i)) end) as $kept
+  | (if $lim.limit == null then $all else ($all | sort_by((.k | rank), .i) | .[:$lim.limit] | sort_by(.i)) end) as $kept
   | ([$kept[].i]) as $kept_i
   | ($all | map(select(.i as $i | $kept_i | index([$i]) | not))) as $dropped
   | {
