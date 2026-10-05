@@ -14,15 +14,19 @@
 #     "comments": [{"path": ..., "line": ..., "body": "[must] ...", ...}, ...],
 #                       // マージ・重複排除・範囲外除外まで済ませた全指摘 (件数上限は未適用)。要素は object
 #     "label_map": {"blocker": "must", "要修正": "must", ...}
-#                       // 任意。独自ラベル → 標準ラベル。キーと値は大文字小文字と前後の空白・`[` `]` を無視する。
-#                       // 標準ラベルをキーに置けるのは同じか上のラベルへの対応 ({"nit": "must"} 等) だけで、
-#                       // 格下げ ({"must": "nit"} 等) は入力エラー (本文が [must] のまま must の件数を下げられるため)
+#                       // 任意。独自ラベル → 標準ラベル。キーと値は下記の「ラベルの正規化」をかけて比べる。
+#                       // 標準ラベルのキーは自分自身への対応 ({"must": "must"}) だけ置ける。付け替え ({"must": "nit"} /
+#                       // {"nit": "must"} 等) は入力エラー (本文のラベルと label_counts・件数上限の並びが食い違い、
+#                       // 格下げなら must / should の件数を下げられるため。読み替えたいなら本文のラベル自体を書き換える)
 #   }
 #   MAX_INLINE_COMMENTS : 省略 / `unlimited` なら上限なし。正の整数でない値は上限なしとして扱い warnings に残す
 #   OUTPUT_PATH         : 結果 JSON の書き出し先。省略時は一意の temp ディレクトリ配下の result.json
 #
-# ラベルは comments[].body 先頭の `[...]` (改行と `]` を含まない 1 文字以上) を label_map のキーと同じ規則で
-# 正規化して取る (`[ must]` / `[[MUST]]` / ゼロ幅文字を挟んだ `[must]` も must)。
+# ラベルは comments[].body 先頭 (前置きの空白と書式文字は飛ばす) の `[...]` (改行と `]` を含まない 1 文字以上) を取り、
+# label_map のキーと同じ規則で正規化する。ラベルの正規化: 書式文字 (Unicode Cf。ゼロ幅文字・双方向制御など) を
+# 位置によらず除き、全角英数記号 (U+FF01〜FF5E) と全角空白を半角に揃え、小文字化し、前後の空白と `[` `]` を除く
+# (`[ must]` / `[[MUST]]` / `[ＭＵＳＴ]` / ゼロ幅文字を挟んだ `[must]` も must)。全角以外の同形異字 (別の文字体系の
+# 似た字) は揃えない — 指示ファイルがそうしたラベルを使わせる指示は、SKILL.md Step 3 の untrusted 規定で拒否する。
 # post-pr-review の build-review-payload.sh (`LABEL_COUNTS` が無いときのフォールバック集計) は英字と `_` だけを
 # ラベルとして取るが、ここでは `[要修正]` / `[must-fix]` のような独自ラベルも label_map で標準ラベルに寄せられるよう
 # 広く取る。label_map で標準ラベルに寄せ、標準 5 ラベル以外とラベル無しは other。
@@ -100,10 +104,11 @@ else
   SRC=$IN
 fi
 
-defs='def norm: tostring | gsub("\\p{Cf}"; "") | ascii_downcase | gsub("^[\\s\\[]+"; "") | gsub("[\\s\\]]+$"; "");
+defs='def fold: explode | map(if . >= 65281 and . <= 65374 then . - 65248 elif . == 12288 then 32 else . end) | implode;
+  def norm: tostring | gsub("\\p{Cf}"; "") | fold | ascii_downcase | gsub("^[\\s\\[]+"; "") | gsub("[\\s\\]]+$"; "");
   def std: ["must", "should", "nit", "question", "pre_existing"];
-  def is_std: . as $x | std | index([$x]) != null;
-  def rank: . as $x | (std | index([$x])) // 5;'
+  def rank: . as $x | (std | index([$x])) // 5;
+  def is_std: rank < 5;'
 
 err=$(jq -s -r "$defs"'
   if length != 1 then "入力は JSON object 1 つ"
@@ -116,11 +121,11 @@ err=$(jq -s -r "$defs"'
     | if ($e | all(.k | length > 0 and (test("[\\]\\n]") | not)) | not)
         then "label_map のキーは空でなく、改行と ] を含まないラベル名"
       elif ([$e[].k] | length) != ([$e[].k] | unique | length)
-        then "label_map のキーが大文字小文字と前後の空白・[ ] を無視すると重複している"
+        then "label_map のキーが正規化 (書式文字の除去・全角の半角化・小文字化・前後の空白と [ ] の除去) すると重複している"
       elif ($e | all(.v | type == "string" and (norm | is_std)) | not)
         then "label_map の値は must / should / nit / question / pre_existing のいずれか"
-      elif ($e | any((.k | is_std) and ((.v | norm | rank) > (.k | rank))))
-        then "label_map で標準ラベルを格下げする対応 (must → nit 等) は置けない (本文が [must] のまま must / should の件数を下げられるため)"
+      elif ($e | any((.k | is_std) and ((.v | norm) != .k)))
+        then "label_map で標準ラベルを別の標準ラベルへ付け替えることはできない (本文のラベルと件数が食い違うため。読み替えるなら本文のラベル自体を書き換える)"
       else "" end
   end' "$SRC" 2>&1) || die_usage "入力 JSON を解釈できない: $err"
 [ -z "$err" ] || die_usage "$err"
@@ -135,7 +140,7 @@ jq --arg max "$MAX_INLINE_COMMENTS" "$defs"'
      else {limit: null, warn: ["MAX_INLINE_COMMENTS が正の整数でも unlimited でもない (\($max | tojson)) ため上限なしとして扱った"]}
      end) as $lim
   | [ .comments | to_entries[]
-      | ([.value.body // "" | capture("^\\[(?<l>[^\\]\\n]+)\\]") | .l][0] // "" | norm) as $raw
+      | ([.value.body // "" | gsub("^[\\s\\p{Cf}]+"; "") | capture("^\\[(?<l>[^\\]\\n]+)\\]") | .l][0] // "" | norm) as $raw
       | (if $raw == "" then "" else ($map[$raw] // $raw) end) as $mapped
       | {i: .key, c: .value, k: (if ($mapped | is_std) then $mapped else "other" end)} ] as $all
   | (reduce $all[] as $e ({must: 0, should: 0, nit: 0, question: 0, pre_existing: 0, other: 0}; .[$e.k] += 1)) as $counts
