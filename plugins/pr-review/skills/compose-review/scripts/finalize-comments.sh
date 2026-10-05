@@ -101,6 +101,11 @@ if [ "$IN" = - ]; then
   cat >"$SRC"
 else
   [ -f "$IN" ] && [ -r "$IN" ] || die_usage "入力 JSON が読めるファイルではない: $IN"
+  # 出力のリダイレクトが jq の読み込み前に入力を空にするので、同じファイルへの書き出しは受け付けない
+  if [ "$IN" -ef "$OUTPUT_PATH" ]; then
+    OUTPUT_PATH=""
+    die_usage "OUTPUT_PATH が入力 JSON と同じファイル: $IN"
+  fi
   SRC=$IN
 fi
 

@@ -501,6 +501,10 @@ check "= を含むパスは -- の後に置ける" "$OUT" '.label_counts.must ==
 before=$(ls "$TMPDIR" | grep -c '^compose-review-finalize-' || true)
 run OUT 0 bash -c 'cd "$1" && bash "$2" OUTPUT_PATH=out/rel.json "$3"' _ "$T" "$FINAL" "$T/fc2.json"
 [ "$OUT" = "$T/out/rel.json" ] && [ -f "$T/out/rel.json" ] && ok "相対の OUTPUT_PATH は絶対パスにして出す" || ng "相対の OUTPUT_PATH は絶対パスにして出す" "$OUT"
+cp "$T/fc2.json" "$T/same.json"
+run OUT 2 bash "$FINAL" OUTPUT_PATH="$T/same.json" "$T/same.json"
+[ -z "$OUT" ] && cmp -s "$T/fc2.json" "$T/same.json" \
+  && ok "OUTPUT_PATH が入力と同じファイルなら入力エラーにし、入力を壊さない" || ng "OUTPUT_PATH が入力と同じファイルなら入力エラーにし、入力を壊さない"
 after=$(ls "$TMPDIR" | grep -c '^compose-review-finalize-' || true)
 [ "$before" = "$after" ] && ok "OUTPUT_PATH を指定した回は作業ディレクトリを残さない" || ng "OUTPUT_PATH を指定した回は作業ディレクトリを残さない" "$before -> $after"
 
