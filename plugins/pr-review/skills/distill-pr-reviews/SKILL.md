@@ -23,7 +23,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 - `SINCE` / `UNTIL`: merged at で絞る期間 (`YYYY-MM-DD` 形式、UTC)。`SINCE` 省略時は `UNTIL - DAYS`、`UNTIL` 省略時は今日 (UTC) を使う。両方省略時は「過去 `DAYS` 日」になる。
 - `DAYS`: `SINCE` 未指定時のフォールバック期間 (日数)。省略時 `7`。`SINCE` が指定されていれば無視される。
 - `MAX_PRS`: 期間内 PR 数の上限警告閾値。省略時 `100`。超過しても処理は継続し、proposals.md 冒頭に「対象 PR が多いため信号品質が低下している可能性あり」を明記する。
-- `MAX_BUGFIX_DIFFS`: バグ修正PR (`pr_kind=bugfix`) の diff を取得する上限件数。省略時 `30`。バグ修正PRはレビューをすり抜けたバグの証拠であり、その修正 diff から再発防止のレビュー観点を抽出する (Phase D の新ソース)。コスト抑制のため subset 限定 + 件数上限で取得し、超過分は新しい順に打ち切って `meta.bugfix_diffs_truncated` に記録する。
+- `MAX_BUGFIX_DIFFS`: バグ修正PR (`pr_kind=bugfix`) の diff を取得する上限件数。省略時 `30`。バグ修正PRはレビューをすり抜けたバグの証拠であり、その修正 diff から再発防止のレビュー観点を抽出する。コスト抑制のため subset 限定 + 件数上限で取得し、超過分は新しい順に打ち切って `meta.bugfix_diffs_truncated` に記録する。
 - `FILTER_AUTHOR`: PR 作成者で絞り込む (例: `dependabot[bot]` を除外したい場合は `-author:dependabot[bot]` 形式で渡す)。省略時はフィルタなし。`gh pr list --search` の検索式にそのまま連結する。
 - `FILTER_LABEL`: PR ラベルで絞り込む (例: `label:bug`)。省略時はフィルタなし。同上、`--search` に連結する。
 - `INCLUDE_AI_AUTHORED`: `> **[AI 自動投稿]**` プレフィックス付きのコメントを採否候補に含めるか。省略時 `true`。`false` の場合でも信号 (`is_ai_authored`) は付与するが、Phase C で AI が一律 reject に倒す。値は `true` / `false` を推奨するが、scripts/collect-signals.sh では大文字小文字 / 周辺空白を正規化し `1` / `yes` / `y` / `0` / `no` / `n` も受け入れる (それ以外は `exit 2`)。
@@ -55,7 +55,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 5. **クラスタリングは Phase C (AI)**: 意味類似度判定が bash/jq では困難なため。Phase B では `path` ベースの「同一ファイル指摘」フラグだけ立てる。
 6. **採否は三値 (`accept` / `hold` / `reject`)**: 二値だと判断不能ケースが reject に流れて将来の蓄積機会を失う。迷ったら `hold` (`resolve-pr-threads` の保守的ルールと同思想)。
 7. **REVIEW.md 既存内容との重複判定は本 skill ではしない**: 後続フロー (REVIEW.md 編集) との責務分離を保つ。AI は proposals.md に「重複可能性あり」フラグだけ立てる。
-8. **バグ修正PR は検知 + diff 取得で「新しい抽出源」にする**: バグ修正PRはレビューをすり抜けたバグの証拠であり、その修正 diff を一般化すれば再発防止のレビュー観点になる。検知 (`pr_kind` / `bugfix_signals`) は既取得の title / commit / labels から追加 API コールなしで行い、diff のみ `pr_kind=bugfix` の subset に限定して `gh pr diff` (1 PR = 1 コール) で取得する。commit ごとに叩く REST `commits/{sha}` (commit 数 × 1 query) と違い subset 限定 + `MAX_BUGFIX_DIFFS` 件 + `DIFF_CHAR_CAP` 文字で抑えるため rate limit 影響は限定的。`is_revert` は本番に出荷されたバグの差し戻しで最も強い信号。検知は OR の粗いフィルタで false positive (例: 本体は refactor だが fix commit が混ざった PR) を許容し、最終的な一般化判断は Phase C/D の AI が diff を読んで行う。
+8. **バグ修正PR を検知し、その diff も抽出源にする**: バグ修正PRはレビューをすり抜けたバグの証拠であり、その修正 diff を一般化すれば再発防止のレビュー観点になる。検知 (`pr_kind` / `bugfix_signals`) は既取得の title / commit / labels から追加 API コールなしで行い、diff のみ `pr_kind=bugfix` の subset に限定して `gh pr diff` (1 PR = 1 コール) で取得する。commit ごとに叩く REST `commits/{sha}` (commit 数 × 1 query) と違い subset 限定 + `MAX_BUGFIX_DIFFS` 件 + `DIFF_CHAR_CAP` 文字で抑えるため rate limit 影響は限定的。`is_revert` は本番に出荷されたバグの差し戻しで最も強い信号。検知は OR の粗いフィルタで false positive (例: 本体は refactor だが fix commit が混ざった PR) を許容し、最終的な一般化判断は Phase C/D の AI が diff を読んで行う。
 9. **決定論的な Phase A + B (PR 一覧取得 / GraphQL / 信号付与) は bash + jq スクリプトに切り出す**: `scripts/collect-signals.sh` が `signals.json` を出力するまでを担い、AI (Phase C+D) は signals.json を読んで `proposals.md` を書き出す責務に集中する。スクリプト化のメリットは挙動の再現性と AI 側プロンプトの圧縮で、デメリットは信号定義を変えたい場合に SKILL.md + スクリプト両方を編集する必要がある点 (signals.json のスキーマを変えると Phase C の AI 解釈もズレるため、両者は本 SKILL.md の `signals.json` スキーマ定義で同期させる)。
 10. **配置先 REVIEW.md の決定は Phase C の AI が行い、スクリプトは既存パス一覧だけを渡す**: 出典パスの最長共通ディレクトリ (LCD) は機械計算できるが、「そのルールがどの範囲で成立するか」(web 全体なのか auth だけなのか、リポジトリ横断なのか) は意味判断なので AI に委ねる。スクリプトは `meta.existing_review_md_paths` を渡すだけ。既存階層に寄せるのは、新規 `REVIEW.md` ファイルの乱立を避け、1 ファイルに適用される祖先 `REVIEW.md` 数 (`compose-review` の 10 個目安) を無駄に増やさないため。root を「横断ルールだけ」に絞るのは、root に何でも積むと monorepo の全パッケージに無関係な観点が効いてしまうためで、これがディレクトリ別分割の動機そのもの。
 
@@ -224,8 +224,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
    - バグ修正PRに付いたレビューコメントは「レビューがすり抜けた領域」を指す指摘であり、同種バグの再発防止に効く一般化価値が高い → accept 寄りに加点する。
    - `bugfix_signals` は raw のまま渡されるので、AI は確信度を文脈判断する (例: `is_revert=true` は本番に出荷されたバグの差し戻しで最も強い信号、`commit_type_fix` 単独は本体は別種別の PR に fix commit が混ざっただけの可能性があり弱い)。
 
-8. **バグ修正diff由来の観点抽出 (新ソース, `source=bugfix-diff`)**
-   - `pr_kind=bugfix` かつ `bugfix_diff` がある PR は、diff を読んで「このバグを事前に検出できた汎用レビュー観点」を AI が起こす。**レビューコメントが付いていない hotfix でもここから観点を抽出できる** (本 skill の従来ギャップの解消)。
+8. **バグ修正diff由来の観点抽出 (`source=bugfix-diff`)**
+   - `pr_kind=bugfix` かつ `bugfix_diff` がある PR は、diff を読んで「このバグを事前に検出できた汎用レビュー観点」を AI が起こす。**レビューコメントが付いていない hotfix でもここから観点を抽出できる**。
    - 例: null チェック漏れの修正 → 「外部入力の null / undefined 経路を確認する」。境界値の修正 → 「ページネーション / 配列インデックスの境界を確認する」。
    - 一般化判断は axis 1 と同じ: 他 PR にも応用できる観点のみ `accept`。この PR 固有のロジック誤り (一回限り) は `reject`。`bugfix_diff_truncated=true` の場合は diff が途中までしか無い旨を踏まえ、断定できなければ `hold`。
    - クラスタリング (axis 5) はコメント由来候補とも統合してよい (同じ観点ならまとめ、`sources[]` に PR を併記)。

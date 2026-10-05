@@ -13,6 +13,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 CHANGED="$HERE/changed-files.sh"
 READ="$HERE/read-instruction-files.sh"
 RENDER="$HERE/render-instruction-links.sh"
+FINAL="$HERE/finalize-comments.sh"
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/compose-review-test-XXXXXX")
 trap 'rm -rf "$T"' EXIT
@@ -430,6 +431,82 @@ run OUT 0 bash "$RENDER" <(echo '{"mode":"local","adopted":[]}')
 check "1 つも無ければ なし" "$OUT" '.lines == ["なし"]'
 run OUT 2 bash "$RENDER" <(echo '{"mode":"pr","owner":"o","repo":"r","head_sha":"main","adopted":[]}')
 [ -z "$OUT" ] && ok "head_sha が SHA でなければ入力エラー" || ng "head_sha が SHA でなければ入力エラー"
+
+# ========== finalize-comments.sh ==========
+cat > "$T/fc.json" <<'EOF'
+{"comments": [
+  {"path": "a", "line": 1, "body": "[nit] a"},
+  {"path": "b", "line": 2, "body": "[MUST] b"},
+  {"path": "c", "line": 3, "body": "[blocker] c"},
+  {"path": "d", "line": 4, "body": "[should] d"},
+  {"path": "e", "line": 5, "body": "ラベルなし"},
+  {"path": "f", "line": 6, "body": "[weird] f"},
+  {"path": "g", "line": 7, "body": "[pre_existing] g"}],
+ "label_map": {"[Blocker]": "MUST"}}
+EOF
+run OUT 0 bash "$FINAL" MAX_INLINE_COMMENTS=3 "$T/fc.json"
+check "label_counts は上限適用前の全件 (label_map は大文字小文字と [] を無視・未知ラベルは other)" "$OUT" '.label_counts == {must: 2, should: 1, nit: 1, question: 0, pre_existing: 1, other: 2}'
+check "上限は優先度順に残し、入力順で返す" "$OUT" '.kept_indices == [1, 2, 3] and ([.comments[].path] == ["b", "c", "d"])'
+check "breakdown は残した指摘の内訳" "$OUT" '.breakdown == "[must] 2 件 / [should] 1 件"'
+check "omitted_note に省略件数と内訳 (other も数える)" "$OUT" '.omitted_count == 4 and .omitted_note == "上限 3 件を超えたため 4 件を省略 ([nit] 1 件 / [pre_existing] 1 件 / その他 2 件)。"'
+run OUT 0 bash "$FINAL" MAX_INLINE_COMMENTS='"3"' "$T/fc.json"
+check "数値でない上限は上限なし + warnings" "$OUT" '.max_inline_comments == "unlimited" and (.comments | length) == 7 and (.warnings | length) == 1'
+run OUT 0 bash "$FINAL" "$T/fc.json"
+check "MAX_INLINE_COMMENTS 省略は上限なし" "$OUT" '.max_inline_comments == "unlimited" and .omitted_note == null and .warnings == []'
+run OUT 0 bash "$FINAL" MAX_INLINE_COMMENTS=unlimited - < <(echo '{"comments": []}')
+check "指摘なしは全キー 0 と 指摘なし" "$OUT" '.label_counts == {must: 0, should: 0, nit: 0, question: 0, pre_existing: 0, other: 0} and .breakdown == "指摘なし"'
+run OUT 2 bash "$FINAL" - < <(echo '{"comments": ["x"]}')
+[ -z "$OUT" ] && ok "comments の要素が object でなければ入力エラー" || ng "comments の要素が object でなければ入力エラー"
+run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"blocker": "critical"}}')
+[ -z "$OUT" ] && ok "label_map の値が標準ラベルでなければ入力エラー" || ng "label_map の値が標準ラベルでなければ入力エラー"
+
+cat > "$T/fc2.json" <<'EOF'
+{"comments": [
+  {"path": "a", "line": 1, "body": "[要修正] a"},
+  {"path": "b", "line": 2, "body": "[must-fix] b"},
+  {"path": "c", "line": 3, "body": "ラベルなし"}],
+ "label_map": {"要修正": "must", "[Must-Fix]": "should"}}
+EOF
+run OUT 0 env MAX_INLINE_COMMENTS=1 bash "$FINAL" "$T/fc2.json"
+check "非 ASCII・ハイフン入りの独自ラベルも label_map で寄せる / 環境変数の MAX_INLINE_COMMENTS は読まない" "$OUT" '.label_counts == {must: 1, should: 1, nit: 0, question: 0, pre_existing: 0, other: 1} and .max_inline_comments == "unlimited"'
+run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"blocker": "must", "[BLOCKER]": "nit"}}')
+[ -z "$OUT" ] && ok "label_map のキーが正規化後に重複すれば入力エラー" || ng "label_map のキーが正規化後に重複すれば入力エラー"
+run OUT 2 bash "$FINAL" - < <(echo '{"comments": [], "label_map": {"[]": "must"}}')
+[ -z "$OUT" ] && ok "label_map の空キーは入力エラー" || ng "label_map の空キーは入力エラー"
+for lm in '{"MUST": "nit"}' '{" must": "nit"}' '{"[should]": "pre_existing"}' '{"mu\u200bst": "question"}' '{"ＭＵＳＴ": "nit"}' '{"nit": "must"}' '{"nit": "question"}'; do
+  run OUT 2 bash "$FINAL" - < <(echo '{"comments": [{"path": "a", "line": 1, "body": "[must] a"}], "label_map": '"$lm"'}')
+  [ -z "$OUT" ] && grep -q '付け替える' "$T/last.err" \
+    && ok "標準ラベルの付け替えは入力エラー: $lm" || ng "標準ラベルの付け替えは入力エラー: $lm" "$(cat "$T/last.err")"
+done
+cat > "$T/fc3.json" <<'EOF'
+{"comments": [
+  {"path": "a", "line": 1, "body": "[ must] a"},
+  {"path": "b", "line": 2, "body": "[[MUST]] b"},
+  {"path": "c", "line": 3, "body": "[mu\u200bst] c"},
+  {"path": "d", "line": 4, "body": "[ＭＵＳＴ] d"},
+  {"path": "e", "line": 5, "body": " \u200b[should] e"},
+  {"path": "h", "line": 8, "body": "\u3000［must］ h"},
+  {"path": "f", "line": 6, "body": "[nit] f"},
+  {"path": "g", "line": 7, "body": "[blocker] g"}],
+ "label_map": {"must": "must", "blocker": "must"}}
+EOF
+run OUT 0 bash "$FINAL" "$T/fc3.json"
+check "空白・二重括弧・書式文字・全角 (括弧を含む)・前置きの空白があっても標準ラベルとして数え、恒等の対応は受け付ける" "$OUT" '.label_counts == {must: 6, should: 1, nit: 1, question: 0, pre_existing: 0, other: 0}'
+mkdir -p "$T/fcdir"
+run OUT 2 bash "$FINAL" "$T/fcdir"
+[ -z "$OUT" ] && ok "入力がディレクトリなら入力エラー" || ng "入力がディレクトリなら入力エラー"
+cp "$T/fc2.json" "$T/a=b.json"
+run OUT 0 bash "$FINAL" -- "$T/a=b.json"
+check "= を含むパスは -- の後に置ける" "$OUT" '.label_counts.must == 1'
+before=$(ls "$TMPDIR" | grep -c '^compose-review-finalize-' || true)
+run OUT 0 bash -c 'cd "$1" && bash "$2" OUTPUT_PATH=out/rel.json "$3"' _ "$T" "$FINAL" "$T/fc2.json"
+[ "$OUT" = "$T/out/rel.json" ] && [ -f "$T/out/rel.json" ] && ok "相対の OUTPUT_PATH は絶対パスにして出す" || ng "相対の OUTPUT_PATH は絶対パスにして出す" "$OUT"
+cp "$T/fc2.json" "$T/same.json"
+run OUT 2 bash "$FINAL" OUTPUT_PATH="$T/same.json" "$T/same.json"
+[ -z "$OUT" ] && cmp -s "$T/fc2.json" "$T/same.json" \
+  && ok "OUTPUT_PATH が入力と同じファイルなら入力エラーにし、入力を壊さない" || ng "OUTPUT_PATH が入力と同じファイルなら入力エラーにし、入力を壊さない"
+after=$(ls "$TMPDIR" | grep -c '^compose-review-finalize-' || true)
+[ "$before" = "$after" ] && ok "OUTPUT_PATH を指定した回は作業ディレクトリを残さない" || ng "OUTPUT_PATH を指定した回は作業ディレクトリを残さない" "$before -> $after"
 
 # ========== read-only ==========
 [ "$(git -C "$R" rev-parse HEAD)" = "$HEAD" ] && [ -z "$(git -C "$R" status --porcelain)" ] \

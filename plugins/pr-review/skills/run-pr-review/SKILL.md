@@ -99,7 +99,7 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 
 #### 戻り値の扱い
 
-> ⚠️ **ターンを終了しない (最頻の停止バグ)**: `compose-review` は完成 JSON を **`HANDOFF_PATH` にファイル書き出し**し、最終メッセージでは「`HANDOFF_PATH` を `Read` して続行せよ」という **継続指示文** を返す (自己完結 JSON は最終メッセージに出さない設計)。現在コンテキスト直接呼びでは Task ツールのような明示的な制御戻り境界が無いため、ここで応答を打ち切ると、レビュー本文を生成しただけで **Step 4 (投稿) 以降が実行されず、PR に何も投稿されないまま停止する** (この設計で最も起こりやすい失敗)。**`compose-review` から戻ったら、まず `Read` ツールで `HANDOFF_PATH` (本 skill が Step 3 で渡したパス) を読み込む**こと。読み込んだ JSON は **中間成果物** として保持し、**同一応答内で間を置かず Step 4 → Step 5 → Step 6 まで連続実行する**。投稿・resolve・報告 (Step 6) を終えるまで応答を終了してはならない。
+`compose-review` は完成 JSON を `HANDOFF_PATH` に書き出し、最終メッセージとして「`HANDOFF_PATH` を `Read` して続行せよ」という継続指示を返す。`compose-review` の完了は本 skill の途中経過なので、戻ったら `Read` ツールで `HANDOFF_PATH` (本 skill が Step 3 で渡したパス) を読み、同じ応答の中で Step 4 → Step 5 → Step 6 まで続ける。現在コンテキストでの直接呼びには Task ツールのような戻り境界が無く、ここで応答を終えると PR に何も投稿されないまま止まる。
 
 `Read` で取得した `HANDOFF_PATH` の中身は PR モードの JSON (`mode` / `body` / `event` / `comments[]` / `label_counts` / `external_review` / `escalation` / `commit_id`) または error JSON。これを parse して各フィールドを読み取り、後続 step に渡す:
 
@@ -129,7 +129,7 @@ Step 1 の `OWNER` / `REPO` / `PR_NUMBER` / `CHANNEL` と Step 3 で得たレビ
 
 `ESCALATION` を転送するときは **必ず 1 行の JSON にシリアライズする** (`reasons[]` の各要素から改行を除去する)。`reasons` は自由文 (レビュー対象の差分内容に影響されうる) なので、改行が混ざると後続行が別 key として解釈され `post-pr-review` の `KEY=VALUE` parse が壊れる (`LABEL_COUNTS` / `EXTERNAL_REVIEW` と同じ制約。`reason` 自由文を含む `EXTERNAL_REVIEW` より更に壊れやすい前提で扱う)。1 行に収められない場合は **`reasons` を空配列にして `escalate` だけを転送する** (行は `reasons=0` で出る。理由本文は `body` の `## エスカレーション` セクションに残るので情報は失われない)。
 
-`escalation` を **`escalate: true` の回だけ転送する**のは、エスカレーション基準を持たない caller (プロジェクト指示ファイルに基準の記載が無い = 大多数) の出力を従来と完全に同一に保つため。`compose-review` は基準が無い回も `escalation` を `{"escalate": false, "reasons": []}` として **必ず返す** 契約 (フィールドを省略しない) なので、これを無条件に転送すると全 PR の Review body に `<!-- AI-REVIEW-ESCALATE: escalate=0 reasons=0 -->` が付き、この機能を使っていない caller の出力が変わってしまう。`escalate: false` は CI にとって何のアクションも生まない値 (レビュアー追加の信号は `escalate=1` のみ) なので、転送しないことで失われる情報は無い。**`escalate: false` だった回も Step 6 の報告では `エスカレーション: 不要` と 1 行出す** (黙って落とさない)。`escalation` の欠落 / 破損で転送しなかった回は「不要」ではなく `不明` と報告する (Step 3 の戻り値の扱い参照。両者を取り違えさせない)。
+`escalation` を **`escalate: true` の回だけ転送する**のは、エスカレーション基準を持たない caller (プロジェクト指示ファイルに基準の記載が無い = 大多数) の Review body に `AI-REVIEW-ESCALATE` 行を足さないため。`compose-review` は基準が無い回も `escalation` を `{"escalate": false, "reasons": []}` として **必ず返す** 契約 (フィールドを省略しない) なので、これを無条件に転送すると全 PR の Review body に `<!-- AI-REVIEW-ESCALATE: escalate=0 reasons=0 -->` が付き、この機能を使っていない caller の出力が変わってしまう。`escalate: false` は CI にとって何のアクションも生まない値 (レビュアー追加の信号は `escalate=1` のみ) なので、転送しないことで失われる情報は無い。**`escalate: false` だった回も Step 6 の報告では `エスカレーション: 不要` と 1 行出す** (黙って落とさない)。`escalation` の欠落 / 破損で転送しなかった回は「不要」ではなく `不明` と報告する (Step 3 の戻り値の扱い参照。両者を取り違えさせない)。
 
 `label_counts` の転送は **Review body の機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=… -->`) の件数を正確にするため**に必要 (`post-pr-review` は `LABEL_COUNTS` が無ければ `comments[]` から集計するが、それでは `MAX_INLINE_COMMENTS` で省略された指摘が件数から落ちる)。サマリ行は CI (required status check 等) がパースする契約なので、`compose-review` が返した値をそのまま転送し、本 skill 側で再集計・加工しない。`COMMIT_ID` も CI が「head SHA に対するレビューか」を review の `commit_id` で判定する前提のため常時転送する。**値の決め方は Step 2 の head SHA の箇条に従う** (ここで別の規則を持たない。規則が 2 箇所にあると force-push race の回にどちらに従うかで転送値が揺れるため)。
 
