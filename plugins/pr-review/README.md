@@ -184,11 +184,13 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 A: PR 作成 → delegate-pr-review → B を起動
 B: run-pr-review で Review を投稿 → A に完了を通知 (send_message)
 A: 指摘を検討・修正・push・スレッドに返信 (MAX_REVIEW_ROUNDS が残っていれば B に再レビューを依頼)
+   ※ Phase 2 は A が起動した B からの通知でだけ始める (Review の webhook では始めない)
 ```
 
 ### 必要なもの
 
 - **A がクラウドセッション (Claude Code on the web) であること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う。これらは公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
+- **A が権限確認なしでツールを使えるモード (auto 等) で動いていること**: B の permission mode は A から引き継がれる。A が操作のたびに承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まる。
 - **B で `run-pr-review` が使えること**: B は A と同じ環境で、対象リポジトリを checkout して起動する。どのリポジトリでも使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく。
 
   ```bash
@@ -206,10 +208,10 @@ PR を作ったら呼ぶよう、全プロジェクト共通の指示に書い�
 
 ```markdown
 - PR を作成したら、確認なしで `delegate-pr-review` skill を呼び、別セッションにレビューを委譲する。
-  レビュー結果 (`[delegate-pr-review:done]` メッセージ、または `AI-REVIEW-RESULT` を含む Review) が届いたら、同じ skill の Phase 2 で対応する。
+  委譲したレビューセッションから `[delegate-pr-review:done]` / `[delegate-pr-review:failed]` が届いたら、同じ skill の Phase 2 で対応する。
 ```
 
-B のモデルと effort は、既定で `claude-opus-5-5` / `medium`。`REVIEW_MODEL` / `REVIEW_EFFORT` で変えられる。`create_session` には effort を指定する引数が無いため、B の最初のプロンプトを `/effort <REVIEW_EFFORT>` にして設定し、レビューの開始は別途 `send_message` で知らせる (詳細は SKILL.md Phase 1 Step 4〜5)。
+B のモデルと effort は、既定で `claude-opus-5-5` / `medium`。`REVIEW_MODEL` / `REVIEW_EFFORT` で変えられる。`create_session` には effort を指定する引数が無いため、B の最初のプロンプトを `/effort <REVIEW_EFFORT>` にして設定し、レビューの開始は別途 `send_message` で知らせる (詳細は SKILL.md Phase 1 Step 3〜4)。
 
 ## 利用方法 (GitHub Actions)
 
