@@ -1,6 +1,6 @@
 # pr-review plugin
 
-PR レビューを **1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
+PR レビューを **1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、PR のレビューを別のリモートセッションに委譲して結果に対応する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
 
 ## 提供 skill / command
 
@@ -11,6 +11,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称で、両者とも sub-agent を立てず現在コンテキストで `compose-review` を直接呼ぶ。
 - `skills/distill-pr-reviews`: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を `proposals.md` として出力する skill。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する (`MAX_BUGFIX_DIFFS` で diff 取得上限を制御)。信号収集はスクリプト、最終的な採否分類 (`accept` / `hold` / `reject`) とクラスタリングと配置先決定は AI が行う。各候補には **配置先 REVIEW.md** (root / `apps/web/REVIEW.md` 等のディレクトリ別) を付けて振り分け、配置先ごとにそのまま追記できる断片 (`review-md/<dir>/REVIEW.md`) も出力する (既存 REVIEW.md の配置に寄せるため default branch の tree を 1 コール取得する。**中身は読まない**)。read-only で REVIEW.md 編集 / PR 作成は行わない。**収集スクリプトが `gh` CLI に依存するため gh チャネル専用** (gh が使えない環境では動かない。後述「GitHub アクセスチャネル」参照)。
+- `skills/delegate-pr-review`: 作成済み PR のレビューを **別のリモートセッションに委譲** し、投稿された Review に元のセッションで対応する skill。PR 作成直後に呼ぶと、レビュー専用セッションを起動して `run-pr-review` を実行させ、完了通知を受けて指摘の検討・修正・push・スレッドへの返信までを行う。クラウドセッション専用 (後述「別セッションへのレビュー委譲」)。
 - `commands/pr-review-style-reference`: `/pr-review-style-reference` で呼び出す **スタイル参考ガイド** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。レビューコメントの書き方・体裁が対象で、技術観点 (何を見るか) は対象外。`compose-review` から内部的に呼ばれる。
 
 レビュー方針は caller (ユーザー) に委ねる前提。本スタイル参考ガイドは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。技術観点 (何をレビューするか) は caller 側で別途指定する想定。
@@ -174,6 +175,47 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 例外は `distill-pr-reviews`: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり、bash からは MCP ツールを呼べないため **gh チャネル専用** (gh が使えない環境では実行できない)。
 
 なお PR 差分と指示ファイルの取得 (`compose-review`) は **pure-git (read-only fetch + `git diff` / `git show`) が主経路** で、どちらのチャネルにも依存しない。ただし git が使えない / head object を fetch できない環境では `gh` 経路に degrade する (詳細は `compose-review` Step 3 / Step 4)。変更ファイル一覧・祖先 `REVIEW.md` の列挙・指示ファイルの全文取得と `エスカレーション基準` 見出しの検出・「参照した指示ファイル」のリンク描画・件数上限の適用と `label_counts` の集計は、入力で結果が決まる処理なので bash + jq スクリプト (`skills/compose-review/scripts/`) に切り出してある (`gh` 経路への degrade もスクリプトが行う)。スクリプトのテストは `bash plugins/pr-review/skills/compose-review/scripts/test-scripts.sh` で実行できる (一時 git リポジトリと `gh` のスタブで検証する)。
+
+## 別セッションへのレビュー委譲 (`delegate-pr-review`)
+
+開発したセッション (A) が作った PR のレビューを、別のリモートセッション (B) に `run-pr-review` で行わせ、投稿された Review に A が対応する。レビューを別セッションに分けるのは、実装時の思い込みを引き継がないレビューにするため。手順の正典は [`skills/delegate-pr-review/SKILL.md`](skills/delegate-pr-review/SKILL.md)。
+
+```text
+A: PR 作成 → delegate-pr-review → B を起動
+B: run-pr-review で Review を投稿 → 投稿した Review の ID を A に通知 (send_message)
+A: 指摘を検討・修正・push・スレッドに返信 (MAX_REVIEW_ROUNDS が残っていれば B に再レビューを依頼)
+   ※ A が対応するのは B が通知した ID の Review だけ (Review の webhook では始めない)
+```
+
+### 必要なもの
+
+- **A がクラウドセッション (Claude Code on the web) であること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う。これらは公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
+- **A が auto モード (または bypassPermissions) で動いていること**: B の permission mode は A から引き継がれる。A が操作のたびに承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B はレビューに要るツールを使えずに失敗する。
+- **B で `run-pr-review` が使えること**: B は A と同じ環境で、対象リポジトリを checkout して起動する。どのリポジトリでも使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく。
+
+  ```bash
+  claude plugin install pr-review --marketplace abeyuya/skills --scope user -y \
+    || echo "[setup] WARN: pr-review plugin install failed" >&2
+  ```
+
+  - セットアップスクリプトが 0 以外で終わるとセッションが起動しないため、失敗しても 0 で終わるようにしておく。
+  - セットアップスクリプトの結果は環境ごとにキャッシュされ、再実行されるのはスクリプトを変更したときかキャッシュが切れたときだけ。plugin を更新しても、すぐには反映されない。
+  - B で `run-pr-review` が見つからなかったときは、B が `[delegate-pr-review:failed]` を A に通知する。
+
+### 呼び出し方
+
+PR を作ったら呼ぶよう、全プロジェクト共通の指示に書いておく (クラウドなら、セットアップスクリプトで書き出す `~/.claude/CLAUDE.md`)。
+
+```markdown
+- PR を作成したら、確認なしで `delegate-pr-review` skill を呼び、別セッションにレビューを委譲する。
+  委譲したレビューセッションから `[delegate-pr-review:done]` / `[delegate-pr-review:failed]` が届いたら、同じ skill の Phase 2 で対応する。
+```
+
+委譲中の PR では、A と同じアカウントの AI レビュー (AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review) とその指摘コメント (重要度ラベルで始まるもの)、同じアカウントの AI 投稿の返信 (先頭行に `[AI 自動投稿]` を含むもの) を、通常の PR 監視では扱わない。B も A と同じユーザーの GitHub 認証で投稿するので、監視と委譲の両方で同じ Review に二重に対応しないようにするため。そのぶん、委譲中に同じアカウントから手動実行した AI レビューには自動では対応しない (対応させたいときは A に明示的に頼む)。委譲中に見送った webhook は再送されないので、委譲を終えたあとも自動では扱われない。委譲を終えたあとに届いた Review は、B から通知を受けて対応済みのものを除き、通常の PR 監視で扱う。
+
+A は、B の Review に属する指摘コメントを `gh api` (GitHub REST API) で Review の ID から取る (GitHub MCP ツールには Review ごとのコメント一覧を取る手段が無いため)。`gh api` が REST を呼べない環境では、A は B の Review に対応できない。
+
+B のモデルと effort は、既定で `claude-opus-5-5` / `medium`。`REVIEW_MODEL` / `REVIEW_EFFORT` で変えられる。`create_session` には effort を指定する引数が無いため、B の最初のプロンプトを `/effort <REVIEW_EFFORT>` にして設定し、レビューの開始は別途 `send_message` で知らせる (詳細は SKILL.md Phase 1 Step 2〜3)。
 
 ## 利用方法 (GitHub Actions)
 
