@@ -62,10 +62,10 @@ gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)�
 
 caller から渡されていればそれを使う。未指定なら現在のブランチ (`git rev-parse --abbrev-ref HEAD`) に紐づく open PR を引く:
 
-- `CHANNEL=gh`: `gh api -X GET repos/<OWNER>/<REPO>/pulls -f head=<OWNER>:<現在ブランチ名> -f state=open --jq '.[0].number // empty'` (`CHANNEL=mcp` と同じ `head` / `state` の条件で REST から引く。`gh pr view <ブランチ名>` は open な PR が無いと同じブランチの close / merge 済み PR を返すので使わない。リポジトリは Step 1-1 で確定した `OWNER`/`REPO` をパスで明示する。gh のデフォルトリポジトリ設定に頼ると、origin から抽出した `OWNER`/`REPO` と別リポジトリの PR を引いて Step 2 以降と食い違うため)。
+- `CHANNEL=gh`: `gh api -X GET repos/<OWNER>/<REPO>/pulls -f head=<OWNER>:<現在ブランチ名> -f state=open --jq 'if length == 1 then .[0].number else empty end'` (`CHANNEL=mcp` と同じ `head` / `state` の条件で REST から引く。`gh pr view <ブランチ名>` は open な PR が無いと同じブランチの close / merge 済み PR を返すので使わない。リポジトリは Step 1-1 で確定した `OWNER`/`REPO` をパスで明示する。gh のデフォルトリポジトリ設定に頼ると、origin から抽出した `OWNER`/`REPO` と別リポジトリの PR を引いて Step 2 以降と食い違うため)。
 - `CHANNEL=mcp`: `mcp__github__list_pull_requests` を `owner` / `repo` / `head=<OWNER>:<現在ブランチ名>` / `state=open` で呼び、返った PR の番号を使う。
 
-紐づく PR が無い場合はエラーとして停止し、caller に明示的に PR 番号を渡すよう促す。**fork からの PR に注意**: PR head が fork リポジトリにある場合、head owner は `OWNER` (base 側) と異なるため、上記の pure-git 由来 `OWNER` を使った検索 (gh / mcp とも `head=<OWNER>:...` で絞る) では 0 件になりうる。この場合は「紐づく PR を自動特定できなかった」として停止し、caller に `PR_NUMBER` の明示 (と cross-repo なら base 側 `OWNER`/`REPO`) を促す (誤った PR を掴むより明示を求める方が安全)。
+紐づく PR が無い場合と、open な PR が複数返った場合 (同じ head から別 base への PR) はエラーとして停止し、caller に明示的に PR 番号を渡すよう促す (どれか 1 つを選ぶと、意図しない PR にレビューを投稿しうるため。gh / mcp で同じ扱い)。**fork からの PR に注意**: PR head が fork リポジトリにある場合、head owner は `OWNER` (base 側) と異なるため、上記の pure-git 由来 `OWNER` を使った検索 (gh / mcp とも `head=<OWNER>:...` で絞る) では 0 件になりうる。この場合は「紐づく PR を自動特定できなかった」として停止し、caller に `PR_NUMBER` の明示 (と cross-repo なら base 側 `OWNER`/`REPO`) を促す (誤った PR を掴むより明示を求める方が安全)。
 
 `OWNER` / `REPO` / `PR_NUMBER` の 3 つすべてが非空であることを確認してから次 step に進む。1 つでも空文字 / 未取得が混じると `compose-review` がローカルモードに falls through する可能性があるため、本 step で弾く責務は本 skill にある。
 

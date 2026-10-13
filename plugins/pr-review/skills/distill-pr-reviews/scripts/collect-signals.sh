@@ -290,11 +290,11 @@ for PR_NUMBER in $PR_NUMBERS; do
   while :; do
     if [[ -z "$TAFTER" ]]; then
       PAGE=$(gh api graphql \
-        -F owner="$OWNER" -F name="$REPO" -F number="$PR_NUMBER" \
+        -f owner="$OWNER" -f name="$REPO" -F number="$PR_NUMBER" \
         -f query="$GQL_PR")
     else
       PAGE=$(gh api graphql \
-        -F owner="$OWNER" -F name="$REPO" -F number="$PR_NUMBER" \
+        -f owner="$OWNER" -f name="$REPO" -F number="$PR_NUMBER" \
         -F tafter="$TAFTER" \
         -f query="$GQL_PR")
     fi
