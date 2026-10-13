@@ -47,11 +47,11 @@ A が B から受け取るのは `done` / `failed` の 2 種類だけ。指摘�
 
 `start` / `rereview` は、どの場面 (Phase 1 Step 4 / Phase 2 Step 6 / ユーザーの指示による再開) でも次の手順で送る。
 
-1. 送る直前に `date -u +%Y-%m-%dT%H:%M:%SZ` で時刻を取り、`REQUESTED_AT` に記録する (B のコメントの `created_at` と比べるので、UTC の ISO 8601 にし、B が作業を始めるより前の時刻にする)。
+1. 送る直前に `date -u +%Y-%m-%dT%H:%M:%SZ` で時刻を取って控える (B のコメントの `created_at` と比べるので、UTC の ISO 8601 にし、B が作業を始めるより前の時刻にする)。
 2. `send_message` で B (`B_SESSION_ID`) に送る。`priority` は `later` にする。`later` は B の処理中のターンが終わるのを待つので、B が起動処理中でも `/effort` より先に作業が始まらず、B の作業中に割り込むこともない。
-3. `WAITING` を真にする。
+3. 送信に成功したら、控えた時刻を `REQUESTED_AT` に記録し、`WAITING` を真にする。
 
-送信に失敗したら、`WAITING` は偽のまま、B のセッション ID と失敗の内容をユーザーに報告する。
+送信に失敗したら、`REQUESTED_AT` / `WAITING` は変えずに、B のセッション ID と失敗の内容をユーザーに報告する。
 
 ## 委譲の状態
 
@@ -63,7 +63,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `MAX_REVIEW_ROUNDS` / `REVIEW_OPTIONS`: 呼び出し時の値
 - `REQUESTED_AT`: B に最後に `start` / `rereview` を送った時刻 (UTC)
 - `WAITING`: B の応答を待っているか。依頼を送ったら真、B の `done` / `failed` か、B についての `<child-session-event>` を受け取ったら偽
-- `SKIPPED_REVIEWS`: `WAITING` が真の間に、webhook を見送った B の Review の URL
+- `SKIPPED_REVIEWS`: `WAITING` が真の間に、webhook を見送った B の Review の URL。対応済みになった Review は除く
 - 対応済みの Review の ID (Phase 2 で対応したものに加え、`WAITING` が偽の間に通常の PR 監視の流れで対応した B の Review も含む)
 
 ## Phase 1: B を起動する (PR 作成直後)
@@ -71,14 +71,15 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 ### Step 1. 前提と対象 PR を確定する
 
 1. `get_session` / `create_session` / `send_message` が使えることを確認する。無ければ停止して報告する (「前提」参照)。
-2. `OWNER` / `REPO` / `PR_NUMBER` を確定する。
-3. 同じ PR の B が既にいれば、新しく起動しない (同じ PR に B が複数いると、Review が重複して A の対応も二重になるため)。
+2. `get_session` を `session_id` を省略して呼び、自セッションの `permission_mode` が auto か bypassPermissions であることを確認する。それ以外なら B を起動せずに停止し、理由を報告する (B が承認待ちや権限不足で止まると、A に何も届かず待ち続けることになるため)。返った自セッションの ID (`session_` で始まる値) は、Step 2 の `A_SESSION_ID` として使う。
+3. `OWNER` / `REPO` / `PR_NUMBER` を確定する。
+4. 同じ PR の B が既にいれば、新しく起動しない (同じ PR に B が複数いると、Review が重複して A の対応も二重になるため)。
    - この会話に、その PR の委譲の状態が記録されている → 再レビューは Phase 2 Step 6 の `rereview` で依頼する。
    - `list_sessions` で、title が `review: <OWNER>/<REPO>#<PR_NUMBER>` のアーカイブされていないセッションが見つかる (別の会話で起動したもの) → 起動せず、ユーザーにどうするか確認する。`list_sessions` は既定で 20 件しか返さず title で絞り込めないので、PR の作成時刻より新しいセッションを `after_id` でページングしてすべて見る。
 
 ### Step 2. 自分のセッション ID を取得する
 
-`get_session` を `session_id` を省略して呼び、返ってきた自セッションの ID (`session_` で始まる値) を `A_SESSION_ID` として控える。B が完了を通知する宛先になる。
+Step 1-2 で取得した自セッションの ID を `A_SESSION_ID` として控える。B が完了を通知する宛先になる。
 
 ### Step 3. B を起動する
 
@@ -127,7 +128,7 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 
 ### Step 4. レビューを開始させる
 
-「B への依頼の送り方」に従って `[delegate-pr-review:start] pr=<PR URL> round=1` を送る。B は最初のプロンプト (`/effort`) を処理したあと待機しているので、このメッセージで作業を始める。送信に失敗しても、Step 5 で委譲の状態は記録する (`WAITING` は偽のまま)。ユーザーが再開を指示したときに `B_SESSION_ID` を使えるようにするため (B は起動したまま何もしていない)。
+「B への依頼の送り方」に従って `[delegate-pr-review:start] pr=<PR URL> round=1` を送る。B は最初のプロンプト (`/effort`) を処理したあと待機しているので、このメッセージで作業を始める。送信に失敗したら、委譲の状態は記録せずに報告して終える (記録すると、同じ PR でもう一度呼ばれたときに Step 1-4 が `rereview` の経路に入ってしまうため)。B は起動したまま何もしていないので、アーカイブしてよいかをユーザーに確認し、了承されたら `archive_session` でアーカイブする。
 
 ### Step 5. 状態を記録して報告し、ターンを終える
 
@@ -154,14 +155,12 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 
 - 自動では再試行しない。B が失敗の前後に Review を投稿していることがあり、再試行すると同じラウンドの Review が 2 つになりうるため。
 - `SKIPPED_REVIEWS` に記録した Review があれば、その URL も報告に含める (ユーザーが対応を指示できるように)。
-- 理由が一時的なもの (head SHA の照合で停止した = レビュー中に push があった等) なら、報告の中で再開を提案する。ユーザーが再開を指示したら、まず `REQUESTED_AT` 以降に、author が A と同じで AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review が無いかを `get_reviews` で確かめる。あれば B が失敗の前に投稿したものなので、再開せずにその Review を対象に Step 2 から対応する。無ければ「B への依頼の送り方」で `[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送る。A 自身が予定している push (CI の修正等) があれば、その push を終えてから送る。
+- 理由が一時的なもの (head SHA の照合で停止した = レビュー中に push があった等) なら、報告の中で再開を提案する。ユーザーが再開を指示したら、まず `get_reviews` を全ページ取得し、`REQUESTED_AT` 以降に投稿され、author が A と同じで AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、まだ対応済みでない Review を探す。あれば B が失敗の前に投稿したものなので、再開せずに、そのうち最新の 1 つを対象として Step 2 の 2 から対応する (Step 2-1 の対象選びはメッセージが無いので行わない。対応済みの記録は Step 2-1 と同じく、ここで行う)。無ければ「B への依頼の送り方」で `[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送る。A 自身が予定している push (CI の修正等) があれば、その push を終えてから送る。
 - 再開しても同じ結果になる理由 (plugin が見つからない等) なら、原因と直し方を報告する。
 
 ### Step 2. 対象の Review を読む
 
-`done` を受け取ったら `WAITING` を偽にする。
-
-1. `mcp__github__pull_request_read` を method=`get_reviews` で呼び、全ページを取得する (スレッドへの返信のたびに Review が増えるため、ラウンドを重ねると新しい Review が後ろのページに回る)。メッセージの `review=` に URL があれば、その ID の Review を対象にする。`none` なら、`commit_id` がメッセージの `commit=` と一致し、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review のうち最新のものを対象にする。
+1. `mcp__github__pull_request_read` を method=`get_reviews` で呼び、全ページを取得する (スレッドへの返信のたびに Review が増えるため、ラウンドを重ねると新しい Review が後ろのページに回る)。メッセージの `review=` に URL があれば、その ID の Review を対象にする。`none` なら、`commit_id` がメッセージの `commit=` と一致し、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review のうち最新のものを対象にする。対象の Review が既に対応済みなら (通常の PR 監視の流れで対応した等)、`WAITING` を偽にして終える。そうでなければ、対象の Review の ID を **この時点で** 対応済みとして記録し、`SKIPPED_REVIEWS` からも除いてから、`WAITING` を偽にする。記録を後回しにすると、`WAITING` が偽になった後に届いた同じ Review の webhook を、通常の PR 監視の流れが別に処理してしまう。
 2. 機械可読行は、本文冒頭の AI 自動投稿マーカーから最初の `---` までの範囲だけで探す (`post-pr-review` の `references/machine-readable-lines.md` の規則。総括本文に引用されたフォーマット例を拾わないため)。
    - `AI-REVIEW-RESULT` 行からラベル別の件数を読む。
    - `AI-REVIEW-ESCALATE: escalate=1` があれば、人のレビューが必要と判定された PR なので、最後の報告で目立つように伝える。
