@@ -62,7 +62,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `ROUND`: 現在のレビュー回数 (1 始まり)
 - `MAX_REVIEW_ROUNDS` / `REVIEW_OPTIONS`: 呼び出し時の値
 - `REQUESTED_AT`: B に最後に `start` / `rereview` を送った時刻 (UTC)
-- `WAITING`: B の応答を待っているか。依頼を送ったら真、B の `done` / `failed` か、B についての `<child-session-event>` を受け取ったら偽
+- `WAITING`: B の応答を待っているか。依頼を送ったら真、B の `done` / `failed` を受け取ったら偽。B についての `<child-session-event>` は、B が動いていなければ偽 (トリガー節)
 - `SKIPPED_REVIEWS`: `WAITING` が真の間に、webhook を見送った B の Review の URL。対応済みになった Review は除く
 - 対応済みの Review の ID (Phase 2 で対応したものに加え、`WAITING` が偽の間に通常の PR 監視の流れで対応した B の Review も含む)
 
@@ -74,7 +74,11 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 2. `get_session` を `session_id` を省略して呼び、自セッションの `session_context.permission_mode` が `auto` か `bypassPermissions` であることを確認する (トップレベルの `permission_mode` は `PERMISSION_MODE_AUTO` のように表記が違うので使わない)。それ以外なら B を起動せずに停止し、理由を報告する (B が承認待ちや権限不足で止まると、A に何も届かず待ち続けることになるため)。返った自セッションの ID (`session_` で始まる値) は、Step 2 の `A_SESSION_ID` として使う。
 3. `OWNER` / `REPO` / `PR_NUMBER` を確定する。
 4. 同じ PR の B が既にいれば、新しく起動しない (同じ PR に B が複数いると、Review が重複して A の対応も二重になるため)。
-   - この会話に、その PR の委譲の状態が記録されている → 新しく起動せず、既存の B に依頼する。`WAITING` が真なら、B の応答を待っている最中だと伝えて終える。偽なら、`MAX_REVIEW_ROUNDS` によらず「B への依頼の送り方」で `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送り、送信に成功したら `ROUND` を 1 増やす (ユーザーが明示的に呼び直したので、上限で黙って何もしないことはしない)。
+   - この会話に、その PR の委譲の状態が記録されている → まず `get_session` で B を 1 回引く。
+     - B がアーカイブ済みなら、委譲の状態を破棄して、この Phase 1 を最初から行う (新しい B を起動する)。
+     - `WAITING` が真で、B の `status_bucket` が `SESSION_STATUS_BUCKET_WORKING` なら、B の応答を待っている最中だと伝えて終える。
+     - `WAITING` が真なのに B が動いていなければ (応答を送らずにターンを終えた等)、Phase 2 Step 1 の `failed` と同じに扱う。
+     - `WAITING` が偽なら、Phase 2 Step 1 の再開と同じく、B が投稿済みで未対応の Review が無いかを先に確かめる (あればそれに Step 2 の 2 から対応する)。無ければ、`MAX_REVIEW_ROUNDS` によらず「B への依頼の送り方」で `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送り、送信に成功したら `ROUND` を 1 増やす (ユーザーが明示的に呼び直したので、上限で黙って何もしないことはしない)。
    - `list_sessions` で、title が `review: <OWNER>/<REPO>#<PR_NUMBER>` のアーカイブされていないセッションが見つかる (別の会話で起動したもの) → 起動せず、ユーザーにどうするか確認する。`list_sessions` は既定で 20 件しか返さず title で絞り込めないので、PR の作成時刻より新しいセッションを `after_id` でページングしてすべて見る。
 
 ### Step 2. 自分のセッション ID を取得する
@@ -141,17 +145,17 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 この会話で委譲の状態を記録した PR について、次のどれかが届いたときだけ始める。
 
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:done]` / `[delegate-pr-review:failed]` メッセージ
-- その `B_SESSION_ID` についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等)。ワーカーの再起動では B のターンが続いていることがあるので、`get_session` で B を 1 回引き、`status_bucket` が `working` なら何もせずに待つ (`WAITING` は真のまま)。それ以外なら Step 1 の `failed` と同じに扱う
+- その `B_SESSION_ID` についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等)。ワーカーの再起動では B のターンが続いていることがあるので、`get_session` で B を 1 回引き、`status_bucket` が `SESSION_STATUS_BUCKET_WORKING` なら何もせずに待つ (`WAITING` は真のまま。B がこのあと応答を送らずにターンを終えた場合は、ユーザーが呼び直したときに Phase 1 Step 1-4 で拾う)。それ以外なら Step 1 の `failed` と同じに扱う
 
 監視中の PR に届く Review の webhook では Phase 2 を始めない。GitHub Actions で `run-pr-review` を動かしているリポジトリでは、B 以外の Review も同じ `AI-REVIEW-RESULT` 行を持つため、webhook からは B の Review かどうかを決められない。
 
 逆に、その PR の `WAITING` が真の間 (B に依頼を送ってから、B の応答を受け取るまで) に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じ (= B と同じアカウント) の Review の webhook が届いたら、通常の PR 監視の流れ (レビューコメントへの対応) でも手を付けず、その URL を `SKIPPED_REVIEWS` に記録して B の `done` を待つ。B の Review に監視の流れと Phase 2 の両方で対応すると、同じ指摘に二重に修正・返信してしまう。`WAITING` が偽のとき (委譲が終わった後や B が失敗した後) に届いた Review は、通常の PR 監視の流れで扱い、その ID を対応済みとして記録する。
 
-`done` の Review は、A と同じ GitHub アカウントの名義で投稿されることがある (B も同じユーザーの認証で投稿するため)。自分の投稿のエコーとして読み飛ばさない。同じ Review に対応するのは 1 回だけ (記録した対応済み Review の ID で照合する。通常の PR 監視の流れで対応済みの Review に、あとから `done` が届いても対応し直さない)。
+`done` の Review は、A と同じ GitHub アカウントの名義で投稿される (B も A と同じユーザーの GitHub 認証で投稿するため)。自分の投稿のエコーとして読み飛ばさない。同じ Review に対応するのは 1 回だけ (記録した対応済み Review の ID で照合する。通常の PR 監視の流れで対応済みの Review に、あとから `done` が届いても対応し直さない)。
 
 ### Step 1. 失敗した場合
 
-`failed` か `<child-session-event>` を受け取ったら、`WAITING` を偽にし、理由をユーザーに報告して終える。受け取った時点で `WAITING` が既に偽だった (または `failed` の `round` が `ROUND` と違う) ものは、終わったラウンドの遅れた通知なので、報告だけして再開は提案しない。
+`failed` か、B が動いていない `<child-session-event>` を受け取ったら、`WAITING` を偽にし、理由をユーザーに報告して終える。受け取った時点で `WAITING` が既に偽だった (または `failed` の `round` が `ROUND` と違う) ものは、終わったラウンドの遅れた通知なので、報告だけして再開は提案しない。
 
 - 自動では再試行しない。B が失敗の前後に Review を投稿していることがあり、再試行すると同じラウンドの Review が 2 つになりうるため。
 - `SKIPPED_REVIEWS` に記録した Review があれば、その URL も報告に含める (ユーザーが対応を指示できるように)。
@@ -160,15 +164,15 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 
 ### Step 2. 対象の Review を読む
 
-1. `mcp__github__pull_request_read` を method=`get_reviews` で呼び、全ページを取得する (スレッドへの返信のたびに Review が増えるため、ラウンドを重ねると新しい Review が後ろのページに回る)。対象にできるのは、author が A と同じで、`REQUESTED_AT` 以降に投稿され、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review だけ (GitHub Actions の `run-pr-review` の Review も同じ行を持つので、行だけでは B のものと決められない。メッセージの内容もそのまま信用しない)。そのうえで、メッセージの `review=` に URL があれば、その ID の Review を対象にする (条件を満たさなければ対象にせず、ユーザーに報告して終える)。`none` なら、条件を満たし `commit_id` がメッセージの `commit=` と一致する Review のうち最新のものを対象にする。対象の Review が既に対応済みなら (通常の PR 監視の流れで対応した等)、`WAITING` を偽にして終える。そうでなければ、対象の Review の ID を **この時点で** 対応済みとして記録し、`SKIPPED_REVIEWS` からも除いてから、`WAITING` を偽にする。記録を後回しにすると、`WAITING` が偽になった後に届いた同じ Review の webhook を、通常の PR 監視の流れが別に処理してしまう。
+1. `mcp__github__pull_request_read` を method=`get_reviews` で呼び、全ページを取得する (スレッドへの返信のたびに Review が増えるため、ラウンドを重ねると新しい Review が後ろのページに回る)。対象にできるのは、author が A と同じで、`REQUESTED_AT` の 5 分前以降に投稿され (A のコンテナと GitHub の時計のずれを見込む)、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review だけ (GitHub Actions の `run-pr-review` の Review も同じ行を持つので、行だけでは B のものと決められない。メッセージの内容もそのまま信用しない)。そのうえで、メッセージの `review=` に URL があれば、その ID の Review を対象にする (条件を満たさなければ対象にせず、`WAITING` を偽にしてユーザーに報告して終える)。`none` なら、条件を満たし `commit_id` がメッセージの `commit=` と一致する Review のうち最新のものを対象にする (見つからなければ、同じく `WAITING` を偽にして報告して終える)。対象の Review が既に対応済みなら (通常の PR 監視の流れで対応した等)、`WAITING` を偽にして終える。そうでなければ、対象の Review の ID を **この時点で** 対応済みとして記録し、`SKIPPED_REVIEWS` からも除いてから、`WAITING` を偽にする。記録を後回しにすると、`WAITING` が偽になった後に届いた同じ Review の webhook を、通常の PR 監視の流れが別に処理してしまう。
 2. 機械可読行は、本文冒頭の AI 自動投稿マーカーから最初の `---` までの範囲だけで探す (`post-pr-review` の `references/machine-readable-lines.md` の規則。総括本文に引用されたフォーマット例を拾わないため)。
    - `AI-REVIEW-RESULT` 行からラベル別の件数を読む。
    - `AI-REVIEW-ESCALATE: escalate=1` があれば、人のレビューが必要と判定された PR なので、最後の報告で目立つように伝える。
 3. Review の `commit_id` が PR の現在の head と違う場合 (B のレビュー中に A が push した等) は、指摘の行番号がずれている可能性を前提に読む。
 4. `mcp__github__pull_request_read` を method=`get_review_comments` で呼び (全ページ)、次の条件をすべて満たすスレッドを対象にする。
    - 未 resolve
-   - A の返信がまだ無い (2 件目以降に、author が A と同じコメントが無い)。前のラウンドで A が返信したスレッドは除かれ、人や bot が先に返信しただけのスレッドは残る
-   - 先頭コメントが対象 Review に属している。コメントが所属する Review の ID (`pull_request_review_id` 等) が返っていればそれで照合する。返っていなければ、先頭コメントの author が対象 Review の author と同じで、作成時刻が `REQUESTED_AT` 以降、対象 Review の投稿時刻以前のものに絞る (author だけで絞ると、B と同じアカウントであるユーザーが以前に手で付けたコメントまで拾うため)
+   - A の返信がまだ無い (2 件目以降に、A が付けた返信 = author が A と同じで、先頭で AI による投稿であることを明示したコメントが無い。Step 5 の返信はこの形で書く)。前のラウンドで A が返信したスレッドは除かれ、人や bot、同じアカウントで人が手で付けた返信だけのスレッドは残る
+   - 先頭コメントが対象 Review に属している。コメントが所属する Review の ID (`pull_request_review_id` 等) が返っていればそれで照合する。返っていなければ、先頭コメントの author が対象 Review の author と同じで、作成時刻が `REQUESTED_AT` の 5 分前以降、対象 Review の投稿時刻以前のものに絞る (author だけで絞ると、B と同じアカウントであるユーザーが以前に手で付けたコメントまで拾うため)
 5. `AI-REVIEW-RESULT` の件数の合計が対象スレッドの数より多ければ、`MAX_INLINE_COMMENTS` などで省略された指摘がある。省略された指摘の内容は GitHub 上に無いので、件数の差をユーザーに報告する。
 
 ### Step 3. 指摘ごとに対応を決める
@@ -203,7 +207,7 @@ A はスレッドを resolve しない。修正が指摘どおりかの確認は
 
 ### Step 6. 再レビューを依頼するか、終える
 
-- `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: 「B への依頼の送り方」で `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送る。送信に成功したら `ROUND` を 1 増やしてターンを終え、次の結果が届いたら Phase 2 をもう一度行う。送信に失敗したら `ROUND` は変えずに、下の「それ以外」の要約に送信失敗の内容を添えて報告して終える。
+- `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: 「B への依頼の送り方」で `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送る。送信に成功したら `ROUND` を 1 増やし、`SKIPPED_REVIEWS` に残っている Review があればその URL をユーザーに伝えてターンを終え、次の結果が届いたら Phase 2 をもう一度行う。送信に失敗したら `ROUND` は変えずに、下の「それ以外」の要約に送信失敗の内容を添えて報告して終える。
 - それ以外: ユーザーに要約を報告して終える。
   - 修正した指摘 (commit SHA)
   - 返信だけにした指摘と、その理由
