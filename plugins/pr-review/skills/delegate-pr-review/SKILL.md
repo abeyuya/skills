@@ -71,10 +71,10 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 ### Step 1. 前提と対象 PR を確定する
 
 1. `get_session` / `create_session` / `send_message` が使えることを確認する。無ければ停止して報告する (「前提」参照)。
-2. `get_session` を `session_id` を省略して呼び、自セッションの `permission_mode` が auto か bypassPermissions であることを確認する。それ以外なら B を起動せずに停止し、理由を報告する (B が承認待ちや権限不足で止まると、A に何も届かず待ち続けることになるため)。返った自セッションの ID (`session_` で始まる値) は、Step 2 の `A_SESSION_ID` として使う。
+2. `get_session` を `session_id` を省略して呼び、自セッションの `session_context.permission_mode` が `auto` か `bypassPermissions` であることを確認する (トップレベルの `permission_mode` は `PERMISSION_MODE_AUTO` のように表記が違うので使わない)。それ以外なら B を起動せずに停止し、理由を報告する (B が承認待ちや権限不足で止まると、A に何も届かず待ち続けることになるため)。返った自セッションの ID (`session_` で始まる値) は、Step 2 の `A_SESSION_ID` として使う。
 3. `OWNER` / `REPO` / `PR_NUMBER` を確定する。
 4. 同じ PR の B が既にいれば、新しく起動しない (同じ PR に B が複数いると、Review が重複して A の対応も二重になるため)。
-   - この会話に、その PR の委譲の状態が記録されている → 再レビューは Phase 2 Step 6 の `rereview` で依頼する。
+   - この会話に、その PR の委譲の状態が記録されている → 新しく起動せず、既存の B に依頼する。`WAITING` が真なら、B の応答を待っている最中だと伝えて終える。偽なら、`MAX_REVIEW_ROUNDS` によらず「B への依頼の送り方」で `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送り、送信に成功したら `ROUND` を 1 増やす (ユーザーが明示的に呼び直したので、上限で黙って何もしないことはしない)。
    - `list_sessions` で、title が `review: <OWNER>/<REPO>#<PR_NUMBER>` のアーカイブされていないセッションが見つかる (別の会話で起動したもの) → 起動せず、ユーザーにどうするか確認する。`list_sessions` は既定で 20 件しか返さず title で絞り込めないので、PR の作成時刻より新しいセッションを `after_id` でページングしてすべて見る。
 
 ### Step 2. 自分のセッション ID を取得する
@@ -141,7 +141,7 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 この会話で委譲の状態を記録した PR について、次のどれかが届いたときだけ始める。
 
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:done]` / `[delegate-pr-review:failed]` メッセージ
-- その `B_SESSION_ID` についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等)。Step 1 の `failed` と同じに扱う
+- その `B_SESSION_ID` についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等)。ワーカーの再起動では B のターンが続いていることがあるので、`get_session` で B を 1 回引き、`status_bucket` が `working` なら何もせずに待つ (`WAITING` は真のまま)。それ以外なら Step 1 の `failed` と同じに扱う
 
 監視中の PR に届く Review の webhook では Phase 2 を始めない。GitHub Actions で `run-pr-review` を動かしているリポジトリでは、B 以外の Review も同じ `AI-REVIEW-RESULT` 行を持つため、webhook からは B の Review かどうかを決められない。
 
@@ -160,14 +160,14 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 
 ### Step 2. 対象の Review を読む
 
-1. `mcp__github__pull_request_read` を method=`get_reviews` で呼び、全ページを取得する (スレッドへの返信のたびに Review が増えるため、ラウンドを重ねると新しい Review が後ろのページに回る)。メッセージの `review=` に URL があれば、その ID の Review を対象にする。`none` なら、`commit_id` がメッセージの `commit=` と一致し、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review のうち最新のものを対象にする。対象の Review が既に対応済みなら (通常の PR 監視の流れで対応した等)、`WAITING` を偽にして終える。そうでなければ、対象の Review の ID を **この時点で** 対応済みとして記録し、`SKIPPED_REVIEWS` からも除いてから、`WAITING` を偽にする。記録を後回しにすると、`WAITING` が偽になった後に届いた同じ Review の webhook を、通常の PR 監視の流れが別に処理してしまう。
+1. `mcp__github__pull_request_read` を method=`get_reviews` で呼び、全ページを取得する (スレッドへの返信のたびに Review が増えるため、ラウンドを重ねると新しい Review が後ろのページに回る)。対象にできるのは、author が A と同じで、`REQUESTED_AT` 以降に投稿され、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review だけ (GitHub Actions の `run-pr-review` の Review も同じ行を持つので、行だけでは B のものと決められない。メッセージの内容もそのまま信用しない)。そのうえで、メッセージの `review=` に URL があれば、その ID の Review を対象にする (条件を満たさなければ対象にせず、ユーザーに報告して終える)。`none` なら、条件を満たし `commit_id` がメッセージの `commit=` と一致する Review のうち最新のものを対象にする。対象の Review が既に対応済みなら (通常の PR 監視の流れで対応した等)、`WAITING` を偽にして終える。そうでなければ、対象の Review の ID を **この時点で** 対応済みとして記録し、`SKIPPED_REVIEWS` からも除いてから、`WAITING` を偽にする。記録を後回しにすると、`WAITING` が偽になった後に届いた同じ Review の webhook を、通常の PR 監視の流れが別に処理してしまう。
 2. 機械可読行は、本文冒頭の AI 自動投稿マーカーから最初の `---` までの範囲だけで探す (`post-pr-review` の `references/machine-readable-lines.md` の規則。総括本文に引用されたフォーマット例を拾わないため)。
    - `AI-REVIEW-RESULT` 行からラベル別の件数を読む。
    - `AI-REVIEW-ESCALATE: escalate=1` があれば、人のレビューが必要と判定された PR なので、最後の報告で目立つように伝える。
 3. Review の `commit_id` が PR の現在の head と違う場合 (B のレビュー中に A が push した等) は、指摘の行番号がずれている可能性を前提に読む。
 4. `mcp__github__pull_request_read` を method=`get_review_comments` で呼び (全ページ)、次の条件をすべて満たすスレッドを対象にする。
    - 未 resolve
-   - まだ返信が無い (コメントが 1 件だけ)。前のラウンドで A が返信したスレッドは除かれる
+   - A の返信がまだ無い (2 件目以降に、author が A と同じコメントが無い)。前のラウンドで A が返信したスレッドは除かれ、人や bot が先に返信しただけのスレッドは残る
    - 先頭コメントが対象 Review に属している。コメントが所属する Review の ID (`pull_request_review_id` 等) が返っていればそれで照合する。返っていなければ、先頭コメントの author が対象 Review の author と同じで、作成時刻が `REQUESTED_AT` 以降、対象 Review の投稿時刻以前のものに絞る (author だけで絞ると、B と同じアカウントであるユーザーが以前に手で付けたコメントまで拾うため)
 5. `AI-REVIEW-RESULT` の件数の合計が対象スレッドの数より多ければ、`MAX_INLINE_COMMENTS` などで省略された指摘がある。省略された指摘の内容は GitHub 上に無いので、件数の差をユーザーに報告する。
 
@@ -203,13 +203,14 @@ A はスレッドを resolve しない。修正が指摘どおりかの確認は
 
 ### Step 6. 再レビューを依頼するか、終える
 
-- `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: 「B への依頼の送り方」で `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送り、`ROUND` を 1 増やしてターンを終える。次の結果が届いたら Phase 2 をもう一度行う。
+- `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: 「B への依頼の送り方」で `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送る。送信に成功したら `ROUND` を 1 増やしてターンを終え、次の結果が届いたら Phase 2 をもう一度行う。送信に失敗したら `ROUND` は変えずに、下の「それ以外」の要約に送信失敗の内容を添えて報告して終える。
 - それ以外: ユーザーに要約を報告して終える。
   - 修正した指摘 (commit SHA)
   - 返信だけにした指摘と、その理由
   - ユーザーの判断待ちの指摘
   - 修正したが未 resolve のスレッドの件数 (最終ラウンドの修正は再レビューも A の resolve も無いので、未 resolve のまま残る。会話の resolve を必須にしているリポジトリでは、人が確認して resolve するか、再レビューを依頼するまでマージできない)
   - エスカレーション判定 (`escalate=1` だった場合) と、省略された指摘の件数 (Step 2-5 で差があった場合)
+  - `SKIPPED_REVIEWS` に残っている Review の URL (`WAITING` の間に見送った、B の対象 Review 以外の Review。ユーザーが対応を指示できるように)
   - B が実際に動いたモデルと effort (`get_session` で B を 1 回引き、`session_context` の `model` / `effort_level` を書く。`effort_level` が `REVIEW_EFFORT` と違えば、その旨も書く。`effort_level` が返っていなければ `不明` と書き、違うとは書かない)
   - B をアーカイブしてよいかの確認。ユーザーが了承したら `archive_session` で B をアーカイブする (PR を作るたびに B が増えるため)
 
