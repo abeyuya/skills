@@ -182,9 +182,9 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 
 ```text
 A: PR 作成 → delegate-pr-review → B を起動
-B: run-pr-review で Review を投稿 → A に完了を通知 (send_message)
+B: run-pr-review で Review を投稿 → 投稿した Review の ID を A に通知 (send_message)
 A: 指摘を検討・修正・push・スレッドに返信 (MAX_REVIEW_ROUNDS が残っていれば B に再レビューを依頼)
-   ※ Phase 2 は A が起動した B からの通知でだけ始める (Review の webhook では始めない)
+   ※ A が対応するのは B が通知した ID の Review だけ (Review の webhook では始めない)
 ```
 
 ### 必要なもの
@@ -211,7 +211,9 @@ PR を作ったら呼ぶよう、全プロジェクト共通の指示に書い�
   委譲したレビューセッションから `[delegate-pr-review:done]` / `[delegate-pr-review:failed]` が届いたら、同じ skill の Phase 2 で対応する。
 ```
 
-B のモデルと effort は、既定で `claude-opus-5-5` / `medium`。`REVIEW_MODEL` / `REVIEW_EFFORT` で変えられる。`create_session` には effort を指定する引数が無いため、B の最初のプロンプトを `/effort <REVIEW_EFFORT>` にして設定し、レビューの開始は別途 `send_message` で知らせる (詳細は SKILL.md Phase 1 Step 3〜4)。
+委譲した PR では、A と同じアカウントの AI レビュー (AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review) を、通常の PR 監視では扱わない。B も A と同じユーザーの GitHub 認証で投稿するので、監視と委譲の両方で同じ Review に二重に対応しないようにするため。そのぶん、委譲した PR で同じアカウントから手動実行した AI レビューには自動では対応しない (対応させたいときは A に明示的に頼む)。
+
+B のモデルと effort は、既定で `claude-opus-5-5` / `medium`。`REVIEW_MODEL` / `REVIEW_EFFORT` で変えられる。`create_session` には effort を指定する引数が無いため、B の最初のプロンプトを `/effort <REVIEW_EFFORT>` にして設定し、レビューの開始は別途 `send_message` で知らせる (詳細は SKILL.md Phase 1 Step 2〜3)。
 
 ## 利用方法 (GitHub Actions)
 
