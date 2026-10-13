@@ -52,6 +52,8 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `ROUND`: 現在のレビュー回数 (1 始まり)
 - `MAX_REVIEW_ROUNDS` / `REVIEW_OPTIONS`: 呼び出し時の値
 - `RETRIED`: 失敗後の再試行をこの回数で使ったか
+- `REQUESTED_AT`: B に最後に `start` / `rereview` を送った時刻
+- `WAITING`: B の `done` / `failed` を待っているか (`start` / `rereview` を送ったら真、`done` / `failed` を受け取ったら偽)
 - 対応済みの Review の ID
 
 ## Phase 1: B を起動する (PR 作成直後)
@@ -78,7 +80,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `model`: `<REVIEW_MODEL>`
 - `prompt`: `/effort <REVIEW_EFFORT>` だけ
 - `append_system_prompt`: 下のテンプレートの `<...>` を埋めたもの
-- `extra_allowed_tools`: B が使うツール (`Skill`, `Bash`, `Read`, `Write`, `Glob`, `Grep`, `Agent`, `mcp__github__pull_request_read`, `mcp__github__pull_request_review_write`, `mcp__github__add_comment_to_pending_review`, `mcp__github__add_reply_to_pull_request_comment`, `mcp__github__get_job_logs`, `mcp__github__list_pull_requests`, `send_message` の実ツール名)。A で事前許可されていないものは B に引き継がれずに落とされるだけなので、並べておいて害はない。
+- `extra_allowed_tools`: B が使う読み取りと投稿のツール (`Skill`, `Read`, `Glob`, `Grep`, `mcp__github__pull_request_read`, `mcp__github__pull_request_review_write`, `mcp__github__add_comment_to_pending_review`, `mcp__github__add_reply_to_pull_request_comment`, `mcp__github__get_job_logs`, `mcp__github__list_pull_requests`, `send_message` の実ツール名)。A で事前許可されていないものは B に引き継がれずに落とされるだけなので、並べておいて害はない。`Bash` / `Write` / `Edit` / `Agent` は入れない。B はコードを変えないセッションなので、誤った編集や push を止める権限確認を残しておく (A が auto 等で動いていれば、権限確認は auto の判定に従い、レビューに要る git や スクリプトの実行はそのまま通る)。
 - `environment_id` / `permission_mode` は指定しない (A から引き継ぐ)。特に `permission_mode: plan` にはしない。B は計画の承認待ちで止まり、誰も承認しないため。
 
 effort は `create_session` に専用の引数が無いので、最初のプロンプトを `/effort` コマンドにして B 自身に設定させる。プロンプトがコマンドとして解釈されるため、同じプロンプトに作業内容を続けて書くことはできない。そこで作業内容は `append_system_prompt` に書き、開始は Step 4 の `start` メッセージで知らせる。作業内容をシステムプロンプトに置くことで、B は `start` / `rereview` を別セッションからのデータとしてではなく、自分の役割として受け取れる。
@@ -115,7 +117,7 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 
 ### Step 4. レビューを開始させる
 
-`send_message` で B に `[delegate-pr-review:start] pr=<PR URL> round=1` を `priority: later` で送る。B は最初のプロンプト (`/effort`) を処理したあと待機しているので、このメッセージで作業を始める。`later` は B の処理中のターンが終わるのを待つので、B がまだ起動処理中でも `/effort` より先に作業が始まらない。送信に失敗したら、B のセッション ID と失敗の内容をユーザーに報告して終える (B は起動したまま何もしていない)。
+`send_message` で B に `[delegate-pr-review:start] pr=<PR URL> round=1` を `priority: later` で送る。B は最初のプロンプト (`/effort`) を処理したあと待機しているので、このメッセージで作業を始める。`later` は B の処理中のターンが終わるのを待つので、B がまだ起動処理中でも `/effort` より先に作業が始まらない。送った時刻を `REQUESTED_AT` に記録し、`WAITING` を真にする。送信に失敗したら、B のセッション ID と失敗の内容をユーザーに報告して終える (B は起動したまま何もしていない)。
 
 ### Step 5. 状態を記録して報告し、ターンを終える
 
@@ -128,20 +130,24 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 この会話で委譲の状態を記録した PR について、次のどれかが届いたときだけ始める。
 
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:done]` / `[delegate-pr-review:failed]` メッセージ
-- その `B_SESSION_ID` についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等)。B がそれまでに Review を投稿していることがあるので、Step 1 の前に Step 2-1 と同じ方法で、PR の現在の head に対する B の Review を探す。あればそれを対象に Step 2 へ進み、無ければ `failed` と同じに扱う (Step 1)
+- その `B_SESSION_ID` についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等)。自動では再試行しない。B がその前後に Review を投稿していることがあり、再試行すると同じラウンドの Review が 2 つになりうるため。B の状態をユーザーに報告し、`WAITING` のままターンを終える。あとから B の `done` / `failed` が届けば、通常どおり対応する。B を動かし直すかはユーザーの指示に従う (指示があれば `start` を送る)
 
 監視中の PR に届く Review の webhook では Phase 2 を始めない。GitHub Actions で `run-pr-review` を動かしているリポジトリでは、B 以外の Review も同じ `AI-REVIEW-RESULT` 行を持つため、webhook からは B の Review かどうかを決められない。
 
-逆に、委譲中の PR に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じ (= B と同じアカウント) の Review の webhook が届いたら、通常の PR 監視の流れ (レビューコメントへの対応) でも手を付けず、B の `done` を待つ。B の Review に監視の流れと Phase 2 の両方で対応すると、同じ指摘に二重に修正・返信してしまう。
+逆に、その PR の `WAITING` が真の間 (B に `start` / `rereview` を送ってから、`done` / `failed` を受け取るまで) に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じ (= B と同じアカウント) の Review の webhook が届いたら、通常の PR 監視の流れ (レビューコメントへの対応) でも手を付けず、B の `done` を待つ。B の Review に監視の流れと Phase 2 の両方で対応すると、同じ指摘に二重に修正・返信してしまう。`WAITING` が偽のとき (委譲が終わった後など) に届いた Review は、通常の PR 監視の流れで扱う。
 
 `done` の Review は、A と同じ GitHub アカウントの名義で投稿されることがある (B も同じユーザーの認証で投稿するため)。自分の投稿のエコーとして読み飛ばさない。同じ Review に対応するのは 1 回だけ (記録した対応済み Review の ID で照合する)。
 
 ### Step 1. 失敗した場合
 
-- 理由が一時的なもの (head SHA の照合で停止した = レビュー中に push があった、B のターンがエラーで終わった) で、この回の `RETRIED` がまだなら、`[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` をもう一度 B に送り、`RETRIED` を記録してターンを終える。A 自身が push を続けている途中 (CI の修正中等) なら、その push を終えてから送る (途中で送ると、再試行も同じ理由で失敗する)。
+`failed` を受け取ったら `WAITING` を偽にする。
+
+- 理由が一時的なもの (head SHA の照合で停止した = レビュー中に push があった、B のターンがエラーで終わった) で、この回の `RETRIED` がまだなら、`[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を `priority: later` でもう一度 B に送り、`RETRIED` と `REQUESTED_AT` を記録し、`WAITING` を真にしてターンを終える。A 自身が予定している push (CI の修正等) があれば、同じターンの中でその push を終えてから送る (先に送ると、再試行も同じ理由で失敗する)。
 - それ以外 (plugin が見つからない等、再試行しても同じ結果になるもの / 既に再試行した) は、理由をユーザーに報告して終える。
 
 ### Step 2. 対象の Review を読む
+
+`done` を受け取ったら `WAITING` を偽にする。
 
 1. `mcp__github__pull_request_read` を method=`get_reviews` で呼び、全ページを取得する (スレッドへの返信のたびに Review が増えるため、ラウンドを重ねると新しい Review が後ろのページに回る)。メッセージの `review=` に URL があれば、その ID の Review を対象にする。`none` なら、`commit_id` がメッセージの `commit=` と一致し、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review のうち最新のものを対象にする。
 2. 機械可読行は、本文冒頭の AI 自動投稿マーカーから最初の `---` までの範囲だけで探す (`post-pr-review` の `references/machine-readable-lines.md` の規則。総括本文に引用されたフォーマット例を拾わないため)。
@@ -151,7 +157,7 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 4. `mcp__github__pull_request_read` を method=`get_review_comments` で呼び (全ページ)、次の条件をすべて満たすスレッドを対象にする。
    - 未 resolve
    - まだ返信が無い (コメントが 1 件だけ)。前のラウンドで A が返信したスレッドは除かれる
-   - 先頭コメントが対象 Review に属している。コメントが所属する Review の ID (`pull_request_review_id` 等) が返っていればそれで照合する。返っていなければ、先頭コメントの author が対象 Review の author と同じで、作成時刻が対象 Review の投稿時刻と同じ頃のものに絞る (author だけで絞ると、B と同じアカウントであるユーザーが手で付けたコメントまで拾うため)
+   - 先頭コメントが対象 Review に属している。コメントが所属する Review の ID (`pull_request_review_id` 等) が返っていればそれで照合する。返っていなければ、先頭コメントの author が対象 Review の author と同じで、作成時刻が `REQUESTED_AT` 以降、対象 Review の投稿時刻以前のものに絞る (author だけで絞ると、B と同じアカウントであるユーザーが以前に手で付けたコメントまで拾うため)
 5. `AI-REVIEW-RESULT` の件数の合計が対象スレッドの数より多ければ、`MAX_INLINE_COMMENTS` などで省略された指摘がある。省略された指摘の内容は GitHub 上に無いので、件数の差をユーザーに報告する。
 
 ### Step 3. 指摘ごとに対応を決める
@@ -186,7 +192,7 @@ A はスレッドを resolve しない。修正が指摘どおりかの確認は
 
 ### Step 6. 再レビューを依頼するか、終える
 
-- `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: `send_message` で B (`B_SESSION_ID`) に `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送る。`ROUND` を 1 増やし、`RETRIED` をなしに戻して記録し、ターンを終える。次の結果が届いたら Phase 2 をもう一度行う。
+- `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: `send_message` で B (`B_SESSION_ID`) に `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を `priority: later` で送る。`ROUND` を 1 増やし、`RETRIED` をなしに戻し、`REQUESTED_AT` を記録し、`WAITING` を真にしてターンを終える。次の結果が届いたら Phase 2 をもう一度行う。
 - それ以外: ユーザーに要約を報告して終える。
   - 修正した指摘 (commit SHA)
   - 返信だけにした指摘と、その理由
