@@ -169,6 +169,8 @@ GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 /
 | ローカル Claude Code | ✅ (`gh auth login` 済みなら) | ✅ (同左) | △ 接続していれば有る | `gh` (gh が使えず MCP を接続していれば `mcp`) |
 | Claude Code のクラウドセッション (web / remote) | ✅ (プロキシ経由で届く) | ❌ HTTP 403 (`GitHub GraphQL is not available from Claude Code sessions`) | ✅ | `mcp` |
 
+クラウドセッションでは、gh の REST も GitHub MCP も **セッションに追加したリポジトリにしか届かない**。追加していないリポジトリの PR は REST probe から失敗して「gh を認証するか、GitHub MCP を接続してほしい」というエラーで止まるので、先にそのリポジトリをセッションに追加する。
+
 gh チャネルは REST (`gh api repos/...` / Review 投稿 / CI ログ) と GraphQL (`gh pr view` / reviewThreads の取得 / スレッドへの reply・resolve) の両方を使う。クラウドセッションのように REST だけが通る環境で gh を選ぶと、reviewThreads の取得や resolve が途中で失敗する。そのため gh を選ぶ条件は「REST と GraphQL の両方が通ること」にしている。
 
 チャネル解決手順は `run-pr-review` Step 1-2 を正典とし (gh の REST probe `gh api repos/<OWNER>/<REPO>` と GraphQL probe `gh api graphql` (repository 起点の最小クエリ) が両方とも成功すれば `gh` → そうでなければ MCP ツールの有無 → どちらも不可ならエラー)、`run-pr-review` が 1 回だけ解決して `post-pr-review` / `resolve-pr-threads` へ `CHANNEL` として転送する。各 skill を単独で呼ぶ場合は skill 側が `run-pr-review` Step 1-2 と同じ手順で自力解決する (手順の全文は各 skill には再掲せず正典を参照)。

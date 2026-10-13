@@ -55,8 +55,8 @@ GraphQL で取得する。`reviewThreads(first: 100)` は GitHub GraphQL API の
 
 ```bash
 gh api graphql \
-  -F owner=<OWNER> \
-  -F name=<REPO> \
+  -f owner=<OWNER> \
+  -f name=<REPO> \
   -F number=<PR_NUMBER> \
   -f query='
     query($owner: String!, $name: String!, $number: Int!, $after: String) {
