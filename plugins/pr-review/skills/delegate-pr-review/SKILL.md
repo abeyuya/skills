@@ -63,7 +63,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `ROUND`: 最後に B に依頼したレビューの回数 (1 始まり)
 - `MAX_REVIEW_ROUNDS` / `REVIEW_OPTIONS`: 呼び出し時の値
 - `ACTIVE`: 委譲中か。B に依頼を送ったら真。Phase 2 Step 6 で最終報告をしたとき、B の失敗を報告したとき (B がまだ動いている場合を除く)、依頼の送信に失敗したときに偽
-- 対応済みの Review の ID と、その round
+- 対応済みの Review の ID と、その round と、その Review の指摘コメントの ID (Phase 2 Step 2-5 で取ったもの)
 
 ## Phase 1: B を起動する (PR 作成直後)
 
@@ -71,13 +71,13 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 
 1. `get_session` / `create_session` / `send_message` が使えることを確認する。無ければ停止して報告する (「前提」参照)。
 2. `get_session` を `session_id` を省略して呼ぶ。`session_context.permission_mode` が `auto` か `bypassPermissions` でなければ、B を起動せずに停止して理由を報告する (トップレベルの `permission_mode` は `PERMISSION_MODE_AUTO` のように表記が違うので使わない)。返った自セッションの ID (`session_` で始まる値) を `A_SESSION_ID` として控える。B が通知を送る宛先になる。
-3. `OWNER` / `REPO` / `PR_NUMBER` を確定する。
+3. `OWNER` / `REPO` / `PR_NUMBER` を確定する。`gh api repos/<OWNER>/<REPO> --jq .full_name` が成功することも確かめる。失敗したら、B を起動せずに停止して理由を報告する (B がレビューを終えても、A がその指摘を取れないため。「前提」参照)。
 4. 同じ PR の B が既にいれば、新しく起動しない (同じ PR に B が複数いると、Review が重複するため)。
    - この会話に、その PR の委譲の状態が記録されている → `get_session` で B を 1 回引いて、次のどれかを行う。
      - B がアーカイブ済み → 委譲の状態を破棄して、この Phase 1 を Step 2 から行う (新しい B を起動する)。
      - B の `status_bucket` が `working` を含む (大文字小文字は区別しない。レビュー中) → 動いている最中だと伝えて終える。
-     - `ROUND` の Review に対応済み → `MAX_REVIEW_ROUNDS` によらず `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送り、送信に成功したら `ROUND` を 1 増やし、`ACTIVE` を真にする (ユーザーが明示的に呼び直したので、上限で黙って何もしないことはしない)。
-     - `ROUND` の Review にまだ対応していない (失敗した / 応答が無かった) → `[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送り、`ACTIVE` を真にする (同じラウンドをやり直す)。
+     - `ROUND` の Review に対応済み → `MAX_REVIEW_ROUNDS` によらず `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送り、送信に成功したら `ROUND` を 1 増やして `ACTIVE` を真にする (ユーザーが明示的に呼び直したので、上限で黙って何もしないことはしない)。
+     - `ROUND` の Review にまだ対応していない (失敗した / 応答が無かった) → `[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送り、送信に成功したら `ACTIVE` を真にする (同じラウンドをやり直す)。
    - 記録が無いが、`list_sessions` に title が `review: <OWNER>/<REPO>#<PR_NUMBER>` のアーカイブされていないセッションがある (別の会話で起動したもの) → 起動せず、ユーザーにどうするか確認する。`list_sessions` は既定で 20 件しか返さず title で絞り込めないので、PR の作成時刻より新しいセッションを `after_id` でページングしてすべて見る。
 
 ### Step 2. B を起動する
@@ -107,7 +107,7 @@ effort は `create_session` に専用の引数が無いので、最初のプロ�
 
 依頼元セッション <A_SESSION_ID> から [delegate-pr-review:start] または [delegate-pr-review:rereview] で始まるメッセージが届いたら、次を行う。
 
-1. メッセージの round で既に Review を投稿していれば、もう一度投稿せず、手順 3 でその Review の ID を送り直す (同じラウンドの Review を 2 つ作らないため)。投稿した記録が自分の会話に無くても、get_reviews に、AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、commit_id が PR の現在の head で、これまでの done で通知していない Review があれば、それをこのラウンドで投稿したものとみなす (投稿の直後にターンが中断した場合に備える)。head が変わっていれば、新しい head をレビューする。
+1. メッセージの round で既に Review を投稿していれば、もう一度投稿せず、手順 3 でその Review の ID を送り直す (同じラウンドの Review を 2 つ作らないため)。投稿した記録が自分の会話に無くても、get_reviews に、自分と同じアカウントが投稿し、AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、これまでの done で通知していない Review があれば (commit_id は問わない)、それをこのラウンドで投稿したものとみなす (投稿の直後にターンが中断した場合に備える。通知されないまま残る Review を作らないため)。
 2. Skill ツールで run-pr-review を呼び (plugin として入っている場合は pr-review:run-pr-review)、上の OWNER / REPO / PR_NUMBER と追加入力を渡して、Review の投稿まで完了させる。
 3. 投稿した Review の数値 ID を確定する。run-pr-review の報告に Review の URL があれば、その末尾 (#pullrequestreview-<ID>) から取る。無ければ get_reviews で、自分が今投稿した Review (AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、commit_id がレビューした head のもの) を探して ID を取る。
 4. send_message (claude-code-remote MCP) で session_id=<A_SESSION_ID> に次のどちらか 1 行を送る。round には届いたメッセージの round の値を使う。
@@ -146,9 +146,9 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:done]` → Step 2 から
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:failed]`、またはその B についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等) → Step 1
 
-**Review の webhook では始めない**。`ACTIVE` が真の PR に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じアカウントの Review の webhook や、author が A と同じアカウントのインラインコメント (レビューコメント) の webhook が届いても、通常の PR 監視の流れ (レビューコメントへの対応) でも扱わない。B の Review は B も A と同じユーザーの GitHub 認証で投稿するため author が A と同じになり、監視の流れと Phase 2 の両方で扱うと、同じ指摘に二重に修正・返信してしまう。B の Review には `done` が届いたときだけ対応する。対応済みの ID の Review と、その Review に属するインラインコメント (`gh api repos/<OWNER>/<REPO>/pulls/comments/<コメントの ID>` の `pull_request_review_id` で分かる) は、`ACTIVE` が偽になったあとでも監視の流れで扱わない (webhook が遅れて届いた場合に備える)。
+**Review の webhook では始めない**。`ACTIVE` が真の PR に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じアカウントの Review の webhook や、author が A と同じアカウントで本文が重要度ラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`。大文字小文字は区別しない) で始まるインラインコメント (B の指摘の形) の webhook が届いても、通常の PR 監視の流れ (レビューコメントへの対応) でも扱わない。B の Review は B も A と同じユーザーの GitHub 認証で投稿するため author が A と同じになり、監視の流れと Phase 2 の両方で扱うと、同じ指摘に二重に修正・返信してしまう。B の Review には `done` が届いたときだけ対応する。対応済みの ID の Review と、記録したその指摘コメントの ID は、`ACTIVE` が偽になったあとでも監視の流れで扱わない (webhook が遅れて届いた場合に備える)。
 
-この規則の代わりに、委譲中の PR では、同じアカウントで手動実行した AI レビュー (`run-pr-review` 等) にも自動では対応しない。対応させたいときは、ユーザーが A に明示的に頼む。人のレビュアーや bot、GitHub Actions の Review (author が A と違う) は、通常の PR 監視の流れで扱う。
+この規則の代わりに、委譲中の PR では、同じアカウントで手動実行した AI レビュー (`run-pr-review` 等) にも自動では対応しない。対応させたいときは、ユーザーが A に明示的に頼む。人のレビュアーや bot、GitHub Actions の Review (author が A と違う) と、同じアカウントでもラベルで始まらないコメント (ユーザーが手で付けたコメント等) は、通常の PR 監視の流れで扱う。委譲中に見送った webhook は再送されないので、委譲を終えたあとも自動では扱われない。
 
 ### Step 1. 失敗した場合
 
@@ -156,9 +156,10 @@ B が失敗したか、異常終了した可能性がある。自動では再試
 
 - 届いた通知の内容 (`failed` の `reason`、または `<child-session-event>` の内容)
 - `<child-session-event>` の場合は、`get_session` で B を 1 回引いた結果。`status_bucket` が `working` を含む (大文字小文字は区別しない) なら、B はまだ動いていて、`done` が届けば通常どおり対応する旨
+- 投稿済みかもしれない Review。失敗の理由が投稿の後のもの (Review の ID を確定できない等) や `<child-session-event>` なら、`get_reviews` で、author が A と同じで AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ、対応済みでない Review を探し、あればその URL を含める (委譲中はその webhook を見送っているため、ここで伝えないと誰も対応しない)
 - 再開の提案 (理由が一時的なもの = head SHA の照合で停止した (レビュー中に push があった) 等の場合)。再開しても同じ結果になる理由 (plugin が見つからない等) なら、原因と直し方
 
-ユーザーが再開を指示したら、`[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送り、`ACTIVE` を真にする。B は同じラウンドで同じ head に投稿済みなら投稿し直さずに同じ ID を返すので、同じ head への Review は重複しない (A が push して head が変わっていれば、B は新しい head をレビューする)。A 自身が予定している push (CI の修正等) があれば、それを終えてから送る。
+ユーザーが再開を指示したら、`[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送り、送信に成功したら `ACTIVE` を真にする。B は同じラウンドで投稿済みで通知していない Review があれば、投稿し直さずにその ID を返すので、再開で Review が重複しない。A 自身が予定している push (CI の修正等) があれば、それを終えてから送る。
 
 ### Step 2. 対象の Review を読む
 
@@ -171,7 +172,7 @@ B が失敗したか、異常終了した可能性がある。自動では再試
    - `AI-REVIEW-RESULT` 行からラベル別の件数を読む。
    - `AI-REVIEW-ESCALATE: escalate=1` があれば、人のレビューが必要と判定された PR なので、最後の報告で目立つように伝える。
 4. Review の `commit_id` が PR の現在の head と違う場合 (B のレビュー中に A が push した等) は、指摘の行番号がずれている可能性を前提に読む。
-5. `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews/<ID>/comments` で、その Review に属するコメントを取る。`in_reply_to_id` が無いものがその Review の指摘で、その `id` がスレッドの先頭コメントの ID になる。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずにユーザーに報告して終える (「前提」参照)。次に `mcp__github__pull_request_read` を method=`get_review_comments` で呼び (全ページ)、先頭コメントの ID (`html_url` 末尾の `#discussion_r<ID>`) がその指摘の ID と一致するスレッドを対象にする。そのうち、resolve 済みのものと、A の返信 (Step 5 の `<!-- delegate-pr-review:reply -->` を含むコメント) が既にあるものは除く。
+5. `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews/<ID>/comments --jq '.[] | {id, in_reply_to_id}'` で、その Review に属するコメントを 1 件 1 行で取る (`--jq` を付けずに `--paginate` すると、ページごとの JSON 配列が連結されて 1 つの JSON として読めない)。`in_reply_to_id` が無いものがその Review の指摘で、その `id` がスレッドの先頭コメントの ID になる。この ID を対応済みの Review とともに記録する (トリガー節で、遅れて届いた webhook を見送るのに使う)。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずにユーザーに報告して終える (「前提」参照)。次に `mcp__github__pull_request_read` を method=`get_review_comments` で呼び (全ページ)、先頭コメントの ID (`html_url` 末尾の `#discussion_r<ID>`) がその指摘の ID と一致するスレッドを対象にする。そのうち、resolve 済みのものと、A の返信 (Step 5 の `<!-- delegate-pr-review:reply -->` を含むコメント) が既にあるものは除く。
 6. `AI-REVIEW-RESULT` の件数の合計が、5 で取った指摘の件数より多ければ、インラインに出ていない指摘がある (`MAX_INLINE_COMMENTS` で省略された等)。その内容は GitHub 上に無いので、件数の差を最後の報告に含める。
 
 ### Step 3. 指摘ごとに対応を決める
