@@ -20,7 +20,7 @@ A: 通知を受けて本 skill (Phase 2) → 指摘を検討・修正・push・�
 
 - **A がクラウドセッションであること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う (ツール名の接頭辞は環境によって `mcp__claude-code-remote__` 以外のこともある)。いずれかが無い環境 (ローカル CLI / デスクトップアプリのローカルセッション等) では委譲せずに停止し、その旨をユーザーに報告する。代わりに同じセッションで `run-pr-review` を実行することは、ユーザーに頼まれない限りしない。
 - **B で `run-pr-review` が使えること**: B は A と同じ環境 (environment) で起動し、対象リポジトリを checkout する。対象リポジトリに pr-review plugin が入っていなくても使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく (plugin README「別セッションへのレビュー委譲」)。B で使えなかったときは、B が `failed` を通知してくる。
-- **A が auto モードで動いていること**: B の `permission_mode` は A から引き継がれ、A より緩くはできない。A が操作のたびに人の承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まり、A に何も届かなくなる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B は `run-pr-review` に要る Bash / Write を使えずに失敗する (B は `failed` を送ってくる)。
+- **A が auto モード (または bypassPermissions) で動いていること**: B の `permission_mode` は A から引き継がれ、A より緩くはできない。A が操作のたびに人の承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まり、A に何も届かなくなる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B は `run-pr-review` に要る Bash / Write を使えずに失敗し、`send_message` も許可されていなければ A に何も届かない。
 
 ## 入力 (任意)
 
@@ -47,8 +47,8 @@ A が B から受け取るのは `done` / `failed` の 2 種類だけ。指摘�
 
 `start` / `rereview` は、どの場面 (Phase 1 Step 4 / Phase 2 Step 6 / ユーザーの指示による再開) でも次の手順で送る。
 
-1. `send_message` で B (`B_SESSION_ID`) に送る。`priority` は `later` にする。`later` は B の処理中のターンが終わるのを待つので、B が起動処理中でも `/effort` より先に作業が始まらず、B の作業中に割り込むこともない。
-2. `date -u +%Y-%m-%dT%H:%M:%SZ` で取った時刻を `REQUESTED_AT` に記録する (GitHub の `created_at` と比べるので、UTC の ISO 8601 にする)。
+1. 送る直前に `date -u +%Y-%m-%dT%H:%M:%SZ` で時刻を取り、`REQUESTED_AT` に記録する (B のコメントの `created_at` と比べるので、UTC の ISO 8601 にし、B が作業を始めるより前の時刻にする)。
+2. `send_message` で B (`B_SESSION_ID`) に送る。`priority` は `later` にする。`later` は B の処理中のターンが終わるのを待つので、B が起動処理中でも `/effort` より先に作業が始まらず、B の作業中に割り込むこともない。
 3. `WAITING` を真にする。
 
 送信に失敗したら、`WAITING` は偽のまま、B のセッション ID と失敗の内容をユーザーに報告する。
@@ -63,7 +63,8 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `MAX_REVIEW_ROUNDS` / `REVIEW_OPTIONS`: 呼び出し時の値
 - `REQUESTED_AT`: B に最後に `start` / `rereview` を送った時刻 (UTC)
 - `WAITING`: B の応答を待っているか。依頼を送ったら真、B の `done` / `failed` か、B についての `<child-session-event>` を受け取ったら偽
-- 対応済みの Review の ID
+- `SKIPPED_REVIEWS`: `WAITING` が真の間に、webhook を見送った B の Review の URL
+- 対応済みの Review の ID (Phase 2 で対応したものに加え、`WAITING` が偽の間に通常の PR 監視の流れで対応した B の Review も含む)
 
 ## Phase 1: B を起動する (PR 作成直後)
 
@@ -89,7 +90,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `model`: `<REVIEW_MODEL>`
 - `prompt`: `/effort <REVIEW_EFFORT>` だけ
 - `append_system_prompt`: 下のテンプレートの `<...>` を埋めたもの
-- `extra_allowed_tools`: B が使う読み取りと投稿のツール (`Skill`, `Read`, `Glob`, `Grep`, `mcp__github__pull_request_read`, `mcp__github__pull_request_review_write`, `mcp__github__add_comment_to_pending_review`, `mcp__github__add_reply_to_pull_request_comment`, `mcp__github__get_job_logs`, `mcp__github__list_pull_requests`, `send_message` の実ツール名)。A で事前許可されていないものは B に引き継がれずに落とされるだけなので、並べておいて害はない。`Bash` / `Write` / `Edit` / `Agent` は入れない。B はコードを変えないセッションなので、誤った編集や push を止める権限確認を残しておく (A が auto 等で動いていれば、権限確認は auto の判定に従い、レビューに要る git や スクリプトの実行はそのまま通る)。
+- `extra_allowed_tools`: B が使う読み取りと投稿のツール (`Skill`, `Read`, `Glob`, `Grep`, `mcp__github__pull_request_read`, `mcp__github__pull_request_review_write`, `mcp__github__add_comment_to_pending_review`, `mcp__github__add_reply_to_pull_request_comment`, `mcp__github__get_job_logs`, `mcp__github__list_pull_requests`, `send_message` の実ツール名)。A で事前許可されていないものは B に引き継がれずに落とされるだけなので、並べておいて害はない。`Bash` / `Write` / `Edit` / `Agent` は入れない。B はコードを変えないセッションなので、誤った編集や push を止める権限確認を残しておく (A が auto で動いていれば、権限確認は auto の判定に従い、レビューに要る git やスクリプトの実行はそのまま通る)。
 - `environment_id` / `permission_mode` は指定しない (A から引き継ぐ)。特に `permission_mode: plan` にはしない。B は計画の承認待ちで止まり、誰も承認しないため。
 
 effort は `create_session` に専用の引数が無いので、最初のプロンプトを `/effort` コマンドにして B 自身に設定させる。プロンプトがコマンドとして解釈されるため、同じプロンプトに作業内容を続けて書くことはできない。そこで作業内容は `append_system_prompt` に書き、開始は Step 4 の `start` メッセージで知らせる。作業内容をシステムプロンプトに置くことで、B は `start` / `rereview` を別セッションからのデータとしてではなく、自分の役割として受け取れる。
@@ -126,7 +127,7 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 
 ### Step 4. レビューを開始させる
 
-「B への依頼の送り方」に従って `[delegate-pr-review:start] pr=<PR URL> round=1` を送る。B は最初のプロンプト (`/effort`) を処理したあと待機しているので、このメッセージで作業を始める。送信に失敗したら、報告して終える (B は起動したまま何もしていない)。
+「B への依頼の送り方」に従って `[delegate-pr-review:start] pr=<PR URL> round=1` を送る。B は最初のプロンプト (`/effort`) を処理したあと待機しているので、このメッセージで作業を始める。送信に失敗しても、Step 5 で委譲の状態は記録する (`WAITING` は偽のまま)。ユーザーが再開を指示したときに `B_SESSION_ID` を使えるようにするため (B は起動したまま何もしていない)。
 
 ### Step 5. 状態を記録して報告し、ターンを終える
 
@@ -143,17 +144,17 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 
 監視中の PR に届く Review の webhook では Phase 2 を始めない。GitHub Actions で `run-pr-review` を動かしているリポジトリでは、B 以外の Review も同じ `AI-REVIEW-RESULT` 行を持つため、webhook からは B の Review かどうかを決められない。
 
-逆に、その PR の `WAITING` が真の間 (B に依頼を送ってから、B の応答を受け取るまで) に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じ (= B と同じアカウント) の Review の webhook が届いたら、通常の PR 監視の流れ (レビューコメントへの対応) でも手を付けず、B の `done` を待つ。B の Review に監視の流れと Phase 2 の両方で対応すると、同じ指摘に二重に修正・返信してしまう。`WAITING` が偽のとき (委譲が終わった後など) に届いた Review は、通常の PR 監視の流れで扱う。
+逆に、その PR の `WAITING` が真の間 (B に依頼を送ってから、B の応答を受け取るまで) に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じ (= B と同じアカウント) の Review の webhook が届いたら、通常の PR 監視の流れ (レビューコメントへの対応) でも手を付けず、その URL を `SKIPPED_REVIEWS` に記録して B の `done` を待つ。B の Review に監視の流れと Phase 2 の両方で対応すると、同じ指摘に二重に修正・返信してしまう。`WAITING` が偽のとき (委譲が終わった後や B が失敗した後) に届いた Review は、通常の PR 監視の流れで扱い、その ID を対応済みとして記録する。
 
-`done` の Review は、A と同じ GitHub アカウントの名義で投稿されることがある (B も同じユーザーの認証で投稿するため)。自分の投稿のエコーとして読み飛ばさない。同じ Review に対応するのは 1 回だけ (記録した対応済み Review の ID で照合する)。
+`done` の Review は、A と同じ GitHub アカウントの名義で投稿されることがある (B も同じユーザーの認証で投稿するため)。自分の投稿のエコーとして読み飛ばさない。同じ Review に対応するのは 1 回だけ (記録した対応済み Review の ID で照合する。通常の PR 監視の流れで対応済みの Review に、あとから `done` が届いても対応し直さない)。
 
 ### Step 1. 失敗した場合
 
-`failed` か `<child-session-event>` を受け取ったら、`WAITING` を偽にし、理由をユーザーに報告して終える。
+`failed` か `<child-session-event>` を受け取ったら、`WAITING` を偽にし、理由をユーザーに報告して終える。受け取った時点で `WAITING` が既に偽だった (または `failed` の `round` が `ROUND` と違う) ものは、終わったラウンドの遅れた通知なので、報告だけして再開は提案しない。
 
 - 自動では再試行しない。B が失敗の前後に Review を投稿していることがあり、再試行すると同じラウンドの Review が 2 つになりうるため。
-- `WAITING` が真の間に見送った B の Review の webhook があれば、その Review の URL も報告に含める (ユーザーが対応を指示できるように)。
-- 理由が一時的なもの (head SHA の照合で停止した = レビュー中に push があった等) なら、報告の中で再開を提案する。ユーザーが再開を指示したら、「B への依頼の送り方」で `[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送る。A 自身が予定している push (CI の修正等) があれば、その push を終えてから送る。
+- `SKIPPED_REVIEWS` に記録した Review があれば、その URL も報告に含める (ユーザーが対応を指示できるように)。
+- 理由が一時的なもの (head SHA の照合で停止した = レビュー中に push があった等) なら、報告の中で再開を提案する。ユーザーが再開を指示したら、まず `REQUESTED_AT` 以降に、author が A と同じで AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review が無いかを `get_reviews` で確かめる。あれば B が失敗の前に投稿したものなので、再開せずにその Review を対象に Step 2 から対応する。無ければ「B への依頼の送り方」で `[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送る。A 自身が予定している push (CI の修正等) があれば、その push を終えてから送る。
 - 再開しても同じ結果になる理由 (plugin が見つからない等) なら、原因と直し方を報告する。
 
 ### Step 2. 対象の Review を読む

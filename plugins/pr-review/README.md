@@ -190,7 +190,7 @@ A: 指摘を検討・修正・push・スレッドに返信 (MAX_REVIEW_ROUNDS �
 ### 必要なもの
 
 - **A がクラウドセッション (Claude Code on the web) であること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う。これらは公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
-- **A が権限確認なしでツールを使えるモード (auto 等) で動いていること**: B の permission mode は A から引き継がれる。A が操作のたびに承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まる。
+- **A が auto モード (または bypassPermissions) で動いていること**: B の permission mode は A から引き継がれる。A が操作のたびに承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B はレビューに要るツールを使えずに失敗する。
 - **B で `run-pr-review` が使えること**: B は A と同じ環境で、対象リポジトリを checkout して起動する。どのリポジトリでも使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく。
 
   ```bash
