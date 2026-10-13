@@ -224,7 +224,7 @@ permissions:
 
 > `Bash(bash '/home/runner/.claude/plugins/*)` / `Bash(bash "/home/runner/.claude/plugins/*)` は、skill が同梱スクリプト (`compose-review` / `post-pr-review` の `scripts/*.sh`) をインストール先の絶対パスで `bash '<パス>' KEY=VALUE ...` の形で呼ぶためのもの。許可規則はコマンドの文字列そのままで照合され、クォートも一致させる必要があるので、単一引用符と二重引用符の両方を並べている。`/home/runner/.claude/plugins/` は GitHub ホストランナー (`HOME=/home/runner`) で plugin が入る場所なので、self-hosted ランナー等で `HOME` が違う場合はそこを書き換える。`Bash(bash:*)` のように `bash` 全体を許可すると `bash -c '...'` で任意のコマンドを実行できてしまうので、インストール先に限定している。値を `MODE=pr bash ...` のような先頭の環境変数代入で渡すと許可規則に一致しないため、skill は値を引数で渡す。`Bash(jq *)` は、skill がスクリプトの出力 JSON を読む・組み立てるために使う (jq はコマンドを実行できない)。
 
-> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
+> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。gh の GraphQL が使えず GitHub MCP ツールが使える環境 (Claude Code のクラウドセッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
 
 ## 利用方法 (ローカル Claude Code)
 

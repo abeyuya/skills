@@ -48,7 +48,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 
 ## 設計上の主要トレードオフ
 
-1. **PR 一覧は REST、PR 詳細 (reviewThreads + commits + files) は GraphQL の混在採用**: `gh pr list --search` がページング込みで便利。PR 詳細は 1 PR = 1 GraphQL query にまとめて取得することで、API rate limit (graphql 5000/h / core 5000/h) を実質ほぼ消費しない構造にする (1 PR = graphql 1 query)。
+1. **PR 一覧は `gh pr list`、PR 詳細 (reviewThreads + commits + files) は GraphQL 統合クエリ**: `gh pr list --search` がページング込みで便利 (内部は GraphQL の search)。PR 詳細は 1 PR = 1 GraphQL query にまとめて取得することで、API rate limit (graphql 5000/h / core 5000/h) を実質ほぼ消費しない構造にする (1 PR = graphql 1 query)。
 2. **commit 別 files は持たず、PR 全体 files で代用**: commit ごとの変更ファイルを REST `commits/{sha}` で引くと commit 数 × 1 query になり core 枠の rate limit に達するため、PR 全体の変更ファイル一覧 (GraphQL `pullRequest.files`) だけを取得する。そのため `file_changed_after_comment` は「PR 全体 files に該当 path を含み、かつコメント以降に commit がある」で判定し、コメント前の commit だけで完結した変更も true になる (偽陽性あり)。この偽陽性は Phase C の AI が body + diff_hunk を読んで最終判断する。
 3. **reactions は取得しない**: reaction が付くコメントは稀で信号価値が低く、取得すると GraphQL の 500k ノード上限を圧迫するため。その分のノード予算は 1 PR 1 query への統合に使う。
 4. **信号スコア合算を script でなく AI に委ねる**: 信号は文脈依存 (例: `is_outdated=true` 単独は「修正された」か「単に行ズレした」かの判別不能) で、機械合算するとノイズが大きい。`signals.json` には raw のまま付与し、Phase C の AI が総合判断する。
@@ -83,7 +83,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 スクリプトは **bash 3.2 (macOS 標準の `/bin/bash`) 互換**で書いてあるため、bash を新しく入れ直さなくても手元の macOS でそのまま実行できる (`gh` / `jq` は別途必要)。スクリプトを編集する際は本体冒頭の「bash 互換要件」コメントに従う。
 
-スクリプトは進捗を stderr に、`signals.json` の絶対パスを stdout 最終行に出す。非 0 で exit したらエラー停止して caller に報告 (主要原因: `gh` 未認証 / git リポジトリ外実行 / GraphQL ノード上限超過 / GitHub API rate limit 到達)。期間内 0 件でも exit 0 で `signals.json` (空状態) を出す。
+スクリプトは進捗を stderr に、`signals.json` の絶対パスを stdout 最終行に出す。非 0 で exit したらエラー停止して caller に報告 (主要原因: `gh` 未認証 / gh の GraphQL が 403 で遮断されている (Claude Code のクラウドセッション) / git リポジトリ外実行 / GraphQL ノード上限超過 / GitHub API rate limit 到達)。期間内 0 件でも exit 0 で `signals.json` (空状態) を出す。
 
 #### スクリプトの責務 (詳細は `scripts/collect-signals.sh` の本体コメント参照)
 

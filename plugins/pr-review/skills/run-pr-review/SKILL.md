@@ -44,15 +44,15 @@ gh api repos/<OWNER>/<REPO> --jq .full_name
 
 # GraphQL probe (後続 step と同じ repository 起点のクエリで、対象リポジトリまで届くかを確かめる)
 gh api graphql \
-  -f owner=<OWNER> \
-  -f name=<REPO> \
+  -F owner=<OWNER> \
+  -F name=<REPO> \
   -f query='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }' \
   --jq .data.repository.nameWithOwner
 ```
 
-1. REST probe と GraphQL probe が両方とも成功する (exit 0 で非空の値を返す) → `CHANNEL=gh`
-2. 1 が不成立で、GitHub MCP ツール (`mcp__github__*`) がセッションで利用可能 → `CHANNEL=mcp`。1 が不成立になるのは、gh が使えない場合 (未インストール / 未認証 / 403) と、**REST は通るが GraphQL だけが遮断される場合** の 2 通り。後者は Claude Code のクラウドセッション (web / remote) で起きる: gh はプロキシ経由で REST に届くが、GraphQL は HTTP 403 (`GitHub GraphQL is not available from Claude Code sessions`) で拒否される。ここで gh を選ぶと、Step 1-3 / Step 2 の `gh pr view`、Step 2 の reviewThreads 取得、Step 5 の reply / resolve が途中で失敗する。だから REST probe の成功だけで gh を選ばない。
-3. どちらも不可 → エラー停止し、caller に「gh を認証するか、GitHub MCP を接続してほしい」と報告する。REST probe だけ成功していた場合は「gh は REST には届くが GraphQL を使えない (Claude Code のクラウドセッション等)。GitHub MCP を接続してほしい」と、原因が GraphQL であることを報告に含める。
+1. REST probe と GraphQL probe が両方とも exit code 0 で終わる → `CHANNEL=gh`。成否は exit code で判定し、出力の有無では判定しない (gh は HTTP エラーのときもエラー本文を stdout に出すので、「非空なら成功」とすると 403 を成功と取り違える)。
+2. 1 が不成立で、GitHub MCP ツール (`mcp__github__*`) がセッションで利用可能 → `CHANNEL=mcp`。ツール名だけが deferred tool として見えている場合も、ToolSearch 等で読み込めば使えるので「利用可能」とみなす。1 が不成立になるのは、gh が使えない場合 (未インストール / 未認証 / 403) と、**REST は通るが GraphQL だけが遮断される場合** の 2 通り。後者は Claude Code のクラウドセッション (web / remote) で起きる: gh はプロキシ経由で REST に届くが、GraphQL は HTTP 403 (`GitHub GraphQL is not available from Claude Code sessions`) で拒否される。ここで gh を選ぶと、Step 1-3 / Step 2 の `gh pr view`、Step 2 の reviewThreads 取得、Step 5 の reply / resolve が途中で失敗する。だから REST probe の成功だけで gh を選ばない。
+3. どちらも不可 → エラー停止し、caller に「gh を認証するか、GitHub MCP を接続してほしい」と報告する。REST probe だけ成功していた場合は「gh は REST には届くが GraphQL を使えない (Claude Code のクラウドセッション等)。GitHub MCP を接続してほしい」と、原因が GraphQL であることを報告に含める。どちらの場合も probe のエラー出力を報告に添える (GraphQL probe が一時的なエラー (5xx / rate limit) で落ちただけなのに、MCP の接続を求める報告で利用者を誤った対処に導かないため)。
 
 クラウドセッションの GraphQL 403 の応答本文は、代わりに CCR 専用の REST ルート (`/repos/{owner}/{repo}/pulls/{n}/ccr/review_threads` 等) を案内するが、本 skill 群はこれを使わない (公開ドキュメントが無く、返り値にスレッドの node ID・author・本文が無いため。README「GitHub アクセスチャネル」参照)。GraphQL probe が失敗したら 2 / 3 に従う。
 
@@ -62,7 +62,7 @@ gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)�
 
 caller から渡されていればそれを使う。未指定なら現在のブランチ (`git rev-parse --abbrev-ref HEAD`) に紐づく open PR を引く:
 
-- `CHANNEL=gh`: `gh pr view --repo <OWNER>/<REPO> --json number -q .number` (Step 1-1 で確定した `OWNER`/`REPO` を `--repo` で明示する。`--repo` を省くと gh のデフォルトリポジトリ設定に依存し、origin から抽出した `OWNER`/`REPO` と別リポジトリの PR を引いて Step 2 以降と食い違うため)。
+- `CHANNEL=gh`: `gh pr view <現在ブランチ名> --repo <OWNER>/<REPO> --json number -q .number` (`--repo` を付けるとブランチ名の引数が必須になる。省くと gh が `argument required when using the --repo flag` で失敗する。Step 1-1 で確定した `OWNER`/`REPO` を `--repo` で明示する。`--repo` を省くと gh のデフォルトリポジトリ設定に依存し、origin から抽出した `OWNER`/`REPO` と別リポジトリの PR を引いて Step 2 以降と食い違うため)。
 - `CHANNEL=mcp`: `mcp__github__list_pull_requests` を `owner` / `repo` / `head=<OWNER>:<現在ブランチ名>` / `state=open` で呼び、返った PR の番号を使う。
 
 紐づく PR が無い場合はエラーとして停止し、caller に明示的に PR 番号を渡すよう促す。**fork からの PR に注意**: PR head が fork リポジトリにある場合、head owner は `OWNER` (base 側) と異なるため、上記の pure-git 由来 `OWNER` を使った検索 (`gh` のデフォルトリポジトリ設定次第、または mcp の `head=<OWNER>:...` フィルタ) では 0 件になりうる。この場合は「紐づく PR を自動特定できなかった」として停止し、caller に `PR_NUMBER` の明示 (と cross-repo なら base 側 `OWNER`/`REPO`) を促す (誤った PR を掴むより明示を求める方が安全)。
