@@ -211,7 +211,9 @@ PR を作ったら呼ぶよう、全プロジェクト共通の指示に書い�
   委譲したレビューセッションから `[delegate-pr-review:done]` / `[delegate-pr-review:failed]` が届いたら、同じ skill の Phase 2 で対応する。
 ```
 
-委譲した PR では、A と同じアカウントの AI レビュー (AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review) を、通常の PR 監視では扱わない。B も A と同じユーザーの GitHub 認証で投稿するので、監視と委譲の両方で同じ Review に二重に対応しないようにするため。そのぶん、委譲した PR で同じアカウントから手動実行した AI レビューには自動では対応しない (対応させたいときは A に明示的に頼む)。
+委譲中の PR では、A と同じアカウントの AI レビュー (AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持つ Review) とそのインラインコメントを、通常の PR 監視では扱わない。B も A と同じユーザーの GitHub 認証で投稿するので、監視と委譲の両方で同じ Review に二重に対応しないようにするため。そのぶん、委譲中に同じアカウントから手動実行した AI レビューには自動では対応しない (対応させたいときは A に明示的に頼む)。委譲を終えたあとは、B から通知を受けて対応済みの Review を除き、通常の PR 監視で扱う。
+
+A は、B の Review に属する指摘コメントを `gh api` (GitHub REST API) で Review の ID から取る (GitHub MCP ツールには Review ごとのコメント一覧を取る手段が無いため)。`gh api` が REST を呼べない環境では、A は B の Review に対応できない。
 
 B のモデルと effort は、既定で `claude-opus-5-5` / `medium`。`REVIEW_MODEL` / `REVIEW_EFFORT` で変えられる。`create_session` には effort を指定する引数が無いため、B の最初のプロンプトを `/effort <REVIEW_EFFORT>` にして設定し、レビューの開始は別途 `send_message` で知らせる (詳細は SKILL.md Phase 1 Step 2〜3)。
 
