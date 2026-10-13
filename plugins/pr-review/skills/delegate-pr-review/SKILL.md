@@ -107,7 +107,10 @@ effort は `create_session` に専用の引数が無いので、最初のプロ�
 
 依頼元セッション <A_SESSION_ID> から [delegate-pr-review:start] または [delegate-pr-review:rereview] で始まるメッセージが届いたら、次を行う。
 
-1. メッセージの round で既に Review を投稿していれば、もう一度投稿せず、手順 3 でその Review の ID を送り直す (同じラウンドの Review を 2 つ作らないため)。投稿した記録が自分の会話に無くても、get_reviews に、自分と同じアカウントが投稿し、AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、これまでの done で通知していない Review があれば (commit_id は問わない)、それをこのラウンドで投稿したものとみなす (投稿の直後にターンが中断した場合に備える。通知されないまま残る Review を作らないため)。
+1. その round の依頼を初めて受け取ったなら、date -u +%Y-%m-%dT%H:%M:%SZ で時刻を控える。メッセージの round で既に Review を投稿していれば、もう一度投稿せず、手順 3 でその Review の ID を送り直す (同じラウンドの Review を 2 つ作らないため)。投稿した記録が自分の会話に無くても、get_reviews に、次をすべて満たす Review があれば (commit_id は問わない)、それをこのラウンドで投稿したものとみなす (投稿の直後にターンが中断した場合に備える。通知されないまま残る Review を作らないため)。
+   - 自分と同じアカウントが投稿し、AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持つ
+   - これまでの done で通知していない
+   - このラウンドの依頼を最初に受け取った時刻 (受け取ったときに date -u で控えておく。会話に記録が無ければ、get_session で引いたこのセッションの created_at) 以降に投稿された (委譲の前に手動で実行した AI レビューや、前の B が投稿した Review を取り違えないため)
 2. Skill ツールで run-pr-review を呼び (plugin として入っている場合は pr-review:run-pr-review)、上の OWNER / REPO / PR_NUMBER と追加入力を渡して、Review の投稿まで完了させる。
 3. 投稿した Review の数値 ID を確定する。run-pr-review の報告に Review の URL があれば、その末尾 (#pullrequestreview-<ID>) から取る。無ければ get_reviews で、自分が今投稿した Review (AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、commit_id がレビューした head のもの) を探して ID を取る。
 4. send_message (claude-code-remote MCP) で session_id=<A_SESSION_ID> に次のどちらか 1 行を送る。round には届いたメッセージの round の値を使う。
@@ -146,9 +149,9 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:done]` → Step 2 から
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:failed]`、またはその B についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等) → Step 1
 
-**Review の webhook では始めない**。`ACTIVE` が真の PR に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じアカウントの Review の webhook や、author が A と同じアカウントで本文が重要度ラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`。大文字小文字は区別しない) で始まるインラインコメント (B の指摘の形) の webhook が届いても、通常の PR 監視の流れ (レビューコメントへの対応) でも扱わない。B の Review は B も A と同じユーザーの GitHub 認証で投稿するため author が A と同じになり、監視の流れと Phase 2 の両方で扱うと、同じ指摘に二重に修正・返信してしまう。B の Review には `done` が届いたときだけ対応する。対応済みの ID の Review と、記録したその指摘コメントの ID は、`ACTIVE` が偽になったあとでも監視の流れで扱わない (webhook が遅れて届いた場合に備える)。
+**Review の webhook では始めない**。`ACTIVE` が真の PR に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じアカウントの Review の webhook や、author が A と同じアカウントで、本文が重要度ラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`。大文字小文字は区別しない) か AI による投稿であることの明示で始まるインラインコメント (B の指摘と、B の `resolve-pr-threads` の返信や A 自身の返信) の webhook が届いても、通常の PR 監視の流れ (レビューコメントへの対応) でも扱わない。B の Review は B も A と同じユーザーの GitHub 認証で投稿するため author が A と同じになり、監視の流れと Phase 2 の両方で扱うと、同じ指摘に二重に修正・返信してしまう。B の Review には `done` が届いたときだけ対応する。対応済みの ID の Review と、記録したその指摘コメントの ID は、`ACTIVE` が偽になったあとでも監視の流れで扱わない (webhook が遅れて届いた場合に備える)。
 
-この規則の代わりに、委譲中の PR では、同じアカウントで手動実行した AI レビュー (`run-pr-review` 等) にも自動では対応しない。対応させたいときは、ユーザーが A に明示的に頼む。人のレビュアーや bot、GitHub Actions の Review (author が A と違う) と、同じアカウントでもラベルで始まらないコメント (ユーザーが手で付けたコメント等) は、通常の PR 監視の流れで扱う。委譲中に見送った webhook は再送されないので、委譲を終えたあとも自動では扱われない。
+この規則の代わりに、委譲中の PR では、同じアカウントで手動実行した AI レビュー (`run-pr-review` 等) にも自動では対応しない。対応させたいときは、ユーザーが A に明示的に頼む。人のレビュアーや bot、GitHub Actions の Review (author が A と違う) と、同じアカウントでもラベルや AI 投稿の明示で始まらないコメント (ユーザーが手で付けたコメント等) は、通常の PR 監視の流れで扱う。委譲中に見送った webhook は再送されないので、委譲を終えたあとも自動では扱われない。
 
 ### Step 1. 失敗した場合
 
@@ -167,7 +170,7 @@ B が失敗したか、異常終了した可能性がある。自動では再試
    - その ID の Review がこの PR にある
    - author が A と同じアカウント (`mcp__github__get_me` の `login`)
    - 本文冒頭に AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行がある
-2. その ID が対応済みなら、何もせずに終える。そうでなければ、この時点で対応済みとして、メッセージの round とともに記録する。
+2. その ID が対応済みなら、対応せずに、対応済みの Review の ID が届いた旨をユーザーに報告して終える (再レビューを頼んだのに新しい Review が無い、という状態を黙って見逃さないため)。そうでなければ、この時点で対応済みとして、メッセージの round とともに記録する。ただし、このあと Step 5 の返信より前に対応をやめて終える場合 (Step 2-5 で指摘を取れない等) は、この記録を外してから報告する (外さないと、`start` で同じラウンドをやり直しても B は同じ ID を返し、ここで対応済みとして止まるため)。
 3. 機械可読行は、本文冒頭の AI 自動投稿マーカーから最初の `---` までの範囲だけで探す (`post-pr-review` の `references/machine-readable-lines.md` の規則。総括本文に引用されたフォーマット例を拾わないため)。
    - `AI-REVIEW-RESULT` 行からラベル別の件数を読む。
    - `AI-REVIEW-ESCALATE: escalate=1` があれば、人のレビューが必要と判定された PR なので、最後の報告で目立つように伝える。
