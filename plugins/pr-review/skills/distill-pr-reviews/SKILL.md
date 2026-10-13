@@ -1,6 +1,6 @@
 ---
 name: distill-pr-reviews
-description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を proposals.md として出力する skill。各候補には配置先 REVIEW.md (root / apps/web/REVIEW.md 等のディレクトリ別) を付けて振り分け、配置先ごとにそのまま追記できる断片ファイル (review-md/) も出力する。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する。取り込み判定の信号収集はスクリプト、最終的な採否分類とクラスタリングと配置先決定は AI が行う。本 skill は read-only で、REVIEW.md の編集や PR 作成は行わない。収集スクリプトが gh CLI に依存するため gh チャネル専用 (gh が使えない web/remote セッション等では動かない)。
+description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を proposals.md として出力する skill。各候補には配置先 REVIEW.md (root / apps/web/REVIEW.md 等のディレクトリ別) を付けて振り分け、配置先ごとにそのまま追記できる断片ファイル (review-md/) も出力する。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する。取り込み判定の信号収集はスクリプト、最終的な採否分類とクラスタリングと配置先決定は AI が行う。本 skill は read-only で、REVIEW.md の編集や PR 作成は行わない。収集スクリプトが gh CLI に依存するため gh チャネル専用 (gh の GraphQL が使えない web/remote セッション等では動かない)。
 ---
 
 # distill-pr-reviews skill
@@ -13,7 +13,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 **本 skill のスコープは proposals.md + `review-md/` 断片の出力で停止する。** REVIEW.md の編集 / commit / push / PR 作成は一切行わない。断片は `OUTPUT_DIR` 配下に書き出すだけで、リポジトリ内の REVIEW.md は作成も編集もしない。
 状態管理ファイルは持たず、毎回期間引数を渡す方式 (運用がシンプルで監査性が高い)。
 
-**本 skill は gh チャネル専用**: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり bash からは GitHub MCP ツールを呼べないため、`gh` CLI が使えない環境 (Claude Code の web/remote セッション等。gh が恒常 403 になる) では実行できない。その場合はエラーとして caller に報告して停止する。
+**本 skill は gh チャネル専用**: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり bash からは GitHub MCP ツールを呼べないため、`gh` CLI が使えない環境では実行できない。PR 一覧 (`gh pr list`) と PR 詳細の取得が GraphQL なので、gh の REST は通るが GraphQL が 403 になる Claude Code のクラウドセッション (web / remote) でも実行できない。その場合はエラーとして caller に報告して停止する。
 
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 

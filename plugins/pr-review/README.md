@@ -163,15 +163,22 @@ Payload (caller が渡す JSON 相当) の概要:
 
 GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 / スレッド resolve) は実行環境によって使える経路が異なるため、`run-pr-review` は実行時にチャネルを検出して選ぶ (`CHANNEL=gh|mcp`)。gh と GitHub MCP ツールは**対等な正規チャネル**であり、どちらか一方への決め打ちはしない:
 
-| 環境 | gh CLI | GitHub MCP ツール (`mcp__github__*`) |
-|---|---|---|
-| GitHub Actions (claude-code-action) | ✅ (`github_token` で動く) | ❌ 通常無い |
-| ローカル Claude Code | ✅ (`gh auth login` 済みなら) | △ 接続していれば有る |
-| Claude Code web/remote セッション | ❌ 恒常 403 (GitHub API 直接アクセスが遮断され、curl 直叩きも同様に不可) | ✅ 唯一の到達経路 |
+| 環境 | gh (REST) | gh (GraphQL) | GitHub MCP ツール (`mcp__github__*`) | 選ばれる `CHANNEL` |
+|---|---|---|---|---|
+| GitHub Actions (claude-code-action) | ✅ (`github_token` で動く) | ✅ | ❌ 通常無い | `gh` |
+| ローカル Claude Code | ✅ (`gh auth login` 済みなら) | ✅ (同左) | △ 接続していれば有る | `gh` (gh が使えず MCP を接続していれば `mcp`) |
+| Claude Code のクラウドセッション (web / remote) | ✅ (プロキシ経由で届く) | ❌ HTTP 403 (`GitHub GraphQL is not available from Claude Code sessions`) | ✅ | `mcp` |
 
-チャネル解決手順は `run-pr-review` Step 1-2 を正典とし (`gh api repos/<OWNER>/<REPO> --jq .full_name` の成否 → MCP ツールの有無 → どちらも不可ならエラー)、`run-pr-review` が 1 回だけ解決して `post-pr-review` / `resolve-pr-threads` へ `CHANNEL` として転送する。各 skill を単独で呼ぶ場合は skill 側が `run-pr-review` Step 1-2 と同じ手順で自力解決する (手順の全文は各 skill には再掲せず正典を参照)。
+gh チャネルは REST (`gh api repos/...` / Review 投稿 / CI ログ) と GraphQL (`gh pr view` / reviewThreads の取得 / スレッドへの reply・resolve) の両方を使う。クラウドセッションのように REST だけが通る環境で gh を選ぶと、reviewThreads の取得や resolve が途中で失敗する。そのため gh を選ぶ条件は「REST と GraphQL の両方が通ること」にしている。
 
-例外は `distill-pr-reviews`: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり、bash からは MCP ツールを呼べないため **gh チャネル専用** (gh が使えない環境では実行できない)。
+チャネル解決手順は `run-pr-review` Step 1-2 を正典とし (gh の REST probe `gh api repos/<OWNER>/<REPO>` と GraphQL probe `gh api graphql` (repository 起点の最小クエリ) が両方とも成功すれば `gh` → そうでなければ MCP ツールの有無 → どちらも不可ならエラー)、`run-pr-review` が 1 回だけ解決して `post-pr-review` / `resolve-pr-threads` へ `CHANNEL` として転送する。各 skill を単独で呼ぶ場合は skill 側が `run-pr-review` Step 1-2 と同じ手順で自力解決する (手順の全文は各 skill には再掲せず正典を参照)。
+
+クラウドセッションの GraphQL 403 の応答本文は、代わりに CCR 専用の REST ルート (`GET /repos/{owner}/{repo}/pulls/{n}/ccr/review_threads` / `POST /repos/{owner}/{repo}/pulls/{n}/ccr/comments/{comment_id}/resolve` 等) を案内する。本 plugin はこれを gh の REST 経路として採用せず、MCP を使う。理由は次の 2 つ:
+
+- 公開ドキュメントが無く、エラー応答の中でしか案内されていない (Claude Code のプロキシ固有で、仕様が予告なく変わりうる)。
+- `ccr/review_threads` の返り値はスレッドごとの `resolved` / `outdated` / `path` / `line` / `comment_ids` だけで、スレッドの node ID・コメントの author・本文を含まない。`resolve-pr-threads` の判定 (`THREAD_RESOLVE_SCOPE=own` の author 判定、指摘内容と現在のコードの突き合わせ) に使うには REST でコメントを 1 件ずつ引き直す必要があり、resolve もコメント ID 起点の別手順になる。gh / MCP と並ぶ 3 本目の経路を抱えることになるので、MCP で足りる現状では採用しない。
+
+例外は `distill-pr-reviews`: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり、bash からは MCP ツールを呼べないため **gh チャネル専用** (gh が使えない環境では実行できない)。PR 一覧 (`gh pr list`) と PR 詳細の取得が GraphQL なので、gh の REST だけが通るクラウドセッションでも実行できない。
 
 なお PR 差分と指示ファイルの取得 (`compose-review`) は **pure-git (read-only fetch + `git diff` / `git show`) が主経路** で、どちらのチャネルにも依存しない。ただし git が使えない / head object を fetch できない環境では `gh` 経路に degrade する (詳細は `compose-review` Step 3 / Step 4)。変更ファイル一覧・祖先 `REVIEW.md` の列挙・指示ファイルの全文取得と `エスカレーション基準` 見出しの検出・「参照した指示ファイル」のリンク描画・件数上限の適用と `label_counts` の集計は、入力で結果が決まる処理なので bash + jq スクリプト (`skills/compose-review/scripts/`) に切り出してある (`gh` 経路への degrade もスクリプトが行う)。スクリプトのテストは `bash plugins/pr-review/skills/compose-review/scripts/test-scripts.sh` で実行できる (一時 git リポジトリと `gh` のスタブで検証する)。
 

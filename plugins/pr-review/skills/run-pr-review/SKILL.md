@@ -36,13 +36,27 @@ caller から渡されていればそれを使う。未指定なら `git remote 
 
 #### 1-2. GitHub アクセスチャネル (`CHANNEL`) の解決
 
-後続 step の GitHub API 操作 (Step 2 の PR メタ / reviewThreads / CI ログ取得、Step 4 の投稿、Step 5 の resolve) で使うチャネルを本 step で 1 回だけ確定し、`CHANNEL` として保持する:
+後続 step の GitHub API 操作 (Step 2 の PR メタ / reviewThreads / CI ログ取得、Step 4 の投稿、Step 5 の resolve) で使うチャネルを本 step で 1 回だけ確定し、`CHANNEL` として保持する。gh チャネルは REST (`gh api repos/...` / Review 投稿 / CI ログ) と GraphQL (`gh pr view` / reviewThreads の取得 / スレッドへの reply・resolve) の両方を使うので、**gh の probe は REST と GraphQL の 2 本を打つ**:
 
-1. `gh api repos/<OWNER>/<REPO> --jq .full_name` が成功する → `CHANNEL=gh`
-2. gh が失敗 (未インストール / 未認証 / 403。Claude Code の web/remote セッションでは GitHub API の直接アクセスが遮断され gh は恒常 403 になる) し、GitHub MCP ツール (`mcp__github__*`) がセッションで利用可能 → `CHANNEL=mcp`
-3. どちらも不可 → エラー停止し、caller に「gh を認証するか、GitHub MCP を接続してほしい」と報告する。
+```bash
+# REST probe
+gh api repos/<OWNER>/<REPO> --jq .full_name
 
-gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)。GitHub Actions では通常 gh のみ、web/remote では MCP のみが使えるため、どちらか一方に決め打ちしない。確定した `CHANNEL` は Step 4 (`post-pr-review`) / Step 5 (`resolve-pr-threads`) にもそのまま転送し、skill 間で判定をブレさせない。
+# GraphQL probe (後続 step と同じ repository 起点のクエリで、対象リポジトリまで届くかを確かめる)
+gh api graphql \
+  -f owner=<OWNER> \
+  -f name=<REPO> \
+  -f query='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }' \
+  --jq .data.repository.nameWithOwner
+```
+
+1. REST probe と GraphQL probe が両方とも成功する (exit 0 で非空の値を返す) → `CHANNEL=gh`
+2. 1 が不成立で、GitHub MCP ツール (`mcp__github__*`) がセッションで利用可能 → `CHANNEL=mcp`。1 が不成立になるのは、gh が使えない場合 (未インストール / 未認証 / 403) と、**REST は通るが GraphQL だけが遮断される場合** の 2 通り。後者は Claude Code のクラウドセッション (web / remote) で起きる: gh はプロキシ経由で REST に届くが、GraphQL は HTTP 403 (`GitHub GraphQL is not available from Claude Code sessions`) で拒否される。ここで gh を選ぶと、Step 1-3 / Step 2 の `gh pr view`、Step 2 の reviewThreads 取得、Step 5 の reply / resolve が途中で失敗する。だから REST probe の成功だけで gh を選ばない。
+3. どちらも不可 → エラー停止し、caller に「gh を認証するか、GitHub MCP を接続してほしい」と報告する。REST probe だけ成功していた場合は「gh は REST には届くが GraphQL を使えない (Claude Code のクラウドセッション等)。GitHub MCP を接続してほしい」と、原因が GraphQL であることを報告に含める。
+
+クラウドセッションの GraphQL 403 の応答本文は、代わりに CCR 専用の REST ルート (`/repos/{owner}/{repo}/pulls/{n}/ccr/review_threads` 等) を案内するが、本 skill 群はこれを使わない (公開ドキュメントが無く、返り値にスレッドの node ID・author・本文が無いため。README「GitHub アクセスチャネル」参照)。GraphQL probe が失敗したら 2 / 3 に従う。
+
+gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)。GitHub Actions では通常 gh だけが (REST・GraphQL とも) 使え、クラウドセッションでは gh が REST 限定なので MCP だけが全 step を通せる。だからどちらか一方に決め打ちしない。確定した `CHANNEL` は Step 4 (`post-pr-review`) / Step 5 (`resolve-pr-threads`) にもそのまま転送し、skill 間で判定をブレさせない。
 
 #### 1-3. PR_NUMBER
 
