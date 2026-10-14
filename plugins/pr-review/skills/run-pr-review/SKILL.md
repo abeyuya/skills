@@ -62,8 +62,10 @@ gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)�
 
 caller から渡されていればそれを使う。未指定なら現在のブランチ (`git rev-parse --abbrev-ref HEAD`) に紐づく open PR を引く:
 
-- `CHANNEL=gh`: `gh api -X GET repos/<OWNER>/<REPO>/pulls -f head=<OWNER>:<現在ブランチ名> -f state=open --jq 'map(.number)'` で open な PR の番号の配列 (例: `[73]`) を得て、配列の長さで分岐する (ちょうど 1 件ならその番号を使い、0 件 / 複数件は下の扱い)。exit code が非 0 なのは HTTP エラー (セッション外リポジトリの 403 / 404、認証切れ等) のときだけなので、その回は「PR が無い」ではなく API エラーとして停止し、gh の stdout (応答本文) と stderr (要約) の両方を報告に添える (`CHANNEL=mcp` と同じ `head` / `state` の条件で REST から引く。`gh pr view <ブランチ名>` は open な PR が無いと同じブランチの close / merge 済み PR を返すので使わない。リポジトリは Step 1-1 で確定した `OWNER`/`REPO` をパスで明示する。gh のデフォルトリポジトリ設定に頼ると、origin から抽出した `OWNER`/`REPO` と別リポジトリの PR を引いて Step 2 以降と食い違うため)。
-- `CHANNEL=mcp`: `mcp__github__list_pull_requests` を `owner` / `repo` / `head=<OWNER>:<現在ブランチ名>` / `state=open` で呼び、返った配列がちょうど 1 件ならその PR の番号を使う (0 件 / 複数件は下の扱い)。ツールがエラーを返した回は、gh と同じく「PR が無い」ではなく API エラーとして、そのエラー内容を添えて停止する。
+- `CHANNEL=gh`: `gh api -X GET repos/<OWNER>/<REPO>/pulls -f head=<OWNER>:<現在ブランチ名> -f state=open --jq 'map(.number)'` で open な PR の番号の配列 (例: `[73]`) を得る。exit code が非 0 (HTTP / ネットワーク / jq のいずれかのエラー) なら、stdout と stderr をすべて添えて API エラーとして停止する。
+- `CHANNEL=mcp`: `mcp__github__list_pull_requests` を `owner` / `repo` / `head=<OWNER>:<現在ブランチ名>` / `state=open` で呼ぶ。ツールがエラーを返した場合と、応答が PR の配列でない場合は、その内容を添えて API エラーとして停止する。
+
+どちらのチャネルも、返った配列がちょうど 1 件ならその PR の番号を使う。API エラーを「PR が無い」と取り違えると、caller に PR 番号の明示を促すだけで本当の原因 (リポジトリがセッションに追加されていない / 認証切れ等) が伝わらないので、件数の判定は API 呼び出しが成功した回だけ行う。gh 経路を `gh pr view <ブランチ名>` にしないのは、open な PR が無いと同じブランチの close / merge 済み PR を返すため。リポジトリは Step 1-1 で確定した `OWNER`/`REPO` をパスで明示する (gh のデフォルトリポジトリ設定に頼ると、origin から抽出した `OWNER`/`REPO` と別リポジトリの PR を引いて Step 2 以降と食い違うため)。
 
 紐づく PR が無い場合 (0 件) と、open な PR が複数返った場合 (同じ head から別 base への PR) はエラーとして停止し、どちらだったか (件数) を添えて caller に明示的に PR 番号を渡すよう促す (どれか 1 つを選ぶと、意図しない PR にレビューを投稿しうるため。gh / mcp で同じ扱い)。**fork からの PR に注意**: PR head が fork リポジトリにある場合、head owner は `OWNER` (base 側) と異なるため、上記の pure-git 由来 `OWNER` を使った検索 (gh / mcp とも `head=<OWNER>:...` で絞る) では 0 件になりうる。この場合は「紐づく PR を自動特定できなかった」として停止し、caller に `PR_NUMBER` の明示 (と cross-repo なら base 側 `OWNER`/`REPO`) を促す (誤った PR を掴むより明示を求める方が安全)。
 
