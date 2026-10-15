@@ -195,7 +195,7 @@ gh api \
 
 #### 2-b. `CHANNEL=mcp` — pending review を組み立てて submit する
 
-MCP には Payload 全体を 1 コールで受けるツールが無いため、pending review を組み立ててから 1 度に submit する (GitHub 上では 2-a と同じ 1 つの Review オブジェクトになる)。以下のツール名・method・引数名は執筆時点の例で、実際の名前と引数は `run-pr-review` Step 1-2「MCP ツール名の扱い」に従ってセッションのツールの schema で確かめる。**組み立てを始める前に**、使うツールと method (Review 書き込みツールの `create` / `submit_pending` / `delete_pending` と、pending review へのコメント追加ツール) がそろっているかを確かめ、そろわなければ投稿せずに caller に報告して停止する (途中で止まると pending review が宙に浮くため)。手順 1 の `payload_path` を `Read` し、その `body` / `comments` / `commit_id` を **そのまま** 下記の各ツール引数に使う (値を書き換えない)。`comments` の有無で分岐する:
+MCP には Payload 全体を 1 コールで受けるツールが無いため、pending review を組み立ててから 1 度に submit する (GitHub 上では 2-a と同じ 1 つの Review オブジェクトになる)。以下のツール名・method・引数名は執筆時点の例で、実際の名前と引数は `run-pr-review` Step 1-2「MCP ツール名の扱い」に従ってセッションのツールの schema で確かめる。`comments` が非空のときは **組み立てを始める前に**、使うツールと method (Review 書き込みツールの `create` / `submit_pending` / `delete_pending` と、pending review へのコメント追加ツール) がそろっているかを確かめ、そろわなければ投稿せずに caller に報告して停止する (途中で止まると pending review が宙に浮くため。`comments` が空なら `create` 1 回で済むので、この確認はしない)。手順 1 の `payload_path` を `Read` し、その `body` / `comments` / `commit_id` を **そのまま** 下記の各ツール引数に使う (値を書き換えない)。`comments` の有無で分岐する:
 
 - **`comments` が空配列 (`[]`) の場合 — 1 呼び出しで submit**: Review 書き込みツール (現行は `pull_request_review_write`) を method=`create` で呼ぶ。`owner` / `repo` / `pullNumber` に加え、`body` = `payload.json` の `body`、`event` = `"COMMENT"`、`commitID` = `commit_id` (Payload に含まれる場合のみ) を渡す (`event` を付けると作成と同時に submit される)。
 - **`comments` が非空の場合 — pending review 組み立て**:
