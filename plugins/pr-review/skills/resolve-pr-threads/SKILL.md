@@ -45,9 +45,13 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 
 #### CHANNEL=mcp
 
-`mcp__github__pull_request_read` を method=`get_review_comments` (`owner` / `repo` / `pullNumber`) で呼ぶ。スレッド単位で `id` (thread node ID) / `is_resolved` / `is_outdated` / 各コメントの `author` / `path` / `line` / `body` / `html_url` が返る。`pageInfo.hasNextPage` が `true` の間 `after=<endCursor>` を付けて全スレッドを取得しきるまで繰り返す (`perPage` は最大 100)。
+本 skill の CHANNEL=mcp の箇所に出てくる GitHub MCP のツール名・method・引数名は執筆時点の例。実際の名前と引数は `run-pr-review` Step 1-2「MCP ツール名の扱い」に従ってセッションのツールの schema で確かめる。
 
-**Step 3-2 の reply 用に、各スレッド先頭コメントの数値 comment ID をここで控える**: `mcp__github__add_reply_to_pull_request_comment` は数値 ID を要求する。`get_review_comments` が数値 ID を独立フィールド (例: `id` / `databaseId`) で返すならそれを優先し、無い場合は各コメントの `html_url` 末尾アンカー `#discussion_r<数値>` の `<数値>` 部分を抽出して保持する (アンカー抽出は tool schema の現状に対するフォールバックであり、数値 ID フィールドが提供されればそちらを使う)。どのスレッドでも数値 ID を確定できない場合は、そのスレッドの reply / resolve を skip し Step 5 で「コメント投稿失敗で見送り」として計上する (黙って全 skip しない)。
+**返信と resolve の手段を先に確かめる**: スレッドを取る前に、Step 3-2 の返信ツールと Step 4 の resolve の手段 (Step 4 の CHANNEL=mcp に書いた 2 つのいずれか) が両方あるかを schema で確かめる。どちらかが無ければ、「resolve します」の返信だけが残るスレッドを作らないよう、何もせずに終え、Step 5 でツールが無かったことを caller に報告する。
+
+PR 読み取りツール (現行は `pull_request_read`) を method=`get_review_comments` (`owner` / `repo` / `pullNumber`) で呼ぶ。スレッド単位で `id` (thread node ID) / `is_resolved` / `is_outdated` / 各コメントの `author` / `path` / `line` / `body` / `html_url` が返る。`pageInfo.hasNextPage` が `true` の間 `after=<endCursor>` を付けて全スレッドを取得しきるまで繰り返す (`perPage` は最大 100)。
+
+**Step 3-2 の reply 用に、各スレッド先頭コメントの数値 comment ID をここで控える**: レビューコメントへの返信ツール (現行は `add_reply_to_pull_request_comment`) は数値 ID を要求する。`get_review_comments` が数値 ID を独立フィールド (例: `id` / `databaseId`) で返すならそれを優先し、無い場合は各コメントの `html_url` 末尾アンカー `#discussion_r<数値>` の `<数値>` 部分を抽出して保持する (アンカー抽出は tool schema の現状に対するフォールバックであり、数値 ID フィールドが提供されればそちらを使う)。どのスレッドでも数値 ID を確定できない場合は、そのスレッドの reply / resolve を skip し Step 5 で「コメント投稿失敗で見送り」として計上する (黙って全 skip しない)。
 
 #### CHANNEL=gh
 
@@ -107,7 +111,7 @@ resolve する前に、なぜ resolve するのか根拠を一言コメントで
 1. caller から特定の commit SHA が明示されている場合はそれを採用する (caller の意図を尊重)。
 2. それ以外は `git blame <path> -L <line>,<line>` で該当行を最後に変更した commit を特定するのが最も確実。
 3. (2) で取れない場合は `git log --oneline -- <path>` で対象ファイルの commit 履歴から推定する。
-4. PR 全体の commit は `gh pr view <PR_NUMBER> --json commits` (CHANNEL=gh) / `mcp__github__pull_request_read` method=`get_commits` (CHANNEL=mcp) でも取得できる (補助情報)。
+4. PR 全体の commit は `gh pr view <PR_NUMBER> --json commits` (CHANNEL=gh) / PR 読み取りツールの method=`get_commits` (CHANNEL=mcp) でも取得できる (補助情報)。
 
 commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
 
@@ -115,7 +119,7 @@ commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
 
 #### 3-2. スレッドへ返信コメントを投稿する
 
-スレッドに返信する。経路は `CHANNEL` で分岐する (CHANNEL=gh は `addPullRequestReviewThreadReply` mutation、CHANNEL=mcp は `mcp__github__add_reply_to_pull_request_comment`。本文の規約は共通)。
+スレッドに返信する。経路は `CHANNEL` で分岐する (CHANNEL=gh は `addPullRequestReviewThreadReply` mutation、CHANNEL=mcp はレビューコメントへの返信ツール。本文の規約は共通)。
 
 **本文の先頭には AI 自動投稿マーカーを必ず付与する**。認証主体が人間 PAT でも投稿内容は AI 生成であることを明示するため。エージェント名 (Claude Code / Codex / Cursor 等) はマーカーに含めない (本 skill は複数の AI エージェントから呼ばれうる前提)。
 
@@ -137,7 +141,7 @@ commit URL は `https://github.com/<OWNER>/<REPO>/commit/<COMMIT_SHA>` 形式。
 
 `body` には **テンプレート全体 (マーカー + `<根拠コメント本文>`)** を結合した文字列を渡す。
 
-**CHANNEL=mcp**: `mcp__github__add_reply_to_pull_request_comment` を呼ぶ: `owner` / `repo` / `pullNumber`、`commentId` = Step 1 で控えたスレッド先頭コメントの数値 ID (`html_url` の `#discussion_r<数値>` から抽出した値)、`body` = テンプレート全体 (複数行文字列をツール引数に直接渡す。ファイル経由は不要)。
+**CHANNEL=mcp**: レビューコメントへの返信ツール (現行は `add_reply_to_pull_request_comment`) を呼ぶ: `owner` / `repo` / `pullNumber`、`commentId` = Step 1 で控えたスレッド先頭コメントの数値 ID (`html_url` の `#discussion_r<数値>` から抽出した値)、`body` = テンプレート全体 (複数行文字列をツール引数に直接渡す。ファイル経由は不要)。
 
 **CHANNEL=gh**: `addPullRequestReviewThreadReply` mutation を呼ぶ。複数行文字列を扱いやすくするため、`Write` ツールで body をファイル (例: `/tmp/resolve-body.txt`) に書き出してから `-F body=@/tmp/resolve-body.txt` で読み込ませる方法を推奨する。
 
@@ -159,7 +163,7 @@ Step 3 のコメント投稿が成功したスレッドのみ resolve する。S
 
 `<THREAD_ID>` は Step 1 で得たスレッドの `id` (thread node ID `PRRT_...`)。
 
-**CHANNEL=mcp**: `mcp__github__pull_request_review_write` を method=`resolve_thread`、`owner` / `repo` / `pullNumber` / `threadId=<THREAD_ID>` で呼ぶ (post-pr-review の投稿と同じ review-write ツールに寄せる。標準の GitHub MCP サーバーでは resolve は独立ツールではなく本ツールの `resolve_thread` メソッドで行う。`pullNumber` は schema 上必須なので `PR_NUMBER` を渡す)。
+**CHANNEL=mcp**: スレッドを resolve するツールを `threadId=<THREAD_ID>` で呼ぶ。執筆時点の github-mcp-server では、Review 書き込みツール (`pull_request_review_write`) の method=`resolve_thread` と、独立したツール `resolve_review_thread` のどちらでも resolve でき、バージョンによってはどちらか一方しか無い。使えるほうを使う (Review 書き込みツールは method の候補に `resolve_thread` があるときだけ使える。両方使えれば、どちらでもよい)。`owner` / `repo` / `pullNumber` 等のほかの引数は、schema で必須なら入力の `OWNER` / `REPO` / `PR_NUMBER` を渡す。
 
 **CHANNEL=gh**: `resolveReviewThread` mutation を実行する。
 
@@ -178,14 +182,15 @@ resolve が失敗した場合は **再試行せず次のスレッドへ進む** 
 
 ### Step 5. caller への報告
 
-以下の件数をそれぞれ分けて caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように)。**4 件種別の合計は「未 resolved スレッド総数」と一致**するように振り分ける (既 resolved は対象外で別枠):
+以下の件数をそれぞれ分けて caller に返す (caller がレビュー本文の総括に「既存指摘のうち N 件は対応済みのためスレッドを resolve しました」と1〜2文で記載できるように)。**4 件種別の合計は「未 resolved スレッド総数」と一致**するように振り分ける (既 resolved は対象外で別枠。CHANNEL=mcp で返信か resolve のツールが無く Step 1 で何もせずに終えた回だけは、スレッドを取得していないので総数が分からず、4 件種別はすべて 0 になる。この回は不変条件の対象外で、下の別枠の項目で必ず知らせる):
 
 - resolve したスレッド件数 (Step 4 まで成功したもの)
-- コメント投稿失敗で resolve を見送った件数 (Step 3-2 の返信投稿が失敗したもの。CHANNEL=gh なら `addPullRequestReviewThreadReply`、CHANNEL=mcp なら `mcp__github__add_reply_to_pull_request_comment` の失敗)
-- resolve 実行失敗で見送った件数 (Step 4 の resolve が失敗したもの。CHANNEL=gh なら `resolveReviewThread`、CHANNEL=mcp なら `mcp__github__pull_request_review_write` (method=resolve_thread) の失敗。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
+- コメント投稿失敗で resolve を見送った件数 (Step 3-2 の返信投稿が失敗したもの。CHANNEL=gh なら `addPullRequestReviewThreadReply`、CHANNEL=mcp なら返信ツールの失敗)
+- resolve 実行失敗で見送った件数 (Step 4 の resolve が失敗したもの。CHANNEL=gh なら `resolveReviewThread`、CHANNEL=mcp なら resolve ツールの失敗。**当該スレッド ID と path:line を明示**して人間が手動 resolve しやすくする)
 - 判定保留で resolve しなかった件数 (Step 2 の判定で「resolve しない」とした未対応 / 判別不能 / scope=own で対象外、のもの)
 
 別枠で参考表示する項目 (4 件種別の合計には含めない):
 
+- CHANNEL=mcp で返信か resolve のツールが無く、Step 1 で何もせずに終えた場合はその旨 (どのツールが無かったか)。この回は 4 件種別がすべて 0 になるので、resolve 対象が無かった回と区別できるよう必ず書く
 - 既に `isResolved=true` で対象外だったスレッド件数 (触っていない)
 - `THREAD_RESOLVE_SCOPE=own` で `SELF_LOGIN` 推定が困難で skill 自体を skip した場合は、その旨を明示する。

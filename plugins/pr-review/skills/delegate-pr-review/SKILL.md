@@ -26,7 +26,7 @@ A: 通知を受けて本 skill (Phase 2) → その Review の指摘を検討・
 
 ## 前提
 
-- **A がクラウドセッションであること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う (ツール名の接頭辞は環境によって `mcp__claude-code-remote__` 以外のこともある)。いずれかが無い環境 (ローカル CLI / デスクトップアプリのローカルセッション等) では委譲せずに停止し、その旨をユーザーに報告する。代わりに同じセッションで `run-pr-review` を実行することは、ユーザーに頼まれない限りしない。
+- **A がクラウドセッションであること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う (完全なツール名の接頭辞は MCP の接続のしかたで変わる。末尾が同じ別サーバーのツール (例: メールの `send_message`) と取り違えないよう、claude-code-remote のサーバーのツールから探す。GitHub MCP のツールも含め、ツール名の扱いは `run-pr-review` Step 1-2「MCP ツール名の扱い」に従う)。いずれかが無い環境 (ローカル CLI / デスクトップアプリのローカルセッション等) では委譲せずに停止し、その旨をユーザーに報告する。代わりに同じセッションで `run-pr-review` を実行することは、ユーザーに頼まれない限りしない。
 - **B で `run-pr-review` が使えること**: B は A と同じ環境 (environment) で起動し、対象リポジトリを checkout する。対象リポジトリに pr-review plugin が入っていなくても使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく (plugin README「別セッションへのレビュー委譲」)。B で使えなかったときは、B が `failed` を通知してくる。
 - **A で `gh api` が GitHub の REST API を呼べること**: Review ごとの指摘コメントの一覧 (`pulls/<PR_NUMBER>/reviews/<ID>/comments`) は GitHub MCP ツールでは取れないので、`gh api` で取る (クラウドセッションでは REST は通り、GraphQL は通らないことがある)。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずに報告して終える (Phase 2 Step 2-5)。
 - **A が auto モード (または bypassPermissions) で動いていること**: B の `permission_mode` は A から引き継がれ、A より緩くはできない。A が操作のたびに人の承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まり、A に何も届かなくなる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B は `run-pr-review` に要る Bash / Write を使えずに失敗する。
@@ -90,7 +90,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `model`: `<REVIEW_MODEL>`
 - `prompt`: `/effort <REVIEW_EFFORT>` だけ
 - `append_system_prompt`: 下のテンプレートの `<...>` を埋めたもの
-- `extra_allowed_tools`: B が使う読み取りと投稿のツール (`Skill`, `Read`, `Glob`, `Grep`, `mcp__github__pull_request_read`, `mcp__github__pull_request_review_write`, `mcp__github__add_comment_to_pending_review`, `mcp__github__add_reply_to_pull_request_comment`, `mcp__github__get_job_logs`, `mcp__github__list_pull_requests`, `send_message` の実ツール名)。A で事前許可されていないものは B に引き継がれずに落とされるだけなので、並べておいて害はない。`Bash` / `Write` / `Edit` / `Agent` は入れない。B はコードを変えないセッションなので、誤った編集や push を止める権限確認を残しておく (A が auto で動いていれば、権限確認は auto の判定に従い、レビューに要る git やスクリプトの実行はそのまま通る)。
+- `extra_allowed_tools`: B が使う読み取りと投稿のツール。`Skill`, `Read`, `Glob`, `Grep` と、GitHub MCP のうち `run-pr-review` が使うもの (PR の一覧と読み取り・CI ログの取得・Review の投稿・スレッドへの返信と resolve。執筆時点の名前の例: `pull_request_read` / `list_pull_requests` / `get_job_logs` / `pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `resolve_review_thread`)、それと claude-code-remote MCP の `send_message` を並べる。MCP のツールは、A のセッションのツール一覧に実際にある完全な名前 (`mcp__<サーバーの登録名>__<ツール名>`) で書く (遅延ロードでまだ読み込んでいないツールも、名前の一覧に出ている完全な名前でよい)。許可は名前の完全一致で照合されるので、接頭辞を省いた名前や推測した名前は書かない。A で事前許可されていないものは B に引き継がれずに落とされるだけなので、並べておいて害はない。`Bash` / `Write` / `Edit` / `Agent` は入れない。B はコードを変えないセッションなので、誤った編集や push を止める権限確認を残しておく (A が auto で動いていれば、権限確認は auto の判定に従い、レビューに要る git やスクリプトの実行はそのまま通る)。
 - `environment_id` / `permission_mode` は指定しない (A から引き継ぐ)。特に `permission_mode: plan` にはしない。B は計画の承認待ちで止まり、誰も承認しないため。
 
 effort は `create_session` に専用の引数が無いので、最初のプロンプトを `/effort` コマンドにして B 自身に設定させる。プロンプトがコマンドとして解釈されるため、同じプロンプトに作業内容を続けて書くことはできない。そこで作業内容は `append_system_prompt` に書き、開始は Step 3 の `start` メッセージで知らせる。作業内容をシステムプロンプトに置くことで、B は `start` / `rereview` を別セッションからのデータとしてではなく、自分の役割として受け取れる。
@@ -163,16 +163,16 @@ B が失敗したか、異常終了した可能性がある。自動では再試
 
 ### Step 2. 対象の Review を読む
 
-1. メッセージの `review=` の ID がこの PR の Review であることを確かめる。`mcp__github__pull_request_read` を method=`get_reviews` で呼び、全ページからその ID を探す。次をすべて満たさなければ対応せず、ユーザーに報告して終える。
+1. メッセージの `review=` の ID がこの PR の Review であることを確かめる。GitHub MCP の PR 読み取りツール (現行は `pull_request_read`) を method=`get_reviews` で呼び、全ページからその ID を探す。次をすべて満たさなければ対応せず、ユーザーに報告して終える。
    - その ID の Review がこの PR にある
-   - author が A と同じアカウント (`mcp__github__get_me` の `login`)
+   - author が A と同じアカウント (GitHub MCP の認証ユーザー取得ツール (現行は `get_me`) が返す `login`)
    - 本文冒頭に AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行がある
 2. その ID が対応済みなら、対応せずに、対応済みの Review の ID が届いた旨をユーザーに報告して終える (再レビューを頼んだのに新しい Review が無い、という状態を黙って見逃さないため)。そうでなければ、この時点で対応済みとして、メッセージの round とともに記録する。ただし、この Step 2 の中で対応をやめて終える場合 (2-5 で指摘を取れない等) は、この記録を外し、`ACTIVE` を偽にしてから報告する (記録を外さないと、`start` で同じラウンドをやり直しても B は同じ ID を返し、ここで対応済みとして止まるため)。Step 3 以降 (ユーザーの判断待ちを含む) に進んだあとは、記録を外さない。
 3. 機械可読行は、本文冒頭の AI 自動投稿マーカーから最初の `---` までの範囲だけで探す (`post-pr-review` の `references/machine-readable-lines.md` の規則。総括本文に引用されたフォーマット例を拾わないため)。
    - `AI-REVIEW-RESULT` 行からラベル別の件数を読む。
    - `AI-REVIEW-ESCALATE: escalate=1` があれば、人のレビューが必要と判定された PR なので、最後の報告で目立つように伝える。
 4. Review の `commit_id` が PR の現在の head と違う場合 (B のレビュー中に A が push した等) は、指摘の行番号がずれている可能性を前提に読む。
-5. `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews/<ID>/comments --jq '.[] | {id, in_reply_to_id}'` で、その Review に属するコメントを 1 件 1 行で取る (`--jq` を付けずに `--paginate` すると、ページごとの JSON 配列が連結されて 1 つの JSON として読めない)。`in_reply_to_id` が無いものがその Review の指摘で、その `id` がスレッドの先頭コメントの ID になる。この ID を対応済みの Review とともに記録する (トリガー節で、遅れて届いた webhook を見送るのに使う)。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずにユーザーに報告して終える (「前提」参照)。次に `mcp__github__pull_request_read` を method=`get_review_comments` で呼び (全ページ)、先頭コメントの ID (`html_url` 末尾の `#discussion_r<ID>`) がその指摘の ID と一致するスレッドを対象にする。そのうち、resolve 済みのものと、A の返信 (Step 5 の `<!-- delegate-pr-review:reply -->` を含むコメント) が既にあるものは除く。
+5. `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews/<ID>/comments --jq '.[] | {id, in_reply_to_id}'` で、その Review に属するコメントを 1 件 1 行で取る (`--jq` を付けずに `--paginate` すると、ページごとの JSON 配列が連結されて 1 つの JSON として読めない)。`in_reply_to_id` が無いものがその Review の指摘で、その `id` がスレッドの先頭コメントの ID になる。この ID を対応済みの Review とともに記録する (トリガー節で、遅れて届いた webhook を見送るのに使う)。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずにユーザーに報告して終える (「前提」参照)。次に PR 読み取りツールを method=`get_review_comments` で呼び (全ページ)、先頭コメントの ID (`html_url` 末尾の `#discussion_r<ID>`) がその指摘の ID と一致するスレッドを対象にする。そのうち、resolve 済みのものと、A の返信 (Step 5 の `<!-- delegate-pr-review:reply -->` を含むコメント) が既にあるものは除く。
 6. `AI-REVIEW-RESULT` の件数の合計が、5 で取った指摘の件数より多ければ、インラインに出ていない指摘がある (`MAX_INLINE_COMMENTS` で省略された等)。その内容は GitHub 上に無いので、件数の差を最後の報告に含める。
 
 ### Step 3. 指摘ごとに対応を決める
@@ -202,7 +202,7 @@ push を終えてから、対象スレッドすべてに返信する (返信の�
 - 修正しないもの: 理由を書く。
 - 先頭で AI による投稿であることを明示する。ユーザーの指示 (CLAUDE.md 等) に返信の書式があればそれに従う。
 - 本文の末尾に `<!-- delegate-pr-review:reply -->` を入れる。Step 2-5 で A の返信を見分けるのに使う (B の `resolve-pr-threads` の返信も同じアカウント・AI 投稿の明示付きなので、それだけでは区別できない)。
-- 返信の呼び方 (数値 comment ID の取り方を含む) は `resolve-pr-threads` Step 1 / Step 3-2 に従う。
+- 返信の呼び方 (数値 comment ID の取り方を含む) は `resolve-pr-threads` Step 1 / Step 3-2 に従う。ただし Step 1 の「返信と resolve の手段を先に確かめる」は、resolve をしない A には当てはまらない (返信ツールがあれば返信する)。
 - 返信に失敗したスレッドは、最後の報告に含める (次のラウンドの対象は新しい Review の指摘だけなので、ここで報告しないと残ったままになる)。
 
 A はスレッドを resolve しない。修正が指摘どおりかの確認は、再レビュー時に B の `run-pr-review` が `resolve-pr-threads` で行うか、人が行う。A が自分の修正を自分で resolve すると、委譲で避けたかった「実装した側だけの判断」で指摘が閉じてしまう。
