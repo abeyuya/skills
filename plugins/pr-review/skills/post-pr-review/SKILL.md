@@ -29,7 +29,7 @@ PR レビュー結果を **「1つの Review」として投稿** する手順を
 
 ### GitHub アクセスチャネル (任意)
 
-- `CHANNEL`: `gh` または `mcp`。投稿に使う経路。caller (`run-pr-review` Step 1) が解決済みならその値を渡す。**未指定なら `run-pr-review` Step 1-2 と同じ手順で自力解決する** (gh probe → MCP ツールの有無 → どちらも不可ならエラー停止。解決手順は `run-pr-review` Step 1-2 を正典とする)。gh と MCP は対等な正規チャネル。
+- `CHANNEL`: `gh` または `mcp`。投稿に使う経路。caller (`run-pr-review` Step 1) が解決済みならその値を渡す。**未指定なら `run-pr-review` Step 1-2 と同じ手順で自力解決する** (gh probe (REST と GraphQL の両方が通れば gh) → MCP ツールの有無 → どちらも不可ならエラー停止。解決手順は `run-pr-review` Step 1-2 を正典とする)。gh と MCP は対等な正規チャネル。本 skill の gh 経路は REST (`gh api .../reviews`) だけで投稿できるが、自力解決は正典どおり GraphQL probe も条件にする。gh の REST しか通らない環境 (Claude Code のクラウドセッション等) で MCP も無いときは、caller が `CHANNEL=gh` を明示して渡せば REST で投稿できる (渡された値はそのまま使う)。
 
 ### Payload スキーマ
 

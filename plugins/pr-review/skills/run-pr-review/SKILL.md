@@ -36,13 +36,27 @@ caller から渡されていればそれを使う。未指定なら `git remote 
 
 #### 1-2. GitHub アクセスチャネル (`CHANNEL`) の解決
 
-後続 step の GitHub API 操作 (Step 2 の PR メタ / reviewThreads / CI ログ取得、Step 4 の投稿、Step 5 の resolve) で使うチャネルを本 step で 1 回だけ確定し、`CHANNEL` として保持する:
+後続 step の GitHub API 操作 (Step 2 の PR メタ / reviewThreads / CI ログ取得、Step 4 の投稿、Step 5 の resolve) で使うチャネルを本 step で 1 回だけ確定し、`CHANNEL` として保持する。gh チャネルは REST (`gh api repos/...` / Review 投稿 / CI ログ) と GraphQL (`gh pr view` / reviewThreads の取得 / スレッドへの reply・resolve) の両方を使うので、**gh の probe は REST と GraphQL の 2 本を打つ**:
 
-1. `gh api repos/<OWNER>/<REPO> --jq .full_name` が成功する → `CHANNEL=gh`
-2. gh が失敗 (未インストール / 未認証 / 403。Claude Code の web/remote セッションでは GitHub API の直接アクセスが遮断され gh は恒常 403 になる) し、GitHub MCP サーバーのツールで PR の読み取りと Review の作成・submit ができる (執筆時点の名前では `pull_request_read` と `pull_request_review_write` に当たるツールが同じサーバーにある) → `CHANNEL=mcp`。特定の接頭辞 (`mcp__github__` 等) の有無では判定しない (下記「MCP ツール名の扱い」)。GitHub に関わる MCP サーバーがあっても、これがそろわなければ (例: インラインコメントの作成だけができるサーバー) `CHANNEL=mcp` にしない
-3. どちらも不可 → エラー停止し、caller に「gh を認証するか、GitHub MCP を接続してほしい」と報告する。
+```bash
+# REST probe
+gh api repos/<OWNER>/<REPO> --jq .full_name
 
-gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)。GitHub Actions では通常 gh のみ、web/remote では MCP のみが使えるため、どちらか一方に決め打ちしない。確定した `CHANNEL` は Step 4 (`post-pr-review`) / Step 5 (`resolve-pr-threads`) にもそのまま転送し、skill 間で判定をブレさせない。
+# GraphQL probe (後続 step と同じ repository 起点のクエリで、対象リポジトリまで届くかを確かめる)
+gh api graphql \
+  -f owner=<OWNER> \
+  -f name=<REPO> \
+  -f query='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }' \
+  --jq .data.repository.nameWithOwner
+```
+
+1. REST probe と GraphQL probe が両方とも exit code 0 で終わる → `CHANNEL=gh`。成否は exit code で判定し、出力の有無では判定しない (gh は HTTP エラーのときもエラー本文を stdout に出すので、「非空なら成功」とすると 403 を成功と取り違える)。
+2. 1 が不成立で、GitHub MCP サーバーのツールで PR の読み取りと Review の作成・submit ができる (執筆時点の名前では `pull_request_read` と `pull_request_review_write` に当たるツールが同じサーバーにある) → `CHANNEL=mcp`。特定の接頭辞 (`mcp__github__` 等) の有無では判定しない (下記「MCP ツール名の扱い」)。GitHub に関わる MCP サーバーがあっても、これがそろわなければ (例: インラインコメントの作成だけができるサーバー) `CHANNEL=mcp` にしない。ツール名だけが deferred tool として見えている場合も、ToolSearch 等で読み込めば使えるので「利用可能」とみなす (method がそろっているかは読み込んだ schema で確かめる)。1 が不成立になるのは、gh が使えない場合 (未インストール / 未認証 / 403) と、**REST は通るが GraphQL だけが遮断される場合** の 2 通り。後者は Claude Code のクラウドセッション (web / remote) で起きる: gh はプロキシ経由で REST に届くが、GraphQL は HTTP 403 (`GitHub GraphQL is not available from Claude Code sessions`) で拒否される。ここで gh を選ぶと、Step 2 の `gh pr view` と reviewThreads 取得、Step 5 の reply / resolve が途中で失敗する。だから REST probe の成功だけで gh を選ばない。
+3. どちらも不可 → エラー停止し、caller に「gh を認証するか、GitHub MCP を接続してほしい」と報告する。REST probe だけ成功していた場合は「gh は REST には届くが GraphQL を使えない (Claude Code のクラウドセッション等)。GitHub MCP を接続してほしい」と、原因が GraphQL であることを報告に含める。どちらの場合も probe のエラー出力を報告に添える (GraphQL probe が一時的なエラー (5xx / rate limit) で落ちただけなのに、MCP の接続を求める報告で利用者を誤った対処に導かないため)。
+
+クラウドセッションの GraphQL 403 の応答本文は、代わりに CCR 専用の REST ルート (`/repos/{owner}/{repo}/pulls/{n}/ccr/review_threads` 等) を案内するが、本 skill 群はこれを使わない (公開ドキュメントが無く、返り値にスレッドの node ID・author・本文が無いため。README「GitHub アクセスチャネル」参照)。GraphQL probe が失敗したら 2 / 3 に従う。
+
+gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)。GitHub Actions では通常 gh だけが (REST・GraphQL とも) 使え、クラウドセッションでは gh が REST 限定なので MCP だけが全 step を通せる。だからどちらか一方に決め打ちしない。確定した `CHANNEL` は Step 4 (`post-pr-review`) / Step 5 (`resolve-pr-threads`) にもそのまま転送し、skill 間で判定をブレさせない。
 
 ##### MCP ツール名の扱い (本 plugin 共通の正典)
 
@@ -61,12 +75,14 @@ gh と MCP は**対等な正規チャネル** (MCP は劣化代替ではない)�
 
 caller から渡されていればそれを使う。未指定なら現在のブランチ (`git rev-parse --abbrev-ref HEAD`) に紐づく open PR を引く:
 
-- `CHANNEL=gh`: `gh pr view --repo <OWNER>/<REPO> --json number -q .number` (Step 1-1 で確定した `OWNER`/`REPO` を `--repo` で明示する。`--repo` を省くと gh のデフォルトリポジトリ設定に依存し、origin から抽出した `OWNER`/`REPO` と別リポジトリの PR を引いて Step 2 以降と食い違うため)。
-- `CHANNEL=mcp`: PR 一覧のツール (現行は `list_pull_requests`) を `owner` / `repo` / `head=<OWNER>:<現在ブランチ名>` / `state=open` で呼び、返った PR の番号を使う。
+- `CHANNEL=gh`: `gh api -X GET repos/<OWNER>/<REPO>/pulls -f head=<OWNER>:<現在ブランチ名> -f state=open --jq 'map(.number)'` で open な PR の番号の配列 (例: `[73]`) を得る。exit code が非 0 (HTTP / ネットワーク / jq のいずれかのエラー) なら、stdout と stderr をすべて添えて API エラーとして停止する。
+- `CHANNEL=mcp`: PR 一覧のツール (現行は `list_pull_requests`) を `owner` / `repo` / `head=<OWNER>:<現在ブランチ名>` / `state=open` で呼ぶ。ツールがエラーを返した場合と、応答が PR の配列でない場合は、その内容を添えて API エラーとして停止する。
 
-紐づく PR が無い場合はエラーとして停止し、caller に明示的に PR 番号を渡すよう促す。**fork からの PR に注意**: PR head が fork リポジトリにある場合、head owner は `OWNER` (base 側) と異なるため、上記の pure-git 由来 `OWNER` を使った検索 (`gh` のデフォルトリポジトリ設定次第、または mcp の `head=<OWNER>:...` フィルタ) では 0 件になりうる。この場合は「紐づく PR を自動特定できなかった」として停止し、caller に `PR_NUMBER` の明示 (と cross-repo なら base 側 `OWNER`/`REPO`) を促す (誤った PR を掴むより明示を求める方が安全)。
+どちらのチャネルも、返った配列がちょうど 1 件ならその PR の番号を使う。API エラーを「PR が無い」と取り違えると、caller に PR 番号の明示を促すだけで本当の原因 (リポジトリがセッションに追加されていない / 認証切れ等) が伝わらないので、件数の判定は API 呼び出しが成功した回だけ行う。gh 経路を `gh pr view <ブランチ名>` にしないのは、open な PR が無いと同じブランチの close / merge 済み PR を返すため。リポジトリは Step 1-1 で確定した `OWNER`/`REPO` をパスで明示する (gh のデフォルトリポジトリ設定に頼ると、origin から抽出した `OWNER`/`REPO` と別リポジトリの PR を引いて Step 2 以降と食い違うため)。
 
-`OWNER` / `REPO` / `PR_NUMBER` の 3 つすべてが非空であることを確認してから次 step に進む。1 つでも空文字 / 未取得が混じると `compose-review` がローカルモードに falls through する可能性があるため、本 step で弾く責務は本 skill にある。
+紐づく PR が無い場合 (0 件) と、open な PR が複数返った場合 (同じ head から別 base への PR) はエラーとして停止し、どちらだったか (件数) を添えて caller に明示的に PR 番号を渡すよう促す (どれか 1 つを選ぶと、意図しない PR にレビューを投稿しうるため。gh / mcp で同じ扱い)。**fork からの PR に注意**: PR head が fork リポジトリにある場合、head owner は `OWNER` (base 側) と異なるため、上記の pure-git 由来 `OWNER` を使った検索 (gh / mcp とも `head=<OWNER>:...` で絞る) では 0 件になりうる。この場合は「紐づく PR を自動特定できなかった」として停止し、caller に `PR_NUMBER` の明示 (と cross-repo なら base 側 `OWNER`/`REPO`) を促す (誤った PR を掴むより明示を求める方が安全)。
+
+`OWNER` / `REPO` / `PR_NUMBER` の 3 つすべてが非空で、`PR_NUMBER` が正の整数 (`^[1-9][0-9]*$`) であることを確認してから次 step に進む。1 つでも空文字 / 未取得が混じると `compose-review` がローカルモードに falls through する可能性があるため、本 step で弾く責務は本 skill にある。
 
 ### Step 2. PR 状態と context を取得する
 
@@ -77,7 +93,7 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
   - `CHANNEL=mcp`: PR 読み取りツール (現行は `pull_request_read`) を method=`get` で呼ぶ (`head.sha` = headRefOid 相当 / `head.ref` = headRefName 相当 / `base.ref` = baseRefName 相当)。
   - head SHA (`headRefOid`) を控え、Step 4 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) として常時転送する。**ただし `compose-review` が返した `commit_id` が控えた値と異なる場合は、Step 2 と同じ経路 (`CHANNEL` に応じた `gh pr view --json headRefOid` / PR 読み取りツールの method=`get`) で head SHA を取り直し、`compose-review` の `commit_id` と一致すればそれを転送する** (`compose-review` は Step 1 で force-push を検知すると head を取り直すが、`gh` が使えない環境では API と突き合わせずに決めているため、投稿前に本 skill 側で裏を取る)。**一致しなければ投稿せず停止し、Step 6 で再実行を促す** — API の現 head に差し替えて投稿すると、レビューした差分 (`compose-review` の `commit_id`) と投稿先の head がずれ、コメントの anchor と CI の head SHA 照合が崩れるため。`compose-review` が `commit_id` を返さなかった回だけ控えた `headRefOid` を使う。**`COMMIT_ID` の値の決め方の正典はこの箇条** (Step 4 はここを参照する)。`baseRefName` (PR の base ブランチ名) も控え、Step 3 で `compose-review` の `BASE_BRANCH` として転送する (非 default base の PR で compose-review が git 主経路の base を default branch に誤推定し差分範囲がズレるのを防ぐ)。
 - **既存レビュー / コメント** (compose-review に渡す重複指摘抑制用 context):
-  - `CHANNEL=gh`: GraphQL で `reviewThreads` を取得する。GraphQL は `-F owner=<OWNER> -F name=<REPO> -F number=<PR_NUMBER>` で渡す。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `path` / `line` / `comments.nodes[].body` まで取る。
+  - `CHANNEL=gh`: GraphQL で `reviewThreads` を取得する。GraphQL は `-f owner=<OWNER> -f name=<REPO> -F number=<PR_NUMBER>` で渡す (`owner` / `name` は文字列のまま送る `-f`。`-F` は `2048` / `true` / `null` のような値を数値・真偽値・null に変換し、`String!` 変数と型が合わずに失敗する。`number` は `Int!` なので `-F`)。`reviewThreads(first: 100)` は API の 1 ページ上限なので、`pageInfo { hasNextPage endCursor }` を取得し `hasNextPage` が `true` の間 `-F after=<endCursor>` で全件取得する。各スレッドの `path` / `line` / `comments.nodes[].body` まで取る。
   - `CHANNEL=mcp`: PR 読み取りツールを method=`get_review_comments` で呼ぶ。スレッド単位で `path` / `line` / 各コメント `body` が返る。`pageInfo.hasNextPage` が `true` の間 `after=<endCursor>` を付けて全件取得する (`perPage` は最大 100)。
   - 整形 (チャネル共通): 各スレッドを `<path>:<line> - <主旨 1〜2 文要約>` の形式で 1 行ずつ整形し改行で連結したテキストを **`EXISTING_THREADS_CONTEXT`** として保持する (`path:line` を必ず併記。自由文の段落要約では位置が落ちて dedupe 精度が下がる)。要約はコメント本文 (コード断片 / 設定例 `ENV=production` 等を含み得る) から作るため、各要約内の改行は除去して 1 スレッド 1 行に保ち、`^[A-Z_]+=` 行頭パターンが生じる場合は `CI_FAILURE_CONTEXT` と同様に先頭にスペース 1 文字を入れて escape する (compose-review 側 KEY=VALUE parser の早期切断防止。context 2 値で escape 方針を揃える)。
 - **CI 状態と失敗ログ**: 失敗ジョブがあれば **失敗したジョブのログだけをピンポイントで読む** (全ジョブ一括のログ取得はログが巨大化しトークン上限超過 / タイムアウトを招くため使わない)。
