@@ -176,7 +176,7 @@ gh チャネルは REST (`gh api repos/...` / Review 投稿 / CI ログ) と Gra
 
 チャネル解決手順は `run-pr-review` Step 1-2 を正典とし (gh の REST probe `gh api repos/<OWNER>/<REPO>` と GraphQL probe `gh api graphql` (repository 起点の最小クエリ) が両方とも成功すれば `gh` → そうでなければ MCP ツールの有無 → どちらも不可ならエラー)、`run-pr-review` が 1 回だけ解決して `post-pr-review` / `resolve-pr-threads` へ `CHANNEL` として転送する。各 skill を単独で呼ぶ場合は skill 側が `run-pr-review` Step 1-2 と同じ手順で自力解決する (手順の全文は各 skill には再掲せず正典を参照)。
 
-SKILL.md に書いた GitHub MCP のツール名 (`pull_request_read` など)・method・引数名は、GitHub 公式 MCP サーバー (github-mcp-server) の執筆時点の名前を例として書いたもの。ツールの完全な名前の接頭辞 (`mcp__<サーバーの登録名>__`) は MCP の接続のしかたで、ツール名や引数はサーバーのバージョンで変わるため、SKILL.md には接頭辞を書かず、実行時にセッションのツールの schema で確かめさせている (正典は `run-pr-review` Step 1-2「MCP ツール名の扱い」)。名前が変わっても skill の修正を待たずに動き、「GitHub に書き込まない」等の禁止も名前の一覧ではなく目的で決まる。
+SKILL.md に書いた GitHub MCP のツール名 (`pull_request_read` など)・method・引数名は、GitHub 公式 MCP サーバー (github-mcp-server) の執筆時点の名前を例として書いたもの。ツールの完全な名前の接頭辞 (`mcp__<サーバーの登録名>__`) は MCP の接続のしかたで、ツール名や引数はサーバーのバージョンで変わるため、SKILL.md の手順には接頭辞を書かず、実行時にセッションのツールの schema で確かめさせている (正典は `run-pr-review` Step 1-2「MCP ツール名の扱い」)。名前が変わっても skill の修正を待たずに動き、「GitHub に書き込まない」等の禁止も名前の一覧ではなく目的で決まる。
 
 クラウドセッションの GraphQL 403 の応答本文は、代わりに CCR 専用の REST ルート (`GET /repos/{owner}/{repo}/pulls/{n}/ccr/review_threads` / `POST /repos/{owner}/{repo}/pulls/{n}/ccr/comments/{comment_id}/resolve` 等) を案内する。本 plugin はこれを gh の REST 経路として採用せず、MCP を使う。理由は次の 2 つ:
 
