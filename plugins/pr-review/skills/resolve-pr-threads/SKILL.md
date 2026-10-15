@@ -11,7 +11,7 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 ## 入力
 
 - `OWNER` / `REPO` / `PR_NUMBER`: 対象 PR
-- `CHANNEL` (任意): GitHub アクセスチャネル。`gh` または `mcp`。caller (`run-pr-review` Step 1) が解決済みならその値を使う。**未指定なら `run-pr-review` Step 1-2 と同じ手順で自力解決する** (gh probe → MCP ツールの有無 → どちらも不可ならエラー停止。解決手順は `run-pr-review` Step 1-2 を正典とする)。gh と MCP は対等な正規チャネル。
+- `CHANNEL` (任意): GitHub アクセスチャネル。`gh` または `mcp`。caller (`run-pr-review` Step 1) が解決済みならその値を使う。**未指定なら `run-pr-review` Step 1-2 と同じ手順で自力解決する** (gh probe (REST と GraphQL の両方が通れば gh) → MCP ツールの有無 → どちらも不可ならエラー停止。解決手順は `run-pr-review` Step 1-2 を正典とする)。gh と MCP は対等な正規チャネル。
 - `THREAD_RESOLVE_SCOPE`: resolve 範囲
   - `all` (デフォルト): すべての未 resolve スレッドを対象に、author 種別 (本レビュアー Bot / 他 Bot レビュアー / 人間レビュアー) を問わず resolve 候補にする。
   - `own`: 本アクション自身 (claude-code-action が用いる Bot) が author のスレッドのみ resolve 候補にする。判定は自身の過去コメントの `author.login` と一致するか否かで行う。判定が困難な場合は resolve しない。
@@ -55,8 +55,8 @@ GraphQL で取得する。`reviewThreads(first: 100)` は GitHub GraphQL API の
 
 ```bash
 gh api graphql \
-  -F owner=<OWNER> \
-  -F name=<REPO> \
+  -f owner=<OWNER> \
+  -f name=<REPO> \
   -F number=<PR_NUMBER> \
   -f query='
     query($owner: String!, $name: String!, $number: Int!, $after: String) {

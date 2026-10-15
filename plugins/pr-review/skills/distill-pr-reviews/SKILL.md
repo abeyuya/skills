@@ -1,6 +1,6 @@
 ---
 name: distill-pr-reviews
-description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を proposals.md として出力する skill。各候補には配置先 REVIEW.md (root / apps/web/REVIEW.md 等のディレクトリ別) を付けて振り分け、配置先ごとにそのまま追記できる断片ファイル (review-md/) も出力する。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する。取り込み判定の信号収集はスクリプト、最終的な採否分類とクラスタリングと配置先決定は AI が行う。本 skill は read-only で、REVIEW.md の編集や PR 作成は行わない。収集スクリプトが gh CLI に依存するため gh チャネル専用 (gh が使えない web/remote セッション等では動かない)。
+description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を proposals.md として出力する skill。各候補には配置先 REVIEW.md (root / apps/web/REVIEW.md 等のディレクトリ別) を付けて振り分け、配置先ごとにそのまま追記できる断片ファイル (review-md/) も出力する。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する。取り込み判定の信号収集はスクリプト、最終的な採否分類とクラスタリングと配置先決定は AI が行う。本 skill は read-only で、REVIEW.md の編集や PR 作成は行わない。収集スクリプトが gh CLI に依存するため gh チャネル専用 (gh の GraphQL が使えない web/remote セッション等では動かない)。
 ---
 
 # distill-pr-reviews skill
@@ -13,7 +13,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 **本 skill のスコープは proposals.md + `review-md/` 断片の出力で停止する。** REVIEW.md の編集 / commit / push / PR 作成は一切行わない。断片は `OUTPUT_DIR` 配下に書き出すだけで、リポジトリ内の REVIEW.md は作成も編集もしない。
 状態管理ファイルは持たず、毎回期間引数を渡す方式 (運用がシンプルで監査性が高い)。
 
-**本 skill は gh チャネル専用**: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり bash からは GitHub MCP ツールを呼べないため、`gh` CLI が使えない環境 (Claude Code の web/remote セッション等。gh が恒常 403 になる) では実行できない。その場合はエラーとして caller に報告して停止する。
+**本 skill は gh チャネル専用**: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり bash からは GitHub MCP ツールを呼べないため、`gh` CLI が使えない環境では実行できない。PR 一覧 (`gh pr list`) と PR 詳細の取得が GraphQL なので、gh の REST は通るが GraphQL が 403 になる Claude Code のクラウドセッション (web / remote) でも実行できない。その場合はエラーとして caller に報告して停止する。
 
 ## 入力 (任意, caller から prompt 経由で渡される想定)
 
@@ -48,7 +48,7 @@ description: 期間内 merged PR のレビューコメント (AI 自動投稿 + 
 
 ## 設計上の主要トレードオフ
 
-1. **PR 一覧は REST、PR 詳細 (reviewThreads + commits + files) は GraphQL の混在採用**: `gh pr list --search` がページング込みで便利。PR 詳細は 1 PR = 1 GraphQL query にまとめて取得することで、API rate limit (graphql 5000/h / core 5000/h) を実質ほぼ消費しない構造にする (1 PR = graphql 1 query)。
+1. **PR 一覧は `gh pr list`、PR 詳細 (reviewThreads + commits + files) は GraphQL 統合クエリ**: `gh pr list --search` がページング込みで便利 (内部は GraphQL の search)。PR 詳細は 1 PR = 1 GraphQL query にまとめて取得することで、API rate limit (graphql 5000/h / core 5000/h) を実質ほぼ消費しない構造にする (1 PR = graphql 1 query)。
 2. **commit 別 files は持たず、PR 全体 files で代用**: commit ごとの変更ファイルを REST `commits/{sha}` で引くと commit 数 × 1 query になり core 枠の rate limit に達するため、PR 全体の変更ファイル一覧 (GraphQL `pullRequest.files`) だけを取得する。そのため `file_changed_after_comment` は「PR 全体 files に該当 path を含み、かつコメント以降に commit がある」で判定し、コメント前の commit だけで完結した変更も true になる (偽陽性あり)。この偽陽性は Phase C の AI が body + diff_hunk を読んで最終判断する。
 3. **reactions は取得しない**: reaction が付くコメントは稀で信号価値が低く、取得すると GraphQL の 500k ノード上限を圧迫するため。その分のノード予算は 1 PR 1 query への統合に使う。
 4. **信号スコア合算を script でなく AI に委ねる**: 信号は文脈依存 (例: `is_outdated=true` 単独は「修正された」か「単に行ズレした」かの判別不能) で、機械合算するとノイズが大きい。`signals.json` には raw のまま付与し、Phase C の AI が総合判断する。
@@ -83,7 +83,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 スクリプトは **bash 3.2 (macOS 標準の `/bin/bash`) 互換**で書いてあるため、bash を新しく入れ直さなくても手元の macOS でそのまま実行できる (`gh` / `jq` は別途必要)。スクリプトを編集する際は本体冒頭の「bash 互換要件」コメントに従う。
 
-スクリプトは進捗を stderr に、`signals.json` の絶対パスを stdout 最終行に出す。非 0 で exit したらエラー停止して caller に報告 (主要原因: `gh` 未認証 / git リポジトリ外実行 / GraphQL ノード上限超過 / GitHub API rate limit 到達)。期間内 0 件でも exit 0 で `signals.json` (空状態) を出す。
+スクリプトは進捗を stderr に、`signals.json` の絶対パスを stdout 最終行に出す。非 0 で exit したらエラー停止して caller に報告 (主要原因: `gh` 未認証 / gh の GraphQL が 403 で遮断されている (Claude Code のクラウドセッション) / git リポジトリ外実行 / GraphQL ノード上限超過 / GitHub API rate limit 到達)。期間内 0 件でも exit 0 で `signals.json` (空状態) を出す。
 
 #### スクリプトの責務 (詳細は `scripts/collect-signals.sh` の本体コメント参照)
 
