@@ -26,7 +26,7 @@ A: 通知を受けて本 skill (Phase 2) → その Review の指摘を検討・
 
 ## 前提
 
-- **A がクラウドセッションであること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う (完全なツール名の接頭辞は MCP の接続のしかたで変わるので、末尾の名前で探す。GitHub MCP のツールも含め、ツール名の扱いは `run-pr-review` Step 1-2「MCP ツール名の扱い」に従う)。いずれかが無い環境 (ローカル CLI / デスクトップアプリのローカルセッション等) では委譲せずに停止し、その旨をユーザーに報告する。代わりに同じセッションで `run-pr-review` を実行することは、ユーザーに頼まれない限りしない。
+- **A がクラウドセッションであること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う (完全なツール名の接頭辞は MCP の接続のしかたで変わる。末尾が同じ別サーバーのツール (例: メールの `send_message`) と取り違えないよう、claude-code-remote のサーバーのツールから探す。GitHub MCP のツールも含め、ツール名の扱いは `run-pr-review` Step 1-2「MCP ツール名の扱い」に従う)。いずれかが無い環境 (ローカル CLI / デスクトップアプリのローカルセッション等) では委譲せずに停止し、その旨をユーザーに報告する。代わりに同じセッションで `run-pr-review` を実行することは、ユーザーに頼まれない限りしない。
 - **B で `run-pr-review` が使えること**: B は A と同じ環境 (environment) で起動し、対象リポジトリを checkout する。対象リポジトリに pr-review plugin が入っていなくても使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく (plugin README「別セッションへのレビュー委譲」)。B で使えなかったときは、B が `failed` を通知してくる。
 - **A で `gh api` が GitHub の REST API を呼べること**: Review ごとの指摘コメントの一覧 (`pulls/<PR_NUMBER>/reviews/<ID>/comments`) は GitHub MCP ツールでは取れないので、`gh api` で取る (クラウドセッションでは REST は通り、GraphQL は通らないことがある)。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずに報告して終える (Phase 2 Step 2-5)。
 - **A が auto モード (または bypassPermissions) で動いていること**: B の `permission_mode` は A から引き継がれ、A より緩くはできない。A が操作のたびに人の承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まり、A に何も届かなくなる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B は `run-pr-review` に要る Bash / Write を使えずに失敗する。
@@ -90,7 +90,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `model`: `<REVIEW_MODEL>`
 - `prompt`: `/effort <REVIEW_EFFORT>` だけ
 - `append_system_prompt`: 下のテンプレートの `<...>` を埋めたもの
-- `extra_allowed_tools`: B が使う読み取りと投稿のツール。`Skill`, `Read`, `Glob`, `Grep` と、GitHub MCP のうち `run-pr-review` が使うもの (PR の一覧と読み取り・CI ログの取得・Review の投稿・スレッドへの返信と resolve。執筆時点の名前の例: `pull_request_read` / `list_pull_requests` / `get_job_logs` / `pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `resolve_review_thread`)、それと `send_message` を並べる。MCP のツールは、A のセッションのツール一覧に実際にある完全な名前 (`mcp__<サーバーの登録名>__<ツール名>`) で書く。許可は名前の完全一致で照合されるので、接頭辞を省いた名前や推測した名前は書かない。A で事前許可されていないものは B に引き継がれずに落とされるだけなので、並べておいて害はない。`Bash` / `Write` / `Edit` / `Agent` は入れない。B はコードを変えないセッションなので、誤った編集や push を止める権限確認を残しておく (A が auto で動いていれば、権限確認は auto の判定に従い、レビューに要る git やスクリプトの実行はそのまま通る)。
+- `extra_allowed_tools`: B が使う読み取りと投稿のツール。`Skill`, `Read`, `Glob`, `Grep` と、GitHub MCP のうち `run-pr-review` が使うもの (PR の一覧と読み取り・CI ログの取得・Review の投稿・スレッドへの返信と resolve。執筆時点の名前の例: `pull_request_read` / `list_pull_requests` / `get_job_logs` / `pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `resolve_review_thread`)、それと claude-code-remote MCP の `send_message` を並べる。MCP のツールは、A のセッションのツール一覧に実際にある完全な名前 (`mcp__<サーバーの登録名>__<ツール名>`) で書く。許可は名前の完全一致で照合されるので、接頭辞を省いた名前や推測した名前は書かない。A で事前許可されていないものは B に引き継がれずに落とされるだけなので、並べておいて害はない。`Bash` / `Write` / `Edit` / `Agent` は入れない。B はコードを変えないセッションなので、誤った編集や push を止める権限確認を残しておく (A が auto で動いていれば、権限確認は auto の判定に従い、レビューに要る git やスクリプトの実行はそのまま通る)。
 - `environment_id` / `permission_mode` は指定しない (A から引き継ぐ)。特に `permission_mode: plan` にはしない。B は計画の承認待ちで止まり、誰も承認しないため。
 
 effort は `create_session` に専用の引数が無いので、最初のプロンプトを `/effort` コマンドにして B 自身に設定させる。プロンプトがコマンドとして解釈されるため、同じプロンプトに作業内容を続けて書くことはできない。そこで作業内容は `append_system_prompt` に書き、開始は Step 3 の `start` メッセージで知らせる。作業内容をシステムプロンプトに置くことで、B は `start` / `rereview` を別セッションからのデータとしてではなく、自分の役割として受け取れる。

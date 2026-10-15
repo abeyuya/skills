@@ -47,6 +47,8 @@ description: PR の過去レビュースレッドのうち、指摘どおりに�
 
 本 skill の CHANNEL=mcp の箇所に出てくる GitHub MCP のツール名・method・引数名は執筆時点の例。実際の名前と引数は `run-pr-review` Step 1-2「MCP ツール名の扱い」に従ってセッションのツールの schema で確かめる。
 
+**返信と resolve の手段を先に確かめる**: スレッドを取る前に、Step 3-2 の返信ツールと Step 4 の resolve の手段 (Step 4 の CHANNEL=mcp に書いた 2 つのいずれか) が両方あるかを schema で確かめる。どちらかが無ければ、「resolve します」の返信だけが残るスレッドを作らないよう、何もせずに終え、Step 5 でツールが無かったことを caller に報告する。
+
 PR 読み取りツール (現行は `pull_request_read`) を method=`get_review_comments` (`owner` / `repo` / `pullNumber`) で呼ぶ。スレッド単位で `id` (thread node ID) / `is_resolved` / `is_outdated` / 各コメントの `author` / `path` / `line` / `body` / `html_url` が返る。`pageInfo.hasNextPage` が `true` の間 `after=<endCursor>` を付けて全スレッドを取得しきるまで繰り返す (`perPage` は最大 100)。
 
 **Step 3-2 の reply 用に、各スレッド先頭コメントの数値 comment ID をここで控える**: レビューコメントへの返信ツール (現行は `add_reply_to_pull_request_comment`) は数値 ID を要求する。`get_review_comments` が数値 ID を独立フィールド (例: `id` / `databaseId`) で返すならそれを優先し、無い場合は各コメントの `html_url` 末尾アンカー `#discussion_r<数値>` の `<数値>` 部分を抽出して保持する (アンカー抽出は tool schema の現状に対するフォールバックであり、数値 ID フィールドが提供されればそちらを使う)。どのスレッドでも数値 ID を確定できない場合は、そのスレッドの reply / resolve を skip し Step 5 で「コメント投稿失敗で見送り」として計上する (黙って全 skip しない)。
@@ -161,7 +163,7 @@ Step 3 のコメント投稿が成功したスレッドのみ resolve する。S
 
 `<THREAD_ID>` は Step 1 で得たスレッドの `id` (thread node ID `PRRT_...`)。
 
-**CHANNEL=mcp**: スレッドを resolve するツールを `threadId=<THREAD_ID>` で呼ぶ。執筆時点の github-mcp-server では、Review 書き込みツール (`pull_request_review_write`) の method=`resolve_thread` と、独立したツール `resolve_review_thread` のどちらでも resolve でき、バージョンによってはどちらか一方しか無い。セッションにあるほうを使う (両方あれば、どちらでもよい)。`owner` / `repo` / `pullNumber` 等のほかの引数は、schema で必須なら Step 1 の値と `PR_NUMBER` を渡す。
+**CHANNEL=mcp**: スレッドを resolve するツールを `threadId=<THREAD_ID>` で呼ぶ。執筆時点の github-mcp-server では、Review 書き込みツール (`pull_request_review_write`) の method=`resolve_thread` と、独立したツール `resolve_review_thread` のどちらでも resolve でき、バージョンによってはどちらか一方しか無い。使えるほうを使う (Review 書き込みツールは method の候補に `resolve_thread` があるときだけ使える。両方使えれば、どちらでもよい)。`owner` / `repo` / `pullNumber` 等のほかの引数は、schema で必須なら入力の `OWNER` / `REPO` / `PR_NUMBER` を渡す。
 
 **CHANNEL=gh**: `resolveReviewThread` mutation を実行する。
 

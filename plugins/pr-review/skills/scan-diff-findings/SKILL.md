@@ -215,7 +215,7 @@ finder が出した findings を **そのまま採用しない**。1 finding に
 ## 守ること
 
 - **read-only**: ファイル編集 (`Write` / `Edit`) は **`FINDINGS_PATH` への findings JSON / error JSON 書き出しのみ許可**。レビュー対象コードの修正・markdown 出力等は一切行わない。
-- **GitHub 投稿をしない**: 経路を問わず投稿系ツールを使わない (`gh pr review` / `gh pr comment` / `gh api .../reviews` も、GitHub MCP の書き込み系ツール (Review の作成・コメント・返信・スレッドの resolve など、GitHub に書き込むものすべて。現行の名前の例: `pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `add_issue_comment` / `resolve_review_thread`。名前は例で網羅ではない)も)。投稿は `post-pr-review` の責務。
+- **GitHub 投稿をしない**: 経路を問わず投稿系ツールを使わない (`gh pr review` / `gh pr comment` / `gh api .../reviews` も、GitHub MCP の書き込み系ツール (Review の作成・コメント・返信・スレッドの resolve など、名前を問わず GitHub に書き込むものすべて)も)。投稿は `post-pr-review` の責務。
 - **working tree / ローカル ref を変える git 操作をしない**: `checkout` / `reset` / `commit` / `push` / `pull` / `merge` / `rebase` は使わない。read-only の `diff` / `show` / `log` / `blame` / `rev-parse` / `cat-file` / `remote get-url` / `ls-files` のみ。**`fetch` も行わない** — ref range の object の materialize は caller (`compose-review` Step 1) の責務であり、本 skill は無ければ error にする。
 - **sub-agent にも同じ制約を課す**: finder / verifier の prompt に read-only 制約 (編集禁止 / GitHub 投稿禁止 / working tree 改変禁止) と「さらに sub-agent を起動しない (末端として動く)」を明記する。`model` は必ず明示指定し、`run_in_background: false` で起動する。
 - **background agent 待ちでターンを yield しない**: 一部の sub-agent が harness により background 化しても、その完了を待って応答を終了せず、同期的に得られた結果で Step 3 以降を完了する (caller の停止バグを誘発しないため)。

@@ -11,7 +11,7 @@ PR レビュー結果を **「1つの Review」として投稿** する手順を
 ## 守ること
 
 - レビュー結果は **必ず「1 つの Review」** として投稿する (`CHANNEL=gh` は 1 回の API コール、`CHANNEL=mcp` は pending review を組み立ててから 1 度に submit。いずれも GitHub 上では 1 つの Review オブジェクトになり、散らばった個別コメントにはならない)。
-- Review を介さずにコメントを 1 件ずつ投稿するツールは **使わない** (`gh pr comment`、MCP のインラインコメント作成ツールや PR / Issue へのコメント投稿ツール。現行の名前の例: claude-code-action の `create_inline_comment`、GitHub MCP の `add_issue_comment`。名前は例で網羅ではなく、名前が変わっても同じ目的のツールは使わない)。
+- Review を介さずに、コメントをその場で 1 件ずつ公開するツールは **使わない** (`gh pr comment`、PR / Issue へのコメント投稿ツール、PR に単独のインラインコメントを付けるツール。執筆時点の名前の例: GitHub MCP の `add_issue_comment`、claude-code-action の `create_inline_comment`。名前が変わっても同じ目的のツールは使わない)。手順 2-b で pending review にコメントを足すツールは、submit した Review の一部になるのでこれに当たらない。
 - `event` は **常に `COMMENT`**。`APPROVE` / `REQUEST_CHANGES` は使わない (Bot がマージブロックや承認権を持つことを避けるため)。
 - インラインコメントの本文フォーマット (重要度ラベル等) は **caller のレビュー方針に従う**。本 skill は手続きのみを担い、レビュー文面の規約は規定しない。
 - 総括 `body` の先頭には **AI 自動投稿マーカーを必ず付与する** (手順 1 のスクリプトが付与する。文言は `references/machine-readable-lines.md` の「body の組み立て」)。認証主体が人間 PAT でも投稿内容は AI 生成であることを明示するため。caller 側で事前に付与する必要はなく、本 skill が一律に prepend する。エージェント名 (Claude Code / Codex / Cursor 等) はマーカーに含めない (本 skill は複数の AI エージェントから呼ばれうる前提)。
@@ -195,7 +195,7 @@ gh api \
 
 #### 2-b. `CHANNEL=mcp` — pending review を組み立てて submit する
 
-MCP には Payload 全体を 1 コールで受けるツールが無いため、pending review を組み立ててから 1 度に submit する (GitHub 上では 2-a と同じ 1 つの Review オブジェクトになる)。以下のツール名・method・引数名は執筆時点の例で、実際の名前と引数は `run-pr-review` Step 1-2「MCP ツール名の扱い」に従ってセッションのツールの schema で確かめる。手順 1 の `payload_path` を `Read` し、その `body` / `comments` / `commit_id` を **そのまま** 下記の各ツール引数に使う (値を書き換えない)。`comments` の有無で分岐する:
+MCP には Payload 全体を 1 コールで受けるツールが無いため、pending review を組み立ててから 1 度に submit する (GitHub 上では 2-a と同じ 1 つの Review オブジェクトになる)。以下のツール名・method・引数名は執筆時点の例で、実際の名前と引数は `run-pr-review` Step 1-2「MCP ツール名の扱い」に従ってセッションのツールの schema で確かめる。**組み立てを始める前に**、使うツールと method (Review 書き込みツールの `create` / `submit_pending` / `delete_pending` と、pending review へのコメント追加ツール) がそろっているかを確かめ、そろわなければ投稿せずに caller に報告して停止する (途中で止まると pending review が宙に浮くため)。手順 1 の `payload_path` を `Read` し、その `body` / `comments` / `commit_id` を **そのまま** 下記の各ツール引数に使う (値を書き換えない)。`comments` の有無で分岐する:
 
 - **`comments` が空配列 (`[]`) の場合 — 1 呼び出しで submit**: Review 書き込みツール (現行は `pull_request_review_write`) を method=`create` で呼ぶ。`owner` / `repo` / `pullNumber` に加え、`body` = `payload.json` の `body`、`event` = `"COMMENT"`、`commitID` = `commit_id` (Payload に含まれる場合のみ) を渡す (`event` を付けると作成と同時に submit される)。
 - **`comments` が非空の場合 — pending review 組み立て**:
