@@ -11,7 +11,7 @@ PR レビュー結果を **「1つの Review」として投稿** する手順を
 ## 守ること
 
 - レビュー結果は **必ず「1 つの Review」** として投稿する (`CHANNEL=gh` は 1 回の API コール、`CHANNEL=mcp` は pending review を組み立ててから 1 度に submit。いずれも GitHub 上では 1 つの Review オブジェクトになり、散らばった個別コメントにはならない)。
-- 個別投稿系のツール (`mcp__github_inline_comment__create_inline_comment`、`mcp__github__add_issue_comment`、`gh pr comment` 等) は **使わない**。
+- Review を介さずにコメントを 1 件ずつ投稿するツールは **使わない** (`gh pr comment`、MCP のインラインコメント作成ツールや PR / Issue へのコメント投稿ツール。現行の名前の例: claude-code-action の `create_inline_comment`、GitHub MCP の `add_issue_comment`。名前は例で網羅ではなく、名前が変わっても同じ目的のツールは使わない)。
 - `event` は **常に `COMMENT`**。`APPROVE` / `REQUEST_CHANGES` は使わない (Bot がマージブロックや承認権を持つことを避けるため)。
 - インラインコメントの本文フォーマット (重要度ラベル等) は **caller のレビュー方針に従う**。本 skill は手続きのみを担い、レビュー文面の規約は規定しない。
 - 総括 `body` の先頭には **AI 自動投稿マーカーを必ず付与する** (手順 1 のスクリプトが付与する。文言は `references/machine-readable-lines.md` の「body の組み立て」)。認証主体が人間 PAT でも投稿内容は AI 生成であることを明示するため。caller 側で事前に付与する必要はなく、本 skill が一律に prepend する。エージェント名 (Claude Code / Codex / Cursor 等) はマーカーに含めない (本 skill は複数の AI エージェントから呼ばれうる前提)。
@@ -195,13 +195,13 @@ gh api \
 
 #### 2-b. `CHANNEL=mcp` — pending review を組み立てて submit する
 
-MCP には Payload 全体を 1 コールで受けるツールが無いため、pending review を組み立ててから 1 度に submit する (GitHub 上では 2-a と同じ 1 つの Review オブジェクトになる)。手順 1 の `payload_path` を `Read` し、その `body` / `comments` / `commit_id` を **そのまま** 下記の各ツール引数に使う (値を書き換えない)。`comments` の有無で分岐する:
+MCP には Payload 全体を 1 コールで受けるツールが無いため、pending review を組み立ててから 1 度に submit する (GitHub 上では 2-a と同じ 1 つの Review オブジェクトになる)。以下のツール名・method・引数名は執筆時点の例で、実際の名前と引数は `run-pr-review` Step 1-2「MCP ツール名の扱い」に従ってセッションのツールの schema で確かめる。手順 1 の `payload_path` を `Read` し、その `body` / `comments` / `commit_id` を **そのまま** 下記の各ツール引数に使う (値を書き換えない)。`comments` の有無で分岐する:
 
-- **`comments` が空配列 (`[]`) の場合 — 1 呼び出しで submit**: `mcp__github__pull_request_review_write` を method=`create` で呼ぶ。`owner` / `repo` / `pullNumber` に加え、`body` = `payload.json` の `body`、`event` = `"COMMENT"`、`commitID` = `commit_id` (Payload に含まれる場合のみ) を渡す (`event` を付けると作成と同時に submit される)。
+- **`comments` が空配列 (`[]`) の場合 — 1 呼び出しで submit**: Review 書き込みツール (現行は `pull_request_review_write`) を method=`create` で呼ぶ。`owner` / `repo` / `pullNumber` に加え、`body` = `payload.json` の `body`、`event` = `"COMMENT"`、`commitID` = `commit_id` (Payload に含まれる場合のみ) を渡す (`event` を付けると作成と同時に submit される)。
 - **`comments` が非空の場合 — pending review 組み立て**:
-  1. **pending review 作成**: `mcp__github__pull_request_review_write` を method=`create` で、**`event` を省略して** 呼ぶ (event 省略で pending review になる)。`owner` / `repo` / `pullNumber` と、`commitID` = `commit_id` (Payload に含まれる場合のみ) をここで渡す。`body` はここでは渡さず submit 時に渡す。
+  1. **pending review 作成**: Review 書き込みツールを method=`create` で、**`event` を省略して** 呼ぶ (event 省略で pending review になる)。`owner` / `repo` / `pullNumber` と、`commitID` = `commit_id` (Payload に含まれる場合のみ) をここで渡す。`body` はここでは渡さず submit 時に渡す。
      - **既存 pending review との衝突に注意**: GitHub は 1 ユーザー 1 PR につき pending review を 1 つしか持てない。`create` が「既に pending review がある」旨で失敗した場合、その既存 pending review は**別プロセス / 人間が作成した未 submit のドラフトかもしれない**ため、**勝手に `delete_pending` してはならない** (他者のドラフトを破壊する / add_comment が他者のドラフトに混入する危険)。この場合は投稿を中止し、「既存の未 submit pending review があるため投稿できない。手動で確認してほしい」と caller に報告して停止する。既存 pending review が明らかに本 skill 自身の直前の中断に由来すると確証できる場合に限り、`delete_pending` 後に再作成してよい。
-  2. **各インラインコメントを追加**: `payload.json` の `comments[]` の各要素について `mcp__github__add_comment_to_pending_review` を呼ぶ: `owner` / `repo` / `pullNumber`、`path` / `body` / `subjectType`=`"LINE"`、`line` / `side`。複数行範囲コメントは加えて `startLine` = `start_line` / `startSide` = `start_side` を渡す。
-  3. **submit**: `mcp__github__pull_request_review_write` を method=`submit_pending` で呼ぶ: `owner` / `repo` / `pullNumber`、`body` = `payload.json` の `body`、`event` = `"COMMENT"`。
+  2. **各インラインコメントを追加**: `payload.json` の `comments[]` の各要素について pending review へのコメント追加ツール (現行は `add_comment_to_pending_review`) を呼ぶ: `owner` / `repo` / `pullNumber`、`path` / `body` / `subjectType`=`"LINE"`、`line` / `side`。複数行範囲コメントは加えて `startLine` = `start_line` / `startSide` = `start_side` を渡す。
+  3. **submit**: Review 書き込みツールを method=`submit_pending` で呼ぶ: `owner` / `repo` / `pullNumber`、`body` = `payload.json` の `body`、`event` = `"COMMENT"`。
 
-**失敗時のクリーンアップ**: 2-b の組み立ては複数呼び出しに分かれるため、2-a の単一 atomic コールと違い途中失敗で pending review が宙に浮きうる。**本 skill が 2-b の 1 で `create` に成功して以降** (= 本 skill 自身が作った pending review が存在する状態) にコメント追加または submit が失敗したら、`mcp__github__pull_request_review_write` を method=`delete_pending` (`owner` / `repo` / `pullNumber`) で **本 skill が作った pending review を破棄** してから caller にエラーを報告する (submit されないまま残った pending review は他の投稿の妨げになるため残さない)。2-b の 1 の `create` 自体が失敗したケース (上記の既存 pending review 衝突など) では本 skill は pending review を作っていないので `delete_pending` は呼ばない。
+**失敗時のクリーンアップ**: 2-b の組み立ては複数呼び出しに分かれるため、2-a の単一 atomic コールと違い途中失敗で pending review が宙に浮きうる。**本 skill が 2-b の 1 で `create` に成功して以降** (= 本 skill 自身が作った pending review が存在する状態) にコメント追加または submit が失敗したら、Review 書き込みツールを method=`delete_pending` (`owner` / `repo` / `pullNumber`) で **本 skill が作った pending review を破棄** してから caller にエラーを報告する (submit されないまま残った pending review は他の投稿の妨げになるため残さない)。2-b の 1 の `create` 自体が失敗したケース (上記の既存 pending review 衝突など) では本 skill は pending review を作っていないので `delete_pending` は呼ばない。

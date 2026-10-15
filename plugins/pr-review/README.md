@@ -164,13 +164,15 @@ Payload (caller が渡す JSON 相当) の概要:
 
 GitHub API 操作 (PR メタ取得 / CI ログ / reviewThreads / Review 投稿 / スレッド resolve) は実行環境によって使える経路が異なるため、`run-pr-review` は実行時にチャネルを検出して選ぶ (`CHANNEL=gh|mcp`)。gh と GitHub MCP ツールは**対等な正規チャネル**であり、どちらか一方への決め打ちはしない:
 
-| 環境 | gh CLI | GitHub MCP ツール (`mcp__github__*`) |
+| 環境 | gh CLI | GitHub MCP ツール |
 |---|---|---|
 | GitHub Actions (claude-code-action) | ✅ (`github_token` で動く) | ❌ 通常無い |
 | ローカル Claude Code | ✅ (`gh auth login` 済みなら) | △ 接続していれば有る |
 | Claude Code web/remote セッション | ❌ 恒常 403 (GitHub API 直接アクセスが遮断され、curl 直叩きも同様に不可) | ✅ 唯一の到達経路 |
 
 チャネル解決手順は `run-pr-review` Step 1-2 を正典とし (`gh api repos/<OWNER>/<REPO> --jq .full_name` の成否 → MCP ツールの有無 → どちらも不可ならエラー)、`run-pr-review` が 1 回だけ解決して `post-pr-review` / `resolve-pr-threads` へ `CHANNEL` として転送する。各 skill を単独で呼ぶ場合は skill 側が `run-pr-review` Step 1-2 と同じ手順で自力解決する (手順の全文は各 skill には再掲せず正典を参照)。
+
+SKILL.md に書いた GitHub MCP のツール名 (`pull_request_read` など)・method・引数名は、GitHub 公式 MCP サーバー (github-mcp-server) の執筆時点の名前を例として書いたもの。ツールの完全な名前の接頭辞 (`mcp__<サーバーの登録名>__`) は MCP の接続のしかたで、ツール名や引数はサーバーのバージョンで変わるため、SKILL.md には接頭辞を書かず、実行時にセッションのツールの schema で確かめさせている (正典は `run-pr-review` Step 1-2「MCP ツール名の扱い」)。名前が変わっても skill の修正を待たずに動き、「GitHub に書き込まない」等の禁止も名前の一覧ではなく目的で決まる。
 
 例外は `distill-pr-reviews`: 収集ロジックが bash スクリプト (`scripts/collect-signals.sh`) にあり、bash からは MCP ツールを呼べないため **gh チャネル専用** (gh が使えない環境では実行できない)。
 
@@ -259,7 +261,7 @@ permissions:
 
 > `Bash(bash '/home/runner/.claude/plugins/*)` / `Bash(bash "/home/runner/.claude/plugins/*)` は、skill が同梱スクリプト (`compose-review` / `post-pr-review` の `scripts/*.sh`) をインストール先の絶対パスで `bash '<パス>' KEY=VALUE ...` の形で呼ぶためのもの。許可規則はコマンドの文字列そのままで照合され、クォートも一致させる必要があるので、単一引用符と二重引用符の両方を並べている。`/home/runner/.claude/plugins/` は GitHub ホストランナー (`HOME=/home/runner`) で plugin が入る場所なので、self-hosted ランナー等で `HOME` が違う場合はそこを書き換える。`Bash(bash:*)` のように `bash` 全体を許可すると `bash -c '...'` で任意のコマンドを実行できてしまうので、インストール先に限定している。値を `MODE=pr bash ...` のような先頭の環境変数代入で渡すと許可規則に一致しないため、skill は値を引数で渡す。`Bash(jq *)` は、skill がスクリプトの出力 JSON を読む・組み立てるために使う (jq はコマンドを実行できない)。
 
-> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、`mcp__github__pull_request_read` / `mcp__github__pull_request_review_write` (投稿・resolve 兼用) / `mcp__github__add_comment_to_pending_review` / `mcp__github__add_reply_to_pull_request_comment` / `mcp__github__get_job_logs` / `mcp__github__list_pull_requests` が代わりに使われる (詳細は「GitHub アクセスチャネル」)。この一覧は許可設定の目安であり、実際に各 skill が使うツールの正典は各 `SKILL.md` の手順を参照。
+> 上記 `--allowedTools` は GitHub Actions (= gh チャネル) 用。GitHub MCP ツールが使える環境 (web/remote セッション等) では `CHANNEL=mcp` が選ばれ、PR の一覧と読み取り・CI ログの取得・Review の投稿・スレッドへの返信と resolve に GitHub MCP のツールが代わりに使われる (詳細は「GitHub アクセスチャネル」)。執筆時点の github-mcp-server での名前は `pull_request_read` / `list_pull_requests` / `get_job_logs` / `pull_request_review_write` / `add_comment_to_pending_review` / `add_reply_to_pull_request_comment` / `resolve_review_thread` で、許可設定には接頭辞を付けた完全な名前 (サーバーを `github` の名前で登録していれば `mcp__github__pull_request_read` 等) を書く。この一覧は許可設定の目安であり、名前は MCP サーバーの登録名とバージョンで変わるので、実際の名前は利用環境のツール一覧で確かめる。
 
 ## 利用方法 (ローカル Claude Code)
 
