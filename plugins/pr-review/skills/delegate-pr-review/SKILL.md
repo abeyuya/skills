@@ -1,6 +1,6 @@
 ---
 name: delegate-pr-review
-description: 作成済み PR のレビューを別のリモートセッション (Claude Code on the web) に委譲し、投稿されたレビューに元のセッションで対応する。PR 作成直後に呼ぶと、レビュー専用セッションを `create_session` で起動して `run-pr-review` を実行させ、そのセッションからの完了通知 (`send_message`) を受けて、指摘の検討・修正・push・スレッドへの返信までを行う。クラウドセッション専用 (`claude-code-remote` MCP の `get_session` / `create_session` / `send_message` が必要)。
+description: 作成済み PR のレビューを別のリモートセッション (Claude Code on the web) に委譲し、投稿されたレビューに元のセッションで対応する。PR 作成直後に呼ぶと、レビュー専用セッションを `create_session` で起動して `run-pr-review` を実行させ、そのセッションからの完了通知 (`send_message`) を受けて、指摘の検討・修正・push・スレッドへの返信までを行い、用済みになったレビューセッションをアーカイブする。クラウドセッション専用 (`claude-code-remote` MCP の `get_session` / `create_session` / `send_message` が必要)。
 ---
 
 # delegate-pr-review skill
@@ -12,6 +12,7 @@ A: PR 作成 → 本 skill (Phase 1) → B を起動し、開始を知らせて�
 B: run-pr-review で Review を投稿 → 投稿した Review の ID を A に通知
 A: 通知を受けて本 skill (Phase 2) → その Review の指摘を検討・修正・push・返信
    └ MAX_REVIEW_ROUNDS が残っていれば B に再レビューを依頼 → B → A … を繰り返す
+   └ 再レビューを依頼しないなら、用済みの B をアーカイブして終える
 ```
 
 レビューを別セッションに分けるのは、実装したコンテキストのまま自己レビューすると実装時の思い込みをそのまま引き継ぐため。B は差分とプロジェクトの方針だけを見てレビューする。指摘への対応は、実装の経緯を知っている A が行う。
@@ -26,7 +27,7 @@ A: 通知を受けて本 skill (Phase 2) → その Review の指摘を検討・
 
 ## 前提
 
-- **A がクラウドセッションであること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う (完全なツール名の接頭辞は MCP の接続のしかたで変わる。末尾が同じ別サーバーのツール (例: メールの `send_message`) と取り違えないよう、claude-code-remote のサーバーのツールから探す。GitHub MCP のツールも含め、ツール名の扱いは `run-pr-review` Step 1-2「MCP ツール名の扱い」に従う)。いずれかが無い環境 (ローカル CLI / デスクトップアプリのローカルセッション等) では委譲せずに停止し、その旨をユーザーに報告する。代わりに同じセッションで `run-pr-review` を実行することは、ユーザーに頼まれない限りしない。
+- **A がクラウドセッションであること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う (完全なツール名の接頭辞は MCP の接続のしかたで変わる。末尾が同じ別サーバーのツール (例: メールの `send_message`) と取り違えないよう、claude-code-remote のサーバーのツールから探す。GitHub MCP のツールも含め、ツール名の扱いは `run-pr-review` Step 1-2「MCP ツール名の扱い」に従う)。いずれかが無い環境 (ローカル CLI / デスクトップアプリのローカルセッション等) では委譲せずに停止し、その旨をユーザーに報告する。代わりに同じセッションで `run-pr-review` を実行することは、ユーザーに頼まれない限りしない。用済みになった B のアーカイブには同じ MCP の `archive_session` を使うが、これは無くても委譲はできる (アーカイブせずにその旨を報告する)。
 - **B で `run-pr-review` が使えること**: B は A と同じ環境 (environment) で起動し、対象リポジトリを checkout する。対象リポジトリに pr-review plugin が入っていなくても使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく (plugin README「別セッションへのレビュー委譲」)。B で使えなかったときは、B が `failed` を通知してくる。
 - **A で `gh api` が GitHub の REST API を呼べること**: Review ごとの指摘コメントの一覧 (`pulls/<PR_NUMBER>/reviews/<ID>/comments`) は GitHub MCP ツールでは取れないので、`gh api` で取る (クラウドセッションでは REST は通り、GraphQL は通らないことがある)。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずに報告して終える (Phase 2 Step 2-5)。
 - **A が auto モード (または bypassPermissions) で動いていること**: B の `permission_mode` は A から引き継がれ、A より緩くはできない。A が操作のたびに人の承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まり、A に何も届かなくなる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B は `run-pr-review` に要る Bash / Write を使えずに失敗する。
@@ -64,6 +65,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `MAX_REVIEW_ROUNDS` / `REVIEW_OPTIONS`: 呼び出し時の値
 - `ACTIVE`: 委譲中か。B に依頼を送ったら真。Phase 2 Step 6 で最終報告をしたとき、B の失敗を報告したとき (B がまだ動いている場合を除く)、依頼の送信に失敗したとき、Phase 2 Step 2 の中で対応をやめたときに偽
 - 対応済みの Review の ID と、その round と、その Review の指摘コメントの ID (Phase 2 Step 2-5 で取ったもの)
+- `B_ARCHIVED`: A が Phase 2 Step 6 で B をアーカイブしたか
 
 ## Phase 1: B を起動する (PR 作成直後)
 
@@ -74,7 +76,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 3. `OWNER` / `REPO` / `PR_NUMBER` を確定する。`gh api repos/<OWNER>/<REPO> --jq .full_name` が成功することも確かめる。失敗したら、B を起動せずに停止して理由を報告する (B がレビューを終えても、A がその指摘を取れないため。「前提」参照)。
 4. 同じ PR の B が既にいれば、新しく起動しない (同じ PR に B が複数いると、Review が重複するため)。
    - この会話に、その PR の委譲の状態が記録されている → `get_session` で B を 1 回引いて、次のどれかを行う。
-     - B がアーカイブ済み → 委譲の状態を破棄して、この Phase 1 を Step 2 から行う (新しい B を起動する)。
+     - B がアーカイブ済み (Phase 2 Step 6 で用済みとしてアーカイブした場合を含む) → 委譲の状態を破棄して、この Phase 1 を Step 2 から行う (新しい B を起動する)。
      - B の `status_bucket` が `working` を含む (大文字小文字は区別しない。レビュー中) → 動いている最中だと伝えて終える。
      - `ROUND` の Review に対応済み → `MAX_REVIEW_ROUNDS` によらず `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送り、送信に成功したら `ROUND` を 1 増やして `ACTIVE` を真にする (ユーザーが明示的に呼び直したので、上限で黙って何もしないことはしない)。
      - `ROUND` の Review にまだ対応していない (失敗した / 応答が無かった) → `[delegate-pr-review:start] pr=<PR URL> round=<ROUND>` を送り、送信に成功したら `ACTIVE` を真にする (同じラウンドをやり直す)。
@@ -146,13 +148,15 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:done]` → Step 2 から
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:failed]`、またはその B についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等) → Step 1
 
+ただし `B_ARCHIVED` が真の B についての `<child-session-event>` では Step 1 に進まず、何もしない (A 自身がアーカイブしたことに伴う通知を、B の失敗として報告しないため)。
+
 **Review の webhook では始めない**。`ACTIVE` が真の PR に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じアカウントの Review の webhook や、author が A と同じアカウントで、本文が重要度ラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`。大文字小文字は区別しない) で始まるか、先頭行に `[AI 自動投稿]` を含むインラインコメント (B の指摘と、B の `resolve-pr-threads` の返信など) の webhook が届いても、通常の PR 監視の流れ (レビューコメントへの対応) でも扱わない。B の Review は B も A と同じユーザーの GitHub 認証で投稿するため author が A と同じになり、監視の流れと Phase 2 の両方で扱うと、同じ指摘に二重に修正・返信してしまう。B の Review には `done` が届いたときだけ対応する。対応済みの ID の Review と、記録したその指摘コメントの ID、A 自身の返信 (`<!-- delegate-pr-review:reply -->` を含むコメント) は、`ACTIVE` が偽になったあとでも監視の流れで扱わない (webhook が遅れて届いた場合に備える)。
 
 この規則の代わりに、委譲中の PR では、同じアカウントで手動実行した AI レビュー (`run-pr-review` 等) にも自動では対応しない。対応させたいときは、ユーザーが A に明示的に頼む。人のレビュアーや bot、GitHub Actions の Review (author が A と違う) と、同じアカウントでもラベルで始まらず `[AI 自動投稿]` も含まないコメント (ユーザーが手で付けたコメント等) は、通常の PR 監視の流れで扱う。委譲中に見送った webhook は再送されないので、委譲を終えたあとも自動では扱われない。
 
 ### Step 1. 失敗した場合
 
-B が失敗したか、異常終了した可能性がある。自動では再試行せずに、次をユーザーに報告して終える。B がまだ動いている場合 (下記) を除き、`ACTIVE` を偽にする。
+B が失敗したか、異常終了した可能性がある。自動では再試行せずに、次をユーザーに報告して終える。B がまだ動いている場合 (下記) を除き、`ACTIVE` を偽にする。B はアーカイブしない (再開には同じ B を使い、失敗の原因を調べるにも B の会話が要るため)。
 
 - 届いた通知の内容 (`failed` の `reason`、または `<child-session-event>` の内容)
 - `<child-session-event>` の場合は、`get_session` で B を 1 回引いた結果。`status_bucket` が `working` を含む (大文字小文字は区別しない) なら、B はまだ動いていて、`done` が届けば通常どおり対応する旨
@@ -209,8 +213,8 @@ A はスレッドを resolve しない。修正が指摘どおりかの確認は
 
 ### Step 6. 再レビューを依頼するか、終える
 
-- `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送る。送信に成功したら `ROUND` を 1 増やしてターンを終え、次の `done` が届いたら Phase 2 をもう一度行う。送信に失敗したら `ROUND` は変えずに `ACTIVE` を偽にし、下の要約に送信失敗の内容を添えて報告して終える。
-- それ以外: `ACTIVE` を偽にし、ユーザーに要約を報告して終える。
+- `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送る。送信に成功したら `ROUND` を 1 増やしてターンを終え、次の `done` が届いたら Phase 2 をもう一度行う。送信に失敗したら `ROUND` は変えずに `ACTIVE` を偽にし、下の要約に送信失敗の内容を添えて報告して終える。このとき B はアーカイブしない (呼び直せば Phase 1 Step 1-4 で同じ B に再レビューを送れるため)。
+- それ以外: `ACTIVE` を偽にし、B をアーカイブしてから (下記)、ユーザーに要約を報告して終える。
   - 修正した指摘 (commit SHA)
   - 返信だけにした指摘と、その理由
   - ユーザーの判断待ちの指摘
@@ -218,7 +222,13 @@ A はスレッドを resolve しない。修正が指摘どおりかの確認は
   - 修正したが未 resolve のスレッドの件数 (最終ラウンドの修正は再レビューも A の resolve も無いので、未 resolve のまま残る。会話の resolve を必須にしているリポジトリでは、人が確認して resolve するか、再レビューを依頼するまでマージできない)
   - エスカレーション判定 (`escalate=1` だった場合) と、インラインに出ていない指摘の件数 (Step 2-6 で差があった場合)
   - B が実際に動いたモデルと effort (`get_session` で B を 1 回引き、`session_context` の `model` / `effort_level` を書く。`effort_level` が `REVIEW_EFFORT` と違えば、その旨も書く。`effort_level` が返っていなければ `不明` と書き、違うとは書かない)
-  - B をアーカイブしてよいかの確認。ユーザーが了承したら `archive_session` で B をアーカイブする (PR を作るたびに B が増えるため)
+  - B をアーカイブしたか。しなかった・できなかった場合はその理由
+
+再レビューを依頼しないと決まった時点で、B はレビューを投稿し終えていて、もう依頼されることもない。PR を作るたびに B が増えるので、ユーザーに確認せずに `archive_session` で B をアーカイブし、成功したら `B_ARCHIVED` を真にする。
+
+- 要約のモデルと effort を確かめるために引いた `get_session` の結果で、`status_bucket` が `working` を含む (大文字小文字は区別しない) なら、アーカイブしない (B が何かを処理している最中で、止めてよいか分からないため)。
+- `archive_session` が無い・失敗したときは再試行せず、その旨を要約に含める。
+- アーカイブしたあとで同じ PR に本 skill を呼び直すと、Phase 1 Step 1-4 で新しい B が起動する。
 
 ## 守ること
 

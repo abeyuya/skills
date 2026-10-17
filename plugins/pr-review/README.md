@@ -196,7 +196,10 @@ A: PR 作成 → delegate-pr-review → B を起動
 B: run-pr-review で Review を投稿 → 投稿した Review の ID を A に通知 (send_message)
 A: 指摘を検討・修正・push・スレッドに返信 (MAX_REVIEW_ROUNDS が残っていれば B に再レビューを依頼)
    ※ A が対応するのは B が通知した ID の Review だけ (Review の webhook では始めない)
+A: 再レビューを依頼しないなら、用済みの B をアーカイブ (archive_session) して終える
 ```
+
+B のアーカイブはユーザーに確認せずに行う (PR を作るたびに B が増えるため)。B が失敗したときは、再開や原因の調査に使うのでアーカイブしない。
 
 ### 必要なもの
 
