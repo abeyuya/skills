@@ -9,6 +9,8 @@
 #
 # 利用方法は README.md の「利用方法 (apm 経由)」を参照。
 name: abeyuya-skills
+# apm 側のメタデータ。Claude Code への配布は commit SHA で行う
+# (plugin.json / marketplace.json に version を書かない) ため、リリースごとに上げる必要はない。
 version: 0.8.0
 description: abeyuya 個人が利用する Claude Code 向け skill / plugin 群
 author: abeyuya

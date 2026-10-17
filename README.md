@@ -20,6 +20,12 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 /plugin install pr-review@abeyuya-skills
 ```
 
+### 更新の受け取り
+
+`plugin.json` / `marketplace.json` には `version` を **書かない** 方針。書かない場合、Claude Code は git の commit SHA を version として扱うため、main にマージされた変更がそのまま新しい版になる (`version` を書くと、その文字列を上げない限り更新が配布されない)。
+
+marketplace の auto-update は third-party marketplace ではデフォルト off なので、ターミナル版なら `/plugin` の **Marketplaces** で `abeyuya-skills` を選び **Enable auto-update** を選ぶ。Desktop の Code タブでは `/plugin` が使えないので、`~/.claude/settings.json` の `extraKnownMarketplaces.abeyuya-skills` に `"autoUpdate": true` を書く。Claude Desktop の Code タブは `DISABLE_AUTOUPDATER=1` で Claude Code を起動するため、plugin の auto-update も止まる。Desktop で使う場合は `~/.claude/settings.json` の `env` に `"FORCE_AUTOUPDATE_PLUGINS": "1"` も追加する。
+
 ## 利用方法 (apm 経由)
 
 [apm (Agent Package Manager)](https://github.com/microsoft/apm) は Claude Code 形式の `marketplace.json` / `plugin.json` をネイティブに解釈するため、本リポジトリの配布物 (`.claude-plugin/marketplace.json` と `plugins/<name>/`) を **そのまま** 依存として扱える。`apm.yml` も同梱しているが、配布物の二重管理は発生しない (apm-aware であることを明示するためのメタデータのみ)。
@@ -42,6 +48,8 @@ plugin 個別の利用方法 (GitHub Actions / ローカル Claude Code / 開発
 ## 構成
 
 自前 skill は `plugins/<name>/skills/` 配下に置く方針。`.claude/skills/` は `apm install` の deploy 先として丸ごと apm 管理 (gitignore) とし、手書きの skill ファイルは置かない。
+
+`plugin.json` / `marketplace.json` には `version` を書かない (`claude plugin validate` の `No version specified` warning は意図どおり)。理由は [更新の受け取り](#更新の受け取り) を参照。
 
 ```
 apm.yml                                # apm 相互運用用マニフェスト
