@@ -24,7 +24,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 `plugin.json` / `marketplace.json` には `version` を **書かない** 方針。書かない場合、Claude Code は git の commit SHA を version として扱うため、main にマージされた変更がそのまま新しい版になる (`version` を書くと、その文字列を上げない限り更新が配布されない)。
 
-marketplace の auto-update は third-party marketplace ではデフォルト off なので、`/plugin` の **Marketplaces** で `abeyuya-skills` を選び **Enable auto-update** を選ぶか、`~/.claude/settings.json` の `extraKnownMarketplaces.abeyuya-skills` に `"autoUpdate": true` を書く。Claude Desktop の Code タブは `DISABLE_AUTOUPDATER=1` で Claude Code を起動するため、plugin の auto-update も止まる。Desktop で使う場合は `~/.claude/settings.json` の `env` に `"FORCE_AUTOUPDATE_PLUGINS": "1"` も追加する。
+marketplace の auto-update は third-party marketplace ではデフォルト off なので、ターミナル版なら `/plugin` の **Marketplaces** で `abeyuya-skills` を選び **Enable auto-update** を選ぶ。Desktop の Code タブでは `/plugin` が使えないので、`~/.claude/settings.json` の `extraKnownMarketplaces.abeyuya-skills` に `"autoUpdate": true` を書く。Claude Desktop の Code タブは `DISABLE_AUTOUPDATER=1` で Claude Code を起動するため、plugin の auto-update も止まる。Desktop で使う場合は `~/.claude/settings.json` の `env` に `"FORCE_AUTOUPDATE_PLUGINS": "1"` も追加する。
 
 ## 利用方法 (apm 経由)
 
