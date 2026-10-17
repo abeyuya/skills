@@ -209,14 +209,16 @@ A がどこで動いているかで、使うツールが変わる。B は A と�
 |---|---|---|
 | A | クラウドセッション (Claude Code on the web) | Claude デスクトップアプリのローカルセッション |
 | B の起動 | `claude-code-remote` MCP の `create_session` | `ccd_session` の `start_session` (A の side session として、B 専用の worktree で起動) |
-| A と B のメッセージ | `send_message` | `SendMessage` |
+| A と B のメッセージ | `send_message` | A → B は `ccd_session_mgmt` の `send_message`、B → A は `SendMessage` |
 | B のターンの終わりの通知 | `<child-session-event>` (異常時だけ) | `<side-sessions-event>` (B がターンを終えるたび) |
 | B のアーカイブ | `archive_session` | `ccd_session_mgmt` の `archive_session` |
 | B の GitHub アクセス | MCP (gh の GraphQL が通らないため) | gh |
 
 デスクトップの A から B をクラウドで起動しないのは、クラウドセッションからはローカルセッションにメッセージを返せないため。
 
-デスクトップ経路では、B は `done` / `failed` を `SendMessage` で A に送り、同じ 1 行をターンの最後の報告の先頭にも書く。A には B の報告の先頭 400 文字が `<side-sessions-event>` で自動で届くので、`SendMessage` が届かなかったときの控えになる。A は `SendMessage` で届いたものを正とし、`<side-sessions-event>` は、対応済みの `done` の控えなら何もせず、`done` / `failed` を含まずに B のターンが終わったなら、クラウド経路の `<child-session-event>` と同じく B の失敗として報告する。
+デスクトップ経路では、B は `done` / `failed` を `SendMessage` で A に送り、同じ 1 行をターンの最後の報告の先頭にも書く。A には B の報告の先頭 400 文字が `<side-sessions-event>` で自動で届くので、`SendMessage` が届かなかったときの控えになる。届く順序は入れ替わることがあるので、A は 1 回の依頼への応答に先に届いたほうで対応し、あとから届いた同じ応答は無視する。委譲中に B が `done` / `failed` を返さずにターンを終えたら、クラウド経路の `<child-session-event>` と同じく B の失敗として報告する。A → B のメッセージは、B の処理中のターンが終わるのを待って届く `ccd_session_mgmt` の `send_message` で送る (`SendMessage` は処理中のターンに割り込むため)。
+
+カードからユーザーが起動した B のターンの終わりでは、アプリは A を自動で起こさない。この場合は B の `SendMessage` だけが A を起こすので、B のレビューが終わっても A が動かなければ、A に話しかけると届いていた結果に対応する。
 
 B 専用の worktree にするのは、`run-pr-review` が作業ツリーを読まない (PR の head を fetch して読む) ので A と共有する必要が無く、共有すると A と B の `git fetch` が同じ `FETCH_HEAD` を書き換え合い、B のアーカイブによる作業ツリーの片付けが A に及ぶおそれもあるため。
 
