@@ -203,7 +203,7 @@ B のアーカイブはユーザーに確認せずに行う (PR を作るたび�
 
 ### 必要なもの
 
-- **A がクラウドセッション (Claude Code on the web) であること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う。これらは公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
+- **A がクラウドセッション (Claude Code on the web) であること**: `claude-code-remote` MCP の `get_session` / `create_session` / `send_message` を使う (用済みの B のアーカイブには `archive_session` も使う。これが無ければアーカイブだけを飛ばす)。これらは公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
 - **A が auto モード (または bypassPermissions) で動いていること**: B の permission mode は A から引き継がれる。A が操作のたびに承認を求めるモードだと、B は誰も見ていない画面で承認待ちのまま止まる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B はレビューに要るツールを使えずに失敗する。
 - **B で `run-pr-review` が使えること**: B は A と同じ環境で、対象リポジトリを checkout して起動する。どのリポジトリでも使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく。
 

@@ -65,7 +65,6 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 - `MAX_REVIEW_ROUNDS` / `REVIEW_OPTIONS`: 呼び出し時の値
 - `ACTIVE`: 委譲中か。B に依頼を送ったら真。Phase 2 Step 6 で最終報告をしたとき、B の失敗を報告したとき (B がまだ動いている場合を除く)、依頼の送信に失敗したとき、Phase 2 Step 2 の中で対応をやめたときに偽
 - 対応済みの Review の ID と、その round と、その Review の指摘コメントの ID (Phase 2 Step 2-5 で取ったもの)
-- `B_ARCHIVED`: A が Phase 2 Step 6 で B をアーカイブしたか
 
 ## Phase 1: B を起動する (PR 作成直後)
 
@@ -148,7 +147,7 @@ B には PR を監視させない。PR のイベントは同時に 1 つのセ�
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:done]` → Step 2 から
 - その PR の `B_SESSION_ID` からの `[delegate-pr-review:failed]`、またはその B についての `<child-session-event>` (B のターンがエラーで終わった、ワーカーが再起動した等) → Step 1
 
-ただし `B_ARCHIVED` が真の B についての `<child-session-event>` では Step 1 に進まず、何もしない (A 自身がアーカイブしたことに伴う通知を、B の失敗として報告しないため)。
+ただし `ACTIVE` が偽の PR の B についての `<child-session-event>` では、`get_session` で B を 1 回引き、アーカイブ済みなら Step 1 に進まず、何もしない (A が Step 6 でアーカイブしたことに伴う通知を、B の失敗として報告しないため。`archive_session` が失敗を返したのに実際にはアーカイブされていた場合も、これで見分けられる)。
 
 **Review の webhook では始めない**。`ACTIVE` が真の PR に、AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行を持ち、author が A と同じアカウントの Review の webhook や、author が A と同じアカウントで、本文が重要度ラベル (`[must]` / `[should]` / `[nit]` / `[question]` / `[pre_existing]`。大文字小文字は区別しない) で始まるか、先頭行に `[AI 自動投稿]` を含むインラインコメント (B の指摘と、B の `resolve-pr-threads` の返信など) の webhook が届いても、通常の PR 監視の流れ (レビューコメントへの対応) でも扱わない。B の Review は B も A と同じユーザーの GitHub 認証で投稿するため author が A と同じになり、監視の流れと Phase 2 の両方で扱うと、同じ指摘に二重に修正・返信してしまう。B の Review には `done` が届いたときだけ対応する。対応済みの ID の Review と、記録したその指摘コメントの ID、A 自身の返信 (`<!-- delegate-pr-review:reply -->` を含むコメント) は、`ACTIVE` が偽になったあとでも監視の流れで扱わない (webhook が遅れて届いた場合に備える)。
 
@@ -171,7 +170,7 @@ B が失敗したか、異常終了した可能性がある。自動では再試
    - その ID の Review がこの PR にある
    - author が A と同じアカウント (GitHub MCP の認証ユーザー取得ツール (現行は `get_me`) が返す `login`)
    - 本文冒頭に AI 自動投稿マーカーと `AI-REVIEW-RESULT` 行がある
-2. その ID が対応済みなら、対応せずに、対応済みの Review の ID が届いた旨をユーザーに報告して終える (再レビューを頼んだのに新しい Review が無い、という状態を黙って見逃さないため)。そうでなければ、この時点で対応済みとして、メッセージの round とともに記録する。ただし、この Step 2 の中で対応をやめて終える場合 (2-5 で指摘を取れない等) は、この記録を外し、`ACTIVE` を偽にしてから報告する (記録を外さないと、`start` で同じラウンドをやり直しても B は同じ ID を返し、ここで対応済みとして止まるため)。Step 3 以降 (ユーザーの判断待ちを含む) に進んだあとは、記録を外さない。
+2. その ID が対応済みなら、対応せずに、対応済みの Review の ID が届いた旨をユーザーに報告して終える (再レビューを頼んだのに新しい Review が無い、という状態を黙って見逃さないため)。そうでなければ、この時点で対応済みとして、メッセージの round とともに記録する。ただし、この Step 2 の中で対応をやめて終える場合 (2-5 で指摘を取れない等) は、この記録を外し、`ACTIVE` を偽にしてから報告する (記録を外さないと、`start` で同じラウンドをやり直しても B は同じ ID を返し、ここで対応済みとして止まるため)。この場合も B はアーカイブせず、B が残っていることを報告に含める (やり直しに同じ B を使うため)。Step 3 以降 (ユーザーの判断待ちを含む) に進んだあとは、記録を外さない。
 3. 機械可読行は、本文冒頭の AI 自動投稿マーカーから最初の `---` までの範囲だけで探す (`post-pr-review` の `references/machine-readable-lines.md` の規則。総括本文に引用されたフォーマット例を拾わないため)。
    - `AI-REVIEW-RESULT` 行からラベル別の件数を読む。
    - `AI-REVIEW-ESCALATE: escalate=1` があれば、人のレビューが必要と判定された PR なので、最後の報告で目立つように伝える。
@@ -214,19 +213,19 @@ A はスレッドを resolve しない。修正が指摘どおりかの確認は
 ### Step 6. 再レビューを依頼するか、終える
 
 - `ROUND < MAX_REVIEW_ROUNDS` で、Step 4 で push した場合: `[delegate-pr-review:rereview] pr=<PR URL> round=<ROUND+1>` を送る。送信に成功したら `ROUND` を 1 増やしてターンを終え、次の `done` が届いたら Phase 2 をもう一度行う。送信に失敗したら `ROUND` は変えずに `ACTIVE` を偽にし、下の要約に送信失敗の内容を添えて報告して終える。このとき B はアーカイブしない (呼び直せば Phase 1 Step 1-4 で同じ B に再レビューを送れるため)。
-- それ以外: `ACTIVE` を偽にし、B をアーカイブしてから (下記)、ユーザーに要約を報告して終える。
+- それ以外: `ACTIVE` を偽にし、`get_session` で B を 1 回引いてから B をアーカイブし (下記)、ユーザーに要約を報告して終える。
   - 修正した指摘 (commit SHA)
   - 返信だけにした指摘と、その理由
   - ユーザーの判断待ちの指摘
   - 返信に失敗したスレッド (Step 5)
   - 修正したが未 resolve のスレッドの件数 (最終ラウンドの修正は再レビューも A の resolve も無いので、未 resolve のまま残る。会話の resolve を必須にしているリポジトリでは、人が確認して resolve するか、再レビューを依頼するまでマージできない)
   - エスカレーション判定 (`escalate=1` だった場合) と、インラインに出ていない指摘の件数 (Step 2-6 で差があった場合)
-  - B が実際に動いたモデルと effort (`get_session` で B を 1 回引き、`session_context` の `model` / `effort_level` を書く。`effort_level` が `REVIEW_EFFORT` と違えば、その旨も書く。`effort_level` が返っていなければ `不明` と書き、違うとは書かない)
+  - B が実際に動いたモデルと effort (アーカイブの前に引いた `get_session` の結果の `session_context` の `model` / `effort_level` を書く。`effort_level` が `REVIEW_EFFORT` と違えば、その旨も書く。`effort_level` が返っていなければ `不明` と書き、違うとは書かない)
   - B をアーカイブしたか。しなかった・できなかった場合はその理由
 
-再レビューを依頼しないと決まった時点で、B はレビューを投稿し終えていて、もう依頼されることもない。PR を作るたびに B が増えるので、ユーザーに確認せずに `archive_session` で B をアーカイブし、成功したら `B_ARCHIVED` を真にする。
+再レビューを依頼しないと決まった時点で、B はレビューを投稿し終えていて、もう依頼されることもない。PR を作るたびに B が増えるので、ユーザーに確認せずに `archive_session` で B をアーカイブする。
 
-- 要約のモデルと effort を確かめるために引いた `get_session` の結果で、`status_bucket` が `working` を含む (大文字小文字は区別しない) なら、アーカイブしない (B が何かを処理している最中で、止めてよいか分からないため)。
+- アーカイブの前に引いた `get_session` の結果で、`status_bucket` が `working` を含む (大文字小文字は区別しない) なら、アーカイブしない (B が何かを処理している最中で、止めてよいか分からないため)。
 - `archive_session` が無い・失敗したときは再試行せず、その旨を要約に含める。
 - アーカイブしたあとで同じ PR に本 skill を呼び直すと、Phase 1 Step 1-4 で新しい B が起動する。
 
