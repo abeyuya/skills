@@ -1,5 +1,5 @@
 ---
-description: distill-pr-reviews skill 手順をローカル (plugin install なし) で起動するためのエイリアス。期間内 merged PR のレビューコメントとバグ修正PRの修正diffを集約し proposals.md に蒸留する。一般的なレビュー観点は採用候補にせず保留 / 棄却に降格し、プロジェクト固有の観点を重点的に抽出する。各候補は配置先 REVIEW.md (root / ディレクトリ別) ごとに振り分け、追記用の断片ファイルも出力する。
+description: distill-pr-reviews skill 手順をローカル (plugin install なし) で起動するためのエイリアス。期間内 merged PR のレビューコメントとバグ修正PRの修正diffを集約し proposals.md に蒸留する。一般的なレビュー観点は、出典から固有の文脈を読み取れれば固有の観点に書き直し、読み取れなければ保留 / 棄却に降格する (プロジェクト固有の観点を重点的に抽出する)。各候補は配置先 REVIEW.md (root / ディレクトリ別) ごとに振り分け、追記用の断片ファイルも出力する。
 argument-hint: '[OWNER=...] [REPO=...] [SINCE=YYYY-MM-DD] [UNTIL=YYYY-MM-DD] [DAYS=N] [MAX_PRS=N] [MAX_BUGFIX_DIFFS=N] [FILTER_AUTHOR=...] [FILTER_LABEL=...] [INCLUDE_AI_AUTHORED=true|false] [OUTPUT_DIR=...]'
 ---
 
