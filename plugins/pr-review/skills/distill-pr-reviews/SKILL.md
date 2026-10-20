@@ -200,7 +200,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
    2. **`general` は固有化を試みる**: 出典の body / 返信 / diff_hunk / バグ修正 diff に、その一般原則がこのリポジトリで **なぜ** 破られたかを示す固有の事実 (特定の関数が null を返す条件、特定 API のページ番号が 1 始まり、等) が書かれていれば、その事実を主語にした提案文に書き直して `project` として扱う。**場所 (パス / ディレクトリ) を付けただけでは固有化にならない** (「`apps/api/` では null チェックが漏れがち」は、知らないレビュアーでも同じ指摘をするので `general` のまま)。**出典に書かれていない固有名詞や条件を推測で補ってはならない** (もっともらしいが誤ったルールが REVIEW.md に入るため)。
    3. **再利用可能性を確かめる**: 固有化した後の文面で、このリポジトリの他 PR にも効くかを判定する。この PR 限定のロジック誤り、特定 issue のリグレッション、ファイル固有の名前付け修正、削除予定のコードにしか当てはまらない事実など、一回限りの話は `reject`。
    4. **`project` を重点的に抽出する**: 再利用できる `project` は以降の判断軸で採否を決める。severity が低くても採用候補になりうる (判断軸 3)。
-   5. **固有化できない `general` は重要度を下げ、`accept` にしない**: 3 PR 以上で同主旨が繰り返されたクラスタ (判断軸 5) は `hold` (このリポジトリで繰り返し破られている弱点の可能性があり、人間なら固有の文脈を補えることがあるため)、それ以外は `reject`。どちらも `reason` の先頭に `[汎用観点]` を付け (他のフラグと併記するときも常に先頭に置く。proposals.md の「汎用観点として降格」の件数はこのフラグで数える)、判断軸 2〜8 の `accept` 寄り / `hold` 寄りの規則 (取り込みシグナル不明 → `hold`、重複可能性 → `hold` 等) は適用しない。ただし、`project` か `general` か判断に迷う場合と、出典が途中までしか無く固有の文脈の有無を断定できない場合 (`bugfix_diff_truncated=true` 等) は、`reject` にせず `hold` にする (判断軸 10)。他の判断軸が `reject` を求める場合 (`INCLUDE_AI_AUTHORED=false` / `[pre_existing]` 等) はそちらに従う。
+   5. **固有化できない `general` は重要度を下げ、`accept` にしない**: 3 PR 以上で同主旨が繰り返されたクラスタ (判断軸 5) は `hold` (このリポジトリで繰り返し破られている弱点の可能性があり、人間なら固有の文脈を補えることがあるため)、それ以外は `reject`。ただし `[nit]` (typo・一般的な命名・好み寄りの書き方など) は、繰り返されていても `reject` (固有の文脈を足しようが無く、保留に積むとノイズになるため)。どちらも `reason` の先頭に `[汎用観点]` を付け (他のフラグと併記するときも常に先頭に置く。proposals.md の「汎用観点として降格」の件数はこのフラグで数える)、判断軸 2〜8 の `accept` 寄り / `hold` 寄りの規則 (取り込みシグナル不明 → `hold`、重複可能性 → `hold` 等) は適用しない。ただし、`project` か `general` か判断に迷う場合と、出典が途中までしか無く固有の文脈の有無を断定できない場合 (`bugfix_diff_truncated=true` 等) は、`reject` にせず `hold` にする (判断軸 10)。この `hold` は降格ではないので `[汎用観点]` を付けず、`reason` に固有性の判断を保留した旨を書き、`project` の `hold` と同じく暫定の配置先を付ける。他の判断軸が `reject` を求める場合 (`INCLUDE_AI_AUTHORED=false` / `[pre_existing]` / 再利用不能 の 3 つ。判断軸 4 の「reject 寄り」のような加減点はこれに含まない) はそちらに従い、`[汎用観点]` は付けない (降格件数に数えない)。
 
 2. **取り込みステータス**
    - `thread_resolved=true` かつ `file_changed_after_comment=true`: 強い「取り込まれた」シグナル → accept 寄り。
@@ -211,7 +211,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 
 3. **severity**
    - `[must]` / `[should]`: 採用優先。
-   - `[nit]` / `[question]`: `general` なら判断軸 1 の降格に従う。命名・用語・ディレクトリ構成などの **このリポジトリの規約** を示す `project` の nit は、REVIEW.md が無いとレビュアーが守らせられない知識なので、severity が低いことだけを理由に棄却せず、他の判断軸と同じ基準で評価する。ただし **個人の好みは規約ではない**: 規約として扱うのは、出典が規約・合意に言及している (「このリポジトリでは X に統一している」等) か、複数 PR・複数レビュアーで同じ指摘が繰り返されている場合だけで、1 人のレビュアーが 1 回付けただけの好み寄りの nit は棄却する。question は、スレッドの返信で設計意図・不変条件が明かされた場合だけ、明かされた内容を `project` として評価する (問うだけで答えが無い question は、提案文を推測で書くことになるので棄却)。
+   - `[nit]` / `[question]`: `general` なら判断軸 1 の降格に従う (`general` の nit は繰り返されていても棄却)。命名・用語・ディレクトリ構成などの **このリポジトリの規約** を示す `project` の nit は、REVIEW.md が無いとレビュアーが守らせられない知識なので、severity が低いことだけを理由に棄却せず、他の判断軸と同じ基準で評価する。ただし **個人の好みは規約ではない**: 規約として扱うのは、出典が規約・合意に言及している (「このリポジトリでは X に統一している」等) か、複数 PR・複数レビュアーで同じ指摘が繰り返されている場合だけで、1 人のレビュアーが 1 回付けただけの好み寄りの nit は棄却する。question は、スレッドの返信で設計意図・不変条件が明かされた場合だけ、明かされた内容を `project` として評価する (問うだけで答えが無い question は、提案文を推測で書くことになるので棄却)。
    - `[pre_existing]`: 棄却 (本 PR の指針というより別 issue 化推奨)。
    - severity ラベルなし: body の内容から severity を推定 (推定ラベルは `severity_suggestion` に明示)。
 
@@ -230,7 +230,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
    - 出現頻度が高いほど accept 寄り (3 PR 以上の同主旨は強い採用根拠)。ただし固有化できない `general` は、頻度が高くても判断軸 1 の降格に従う。
 
 6. **REVIEW.md 既存内容との重複可能性**
-   - 本 skill は REVIEW.md を読まない。出典の body が「REVIEW.md にある通り」のように、その観点が既存 REVIEW.md に書かれていると示しているものは、`reason` に「[既存方針と重複可能性]」とフラグを立て、`hold` に倒す。root の `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` への言及も同じく扱う (root に `REVIEW.md` が無いと、`compose-review` はこれらを root 方針として読むため)。一方、配下ディレクトリの `CLAUDE.md` / `CONTRIBUTING.md` / 設計文書などへの言及は重複扱いにしない (`compose-review` はそれらを読まないため。文書化された約束事は、むしろ `project` の根拠になる)。一般に当たり前のルールは判断軸 1 の `general` として扱う。
+   - 本 skill は REVIEW.md を読まない。出典の body が「REVIEW.md にある通り」のように、その観点が既存 REVIEW.md に書かれていると示しているものは、`reason` に「[既存方針と重複可能性]」とフラグを立て、`hold` に倒す。root の `AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md` への言及は、root に `REVIEW.md` が無いとき (`meta.existing_review_md_paths` に `REVIEW.md` が無い、または一覧を取得できていないとき) だけ同じく扱う (`compose-review` は root に `REVIEW.md` が無いときに限り、これらのうち最初に見つかった 1 つを root 方針として読むため)。root に `REVIEW.md` があるときの root 候補や、配下ディレクトリの `CLAUDE.md` / `CONTRIBUTING.md` / 設計文書などへの言及は重複扱いにしない (`compose-review` が方針として読むのは `REVIEW.md` と root の候補 1 つだけなので。文書化された約束事は、むしろ `project` の根拠になる)。一般に当たり前のルールは判断軸 1 の `general` として扱う。
 
 7. **バグ修正PR由来の加点 (`pr_kind=bugfix`)**
    - バグ修正PRに付いたレビューコメントは「レビューがすり抜けた領域」を指す指摘であり、同種バグの再発防止に効く価値が高い → accept 寄りに加点する。加点するのは `project` の観点 (固有化できたものを含む) だけで、`general` のままの観点は判断軸 1 の降格に従う。
@@ -267,7 +267,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 |---|---|
 | `verdict` | `accept` / `hold` / `reject` |
 | `target_review_md` | 配置先 `REVIEW.md` の root 相対パス (root なら `REVIEW.md`、ディレクトリ別なら `apps/web/REVIEW.md` 等)。2-1 の判断軸 9 で決定。`reject` の場合、判断軸 9-5 の制約を満たさず `hold` に落とした場合、および `[汎用観点]` の `hold` は null。 |
-| `target_is_new` | 配置先が `meta.existing_review_md_paths` に無い **新規ファイルの提案** なら true、既存ファイルへの追記なら false、一覧取得失敗 (`existing_review_md_paths=null`) なら null。 |
+| `target_is_new` | 配置先が `meta.existing_review_md_paths` に無い **新規ファイルの提案** なら true、既存ファイルへの追記なら false、一覧取得失敗 (`existing_review_md_paths=null`) なら null。`target_review_md=null` の候補も null。 |
 | `source` | 抽出源。`review-comment` (レビューコメント由来) / `bugfix-diff` (バグ修正diff由来)。クラスタに両方含む場合は主たる根拠を記し `sources[]` に内訳を残す。 |
 | `reason` | 採否の理由 (1〜2 文)。`[汎用観点]` (判断軸 1 で降格したもの) / `[既存方針と重複可能性]` などのフラグもここに含める。 |
 | `proposal_text` | REVIEW.md に書くなら何と書くか (Markdown bullet point 1〜3 行)。一般原則の言い換えに留めず、このリポジトリの具体的な対象 (パス / モジュール / 関数 / 型 / ドメイン用語 / 条件) を名指しで書く。ただし `[汎用観点]` の `hold` は固有の対象を出典から取れなかったものなので、一般原則のまま書く (名指しのために固有名詞を作らない)。`reject` の場合は null。 |
@@ -370,6 +370,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-}" \
 ### H1. [should] <タイトル>
 
 **判定保留理由**: <reason>
+
+**固有性**: <`project` の保留のみ。このルールが依存するリポジトリ固有の知識を 1 文で。`[汎用観点]` の保留と固有性の判断を保留したものは省く。>
 
 **配置先候補**: <target_review_md> (既存 / 新規 / 不明)、制約違反で保留した場合は `なし (配置先パスが制約違反)`、`[汎用観点]` の保留は `なし (固有の文脈を足してから決める)`
 

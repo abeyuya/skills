@@ -458,8 +458,8 @@ jq -n \
   ' > "$PRS_FILE"
 
 # ====== Step 3.5: バグ修正PR の diff 取得 ======
-# バグ修正PRは「レビューをすり抜けたバグ」であり、その修正 diff を一般化すれば再発防止の
-# レビュー観点になる (Phase C/D の新しい抽出源)。コスト抑制のため pr_kind=bugfix の subset
+# バグ修正PRは「レビューをすり抜けたバグ」であり、その修正 diff からバグを生んだリポジトリ固有の
+# 性質を読み取れば再発防止のレビュー観点になる (Phase C/D の新しい抽出源)。コスト抑制のため pr_kind=bugfix の subset
 # のみ `gh pr diff` で取得 (1 PR = 1 コール)。件数は MAX_BUGFIX_DIFFS、サイズは DIFF_CHAR_CAP で制限。
 DIFF_CHAR_CAP=20000
 # bugfix PR 番号を一度だけ取得し、件数算出と diff 取得ループの双方で使い回す (jq の二重実行回避)。
