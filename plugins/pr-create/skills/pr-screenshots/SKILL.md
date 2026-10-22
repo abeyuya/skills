@@ -15,9 +15,9 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - サイズの上限は無料プランのリポジトリで 10MB、有料プランで 100MB。超えるときは、確認したい操作の範囲に絞って撮り直すか、長辺 1280px 以下に縮めて再エンコードする (例: `ffmpeg -i in.mov -vf "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2" -c:v libx264 -pix_fmt yuv420p -crf 28 -an out.mp4`。`min()` は元が小さい動画を拡大しないため)。ffmpeg が無い macOS では `avconvert -s in.mov -p Preset1280x720 -o out.mp4` を使う
   - 録画時間の上限 (Android の 180 秒など) を超える操作は、先に操作のまとまりごとに分けてから撮る
   - 録画はバックグラウンドで始め、その間に画面を操作する
-    - バックグラウンドで始めるときは、出力を切り離して `nohup <録画のコマンド> >/dev/null 2>&1 & echo $! > <pid ファイル>` の形にする (またはツールのバックグラウンド実行 (Claude Code の Bash の `run_in_background` など) を使う)。出力を切り離さないと、ツールの呼び出しが返らないか、呼び出しの終わりに録画のプロセスごと止められて動画が壊れる
-    - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を上の形で始め、操作を終えたら `kill -INT "$(cat <pid ファイル>)"` で止める (ほかの simctl のプロセスを巻き込まないよう、録画のプロセスだけに送る)。SIGINT 以外で止めるとファイルが書き終わらずに壊れるので、`for i in $(seq 30); do kill -0 "$(cat <pid ファイル>)" 2>/dev/null || break; sleep 1; done` でプロセスが終わるのを待ってから使う。30 秒たっても終わらなければ、動画は使わずにその旨を報告する。QuickTime 形式で書き出されるので拡張子は `.mov`
-    - Android エミュレータは `adb shell screenrecord --time-limit <秒> /sdcard/<name>.mp4` に操作に要る秒数を指定し、上の形でバックグラウンドで始めて、その間に操作する。`--time-limit` の秒数がたって録画が止まるのを待つ (adb を強制終了すると mp4 が壊れることがある)。既定は 180 秒で、Android の版によってはそれが上限 (上限を超える値を渡すと録画されない)。`adb pull` で取り出し、端末側のファイルは消す
+    - バックグラウンドで始めるときは、出力を切り離して `nohup <録画のコマンド> >/dev/null 2>&1 & echo $! > <pid ファイル>` の形にする。出力を切り離さないと、ツールの呼び出しが録画の終わりまで返らないことがある
+    - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を上の形で始め、操作を終えたら `kill -INT "$(cat <pid ファイル>)"` で止める (ほかの simctl のプロセスを巻き込まないよう、録画のプロセスだけに送る)。SIGINT 以外で止めるとファイルが書き終わらずに壊れるので、`for i in $(seq 30); do kill -0 "$(cat <pid ファイル>)" 2>/dev/null || break; sleep 1; done` でプロセスが終わるのを待ってから使う。30 秒たっても終わらなければ `kill -KILL` で止め、途中のファイルは消して、撮れなかった旨を報告する。QuickTime 形式で書き出されるので拡張子は `.mov`
+    - Android エミュレータは `adb shell screenrecord --time-limit <秒> /sdcard/<name>.mp4` に操作に要る秒数を指定し、上の形でバックグラウンドで始めて、その間に操作する。`adb shell pidof screenrecord` が何も返さなくなる (`--time-limit` の秒数がたって録画が止まる) のを待ってから取り出す (adb を強制終了すると mp4 が壊れることがある)。既定は 180 秒で、Android の版によってはそれが上限 (上限を超える値を渡すと録画されない)。`adb pull` で取り出し、端末側のファイルは消す
     - Web アプリや管理画面などのブラウザで動く画面は、Playwright の動画録画を使う
   - 録画できないときは、スクリーンショットを撮り、動きの違いを文章で補う
 - 新しい画面・新機能 (画面を伴うもの) を実装する PR では、その機能を一通り操作するウォークスルーの動画を撮って添付する。VRT の baseline がある画面でも撮る (静止画では操作の流れが分からないため)
@@ -40,7 +40,7 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - 本文のパスと `--attach` のパスは同じ書き方にそろえる。違うと参照が書き換わらず、画像が本文の末尾に付く
   - 動画は参照 `![](<ローカルのパス>)` だけを 1 つの段落に単独で書く (同じ段落に文がある・表のセルに入れると、プレーヤーではなくリンクとして表示される)。動画には代替テキストを付けられないので、何の動画かは直前の段落に書く
   - 添付が一部失敗しても PR の作成・更新は行われ、終了コードだけが非ゼロになる。そのときは `gh pr create` をやり直さず、下の差し替えと同じ手順で、足りない分を添付し直す
-  - `gh pr create --help` に `--attach` が無い (gh が古い) とき、gh が使えない (GitHub MCP で PR を作るなど) とき、gh はあっても GraphQL が拒否されるとき (Claude Code のクラウドセッションなど。`gh pr create` / `gh pr edit` / `gh pr view --json` は GraphQL を使うので、REST だけ通っても失敗する)、push 権限が無いときは、画像・動画をユーザーに送り (SendUserFile が使えればそれで)、添付を依頼する
+  - `gh pr create --help` に `--attach` が無い (gh が古い) とき、gh が使えない (GitHub MCP で PR を作るなど) とき、gh はあっても GraphQL が拒否されるとき (Claude Code のクラウドセッションなど。`gh pr create` / `gh pr edit` / `gh pr comment` / `gh pr view --json` は GraphQL を使うので、REST だけ通っても失敗する。`gh api graphql -f query='{viewer{login}}'` が通るかで先に確かめる)、push 権限が無いときは、画像・動画をユーザーに送り (SendUserFile が使えればそれで)、添付を依頼する
     - 本文にローカルのパスの参照は残さない
     - 添付のために commit したり外部に上げたりはしない
     - 送る手段もなければ、撮影できなかった画面と同じく PR 本文にその旨を書く
