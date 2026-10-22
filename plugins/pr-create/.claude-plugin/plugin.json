@@ -1,0 +1,8 @@
+{
+  "name": "pr-create",
+  "description": "PR 作成時に使う skill 群。プロジェクトに PR テンプレートも本文の指示も無いときに使うフォールバックの PR テンプレート (pr-template) / UI 変更の before・after のスクリーンショット・動画の撮影と添付 (pr-screenshots) / PR 本文に載せる mermaid 図・画像の描き方と描画の確認 (pr-diagrams) を提供する。",
+  "author": {
+    "name": "abeyuya",
+    "url": "https://github.com/abeyuya"
+  }
+}

@@ -11,6 +11,12 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 
 詳細は [plugins/pr-review/README.md](plugins/pr-review/README.md) を参照。
 
+### [`pr-create`](plugins/pr-create/README.md)
+
+PR を作成するときに使う skill 群。プロジェクトに PR テンプレートも本文の指示も無いときに使う **フォールバックの PR テンプレート**、UI 変更の **before / after のスクリーンショット・動画** の撮り方と添付の仕方、PR 本文に載せる **mermaid 図・画像** の描き方と描画の確認の仕方を提供する。
+
+詳細は [plugins/pr-create/README.md](plugins/pr-create/README.md) を参照。
+
 ## 利用方法 (ローカル Claude Code)
 
 ローカルの Claude Code から本リポジトリを marketplace として登録し、plugin を install する:
@@ -18,6 +24,7 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 ```
 /plugin marketplace add abeyuya/skills
 /plugin install pr-review@abeyuya-skills
+/plugin install pr-create@abeyuya-skills
 ```
 
 ### 更新の受け取り
@@ -34,9 +41,11 @@ marketplace の auto-update は third-party marketplace ではデフォルト of
 # marketplace 経由 (recommended)
 apm marketplace add abeyuya/skills
 apm install pr-review@abeyuya-skills
+apm install pr-create@abeyuya-skills
 
 # または subdirectory を直接指定する primitive form
 apm install abeyuya/skills/plugins/pr-review
+apm install abeyuya/skills/plugins/pr-create
 ```
 
 `apm install` 後、各 plugin の skill / command は consumer 側の `.claude/skills/` および `.claude/commands/` に展開される (ローカル Claude Code 経由で `/plugin install` した場合と同じファイルがインストールされる)。
@@ -44,6 +53,7 @@ apm install abeyuya/skills/plugins/pr-review
 plugin 個別の利用方法 (GitHub Actions / ローカル Claude Code / 開発時) は各 plugin の README を参照:
 
 - [`pr-review`](plugins/pr-review/README.md)
+- [`pr-create`](plugins/pr-create/README.md)
 
 ## 構成
 
@@ -78,5 +88,18 @@ plugins/
       distill-pr-reviews/
         SKILL.md
       delegate-pr-review/
+        SKILL.md
+  pr-create/
+    README.md
+    .claude-plugin/
+      plugin.json
+    skills/
+      pr-template/
+        SKILL.md
+        assets/
+          pull_request_template.md     # フォールバックの PR テンプレート
+      pr-screenshots/
+        SKILL.md
+      pr-diagrams/
         SKILL.md
 ```

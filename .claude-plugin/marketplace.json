@@ -12,6 +12,11 @@
       "name": "pr-review",
       "source": "./plugins/pr-review",
       "description": "PR レビュー本文生成 (compose-review) / 差分に対する観点別 fan-out + adversarial verify レビュー (scan-diff-findings) / PR レビューの投稿 / 過去スレッドの resolve / ローカルブランチ向け AI レビュー / PR レビューの別セッションへの委譲 (delegate-pr-review) の skill と、スタイル参考ガイドコマンド (/pr-review-style-reference) を提供する"
+    },
+    {
+      "name": "pr-create",
+      "source": "./plugins/pr-create",
+      "description": "PR 作成時に使う、フォールバックの PR テンプレート (pr-template) / UI 変更の before・after のスクリーンショット・動画の撮影と添付 (pr-screenshots) / PR 本文に載せる mermaid 図・画像の描き方と描画の確認 (pr-diagrams) の skill を提供する"
     }
   ]
 }
