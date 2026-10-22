@@ -20,7 +20,7 @@ PR テンプレートのコメントなどに図についての指示があれ�
 - 図は mermaid で書き、本文の ```` ```mermaid ```` のコードブロックに直接置く。GitHub が描画し、テキストなので後から直しやすい
   - 種類は flowchart / sequenceDiagram / stateDiagram-v2 / erDiagram などの定番から選ぶ
   - 1 枚の図のノードは 15 個程度までにする。超えるときは図を分ける
-  - ラベルに記号 (`(` `)` `{` `}` `|` や先頭の `/` など) を含むときは `"..."` で囲む。囲まないと構文エラーになり、図が描画されない
+  - flowchart のノードのラベルに記号 (`(` `)` `{` `}` `|` や先頭の `/` など) を含むときは `"..."` で囲む。囲まないと構文エラーになり、図が描画されない (sequenceDiagram のメッセージなどでは引用符がそのまま表示されるので囲まない)
 - mermaid で表しにくい図 (画面上の位置に注釈を付けた図など) は画像を作る
   - SVG か HTML で描き、Chrome の headless モードで PNG に書き出す: `"<Chrome>" --headless --screenshot=<out>.png --window-size=<幅>,<高さ> "file://<in>.svg"` (`<Chrome>` は下の「Chrome」節を参照)
   - `<幅>,<高さ>` は SVG の width / height にそろえる。ずれると余白が付くか、図が切れる。HTML で描くときは `body` の `margin` を 0 にし、図の要素の幅・高さを固定してそれにそろえる (既定の `margin` の分だけ図がずれて切れるため)
@@ -44,6 +44,7 @@ PR テンプレートのコメントなどに図についての指示があれ�
 mkdir -p <出力先> && PUPPETEER_EXECUTABLE_PATH="<Chrome>" npx -y @mermaid-js/mermaid-cli@12.0.0 -i <本文>.md -o <出力先>/body.md -e png
 ```
 
+- Linux で root として動くとき (コンテナなど) は、`-p <設定ファイル>` も付ける (「Chrome」節)。付けないと Chrome が起動せずに失敗するので、構文エラーと取り違えない
 - 出力先はリポジトリの外 (scratchpad など) にする。無いディレクトリを指定すると、描画せずにエラーで止まる
 - `PUPPETEER_EXECUTABLE_PATH` は、インストール済みの Chrome を使わせるために付ける。付けないと、puppeteer が自前の Chrome (`~/.cache/puppeteer`) をダウンロードして使い、ダウンロードできない環境では Chrome が無いというエラーで止まる
 - 版を固定するのは、npm の最新版を確かめないまま実行しないため

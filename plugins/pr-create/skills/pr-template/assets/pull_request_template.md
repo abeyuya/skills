@@ -9,7 +9,7 @@
 
 <!--
 このPRの関連issue, 関連webページ, slackなどへのリンク。 例: - #135
-リポジトリ内のファイルを記述する場合はgithub上の該当ファイルへのリンクにする 例: [src/main.ts](https://github.com/<owner>/<repo>/blob/main/src/main.ts)
+リポジトリ内のファイルを記述する場合はgithub上の該当ファイルへのリンクにする 例: [src/main.ts](https://github.com/<owner>/<repo>/blob/<ブランチ or コミットSHA>/src/main.ts)
 -->
 
 ## 変更内容
