@@ -26,7 +26,7 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - ウォークスルーの before は撮らない。録画・保存・添付の規則は、ほかの動画と同じ (サイズや録画時間の上限を超えるときは分ける)
 - before は UI を変更する前に撮っておく。撮り忘れたときは、ブランチの分岐元を別の worktree に出して撮る (作業中のブランチの切り替えや `git stash` はしない)
   - `git fetch origin <ベースブランチ>` のあと `git worktree add --detach <path> "$(git merge-base HEAD origin/<ベースブランチ>)"` で出す。ベースブランチの先端で撮ると、分岐後に入った別の変更が差分に混ざる
-  - shallow clone で分岐元の commit が無く、`git merge-base` が何も出さないときは、`git fetch --deepen=<N> origin <ベースブランチ>` で履歴を足してから取り直す (取れるまで `<N>` を増やす)
+  - shallow clone で分岐元の commit が無く、`git merge-base` が何も出さないときは、`git fetch --deepen=<N> origin <ベースブランチ>` で履歴を足してから取り直す (取れるまで `<N>` を増やす)。作業ブランチも shallow に取ってきたもの (`--depth=1 --single-branch` の clone など) なら、`git fetch --deepen=<N> origin <作業ブランチ>` で作業ブランチ側の履歴も足す。merge-base が空のまま `git worktree add` に渡さない
   - `<path>` はリポジトリの外 (scratchpad など) にする。依存のインストールやビルドをし直し、gitignore されていてアプリの起動に要る設定ファイル (`.env` など) を本体の作業ツリーからコピーしてから、アプリを起動する
   - 本体の作業ツリーのアプリ (開発サーバーなど) が動いていれば止めるか、worktree のアプリを別のポートで起動する。撮る前に、開いている画面が worktree のコードのものであることを確かめる。撮り終えたら worktree のアプリを止めてから after を撮る
   - worktree から起動すると本体の作業ツリーの環境を壊すもの (compose project 名が固定されていて、本体の作業ツリーの開発用コンテナが作り直される docker compose など) は、worktree から起動しない。before は VRT の baseline で代え、代えられなければ撮影できなかった画面として扱う

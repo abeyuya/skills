@@ -32,7 +32,7 @@ PR テンプレートのコメントなどに図についての指示があれ�
 
 描画の確認と PNG への書き出しは、インストール済みの Chrome を使う。手順中の `<Chrome>` はそのパス。
 
-- macOS は `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`。他の OS では、`command -v google-chrome chromium` などで見つけたパスを使う
+- macOS は `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`。他の OS では、`command -v google-chrome google-chrome-stable chromium chromium-browser` などで見つけたパスを使う
 - Linux で root として動くとき (コンテナなど) は、Chrome が `--no-sandbox` なしでは起動しない。mermaid-cli には `{"args": ["--no-sandbox"]}` を書いた設定ファイルを `-p <設定ファイル>` で渡し、headless Chrome には `--no-sandbox` を付ける。設定ファイルもリポジトリの外に置く
 - Chrome が無いなどで描画を確かめられなかったときは、その旨をユーザーに報告する
 
@@ -45,5 +45,5 @@ mkdir -p <出力先> && PUPPETEER_EXECUTABLE_PATH="<Chrome>" npx -y @mermaid-js/
 ```
 
 - 出力先はリポジトリの外 (scratchpad など) にする。無いディレクトリを指定すると、描画せずにエラーで止まる
-- `PUPPETEER_EXECUTABLE_PATH` を付けないと、mermaid-cli 用の Chrome が無いというエラーで止まる
+- `PUPPETEER_EXECUTABLE_PATH` は、インストール済みの Chrome を使わせるために付ける。付けないと、puppeteer が自前の Chrome (`~/.cache/puppeteer`) をダウンロードして使い、ダウンロードできない環境では Chrome が無いというエラーで止まる
 - 版を固定するのは、npm の最新版を確かめないまま実行しないため
