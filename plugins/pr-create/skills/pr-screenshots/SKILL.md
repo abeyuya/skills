@@ -15,7 +15,7 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - サイズの上限は無料プランのリポジトリで 10MB、有料プランで 100MB。超えるときは、確認したい操作の範囲に絞って撮り直すか、長辺 1280px 以下に縮めて再エンコードする (例: `ffmpeg -i in.mov -vf "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2" -c:v libx264 -pix_fmt yuv420p -crf 28 -an out.mp4`。`min()` は元が小さい動画を拡大しないため)。ffmpeg が無い macOS では `avconvert -s in.mov -p Preset1280x720 -o out.mp4` を使う
   - 録画時間の上限 (Android の 180 秒など) を超える操作は、先に操作のまとまりごとに分けてから撮る
   - 録画はバックグラウンドで始め、その間に画面を操作する
-    - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を、操作を終えたら SIGINT で止める (例: `pkill -INT -f '[s]imctl io booted recordVideo'`。`[s]` は、このコマンドを実行しているシェル自身に一致させないため)。SIGINT 以外で止めるとファイルが書き終わらずに壊れるので、プロセスが終わるのを待ってから使う。QuickTime 形式で書き出されるので拡張子は `.mov`
+    - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を、操作を終えたら SIGINT で止める (例: `pkill -INT -x simctl`。`-f` でコマンドラインを照合すると、録画を起動したシェルにも一致して先に止まることがある)。SIGINT 以外で止めるとファイルが書き終わらずに壊れるので、`pgrep -x simctl` で simctl が終わったのを確かめてから使う。QuickTime 形式で書き出されるので拡張子は `.mov`
     - Android エミュレータは `adb shell screenrecord --time-limit <秒> /sdcard/<name>.mp4` に操作に要る秒数を指定し、止まるのを待つ (adb を強制終了すると mp4 が壊れることがある)。既定は 180 秒で、Android の版によってはそれが上限 (上限を超える値を渡すと録画されない)。`adb pull` で取り出し、端末側のファイルは消す
     - Web アプリや管理画面などのブラウザで動く画面は、Playwright の動画録画を使う
   - 録画できないときは、スクリーンショットを撮り、動きの違いを文章で補う
@@ -26,7 +26,7 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - ウォークスルーの before は撮らない。録画・保存・添付の規則は、ほかの動画と同じ (サイズや録画時間の上限を超えるときは分ける)
 - before は UI を変更する前に撮っておく。撮り忘れたときは、ブランチの分岐元を別の worktree に出して撮る (作業中のブランチの切り替えや `git stash` はしない)
   - `git fetch origin <ベースブランチ>` のあと `git worktree add --detach <path> "$(git merge-base HEAD origin/<ベースブランチ>)"` で出す。ベースブランチの先端で撮ると、分岐後に入った別の変更が差分に混ざる
-  - `--single-branch` の clone では `git fetch origin <ベースブランチ>` で `origin/<ベースブランチ>` ができないので、`git fetch origin <ベースブランチ>:refs/remotes/origin/<ベースブランチ>` で取る
+  - `--single-branch` の clone では `git fetch origin <ベースブランチ>` で `origin/<ベースブランチ>` ができないので、`git fetch origin +refs/heads/<ベースブランチ>:refs/remotes/origin/<ベースブランチ>` で取る (以降の `git fetch origin <ベースブランチ>` も同じ)
   - shallow clone で分岐元の commit が無く、`git merge-base` が何も出さないときは、`git fetch --deepen=<N> origin <ベースブランチ>` で履歴を足してから取り直す (取れるまで `<N>` を増やす)。作業ブランチも shallow に取ってきたもの (`--depth=1 --single-branch` の clone など) なら、`git fetch --deepen=<N> origin <作業ブランチ>` で作業ブランチ側の履歴も足す。merge-base が空のまま `git worktree add` に渡さない
   - `<path>` はリポジトリの外 (scratchpad など) にする。依存のインストールやビルドをし直し、gitignore されていてアプリの起動に要る設定ファイル (`.env` など) を本体の作業ツリーからコピーしてから、アプリを起動する
   - 本体の作業ツリーのアプリ (開発サーバーなど) が動いていれば止めるか、worktree のアプリを別のポートで起動する。撮る前に、開いている画面が worktree のコードのものであることを確かめる。撮り終えたら worktree のアプリを止めてから after を撮る
@@ -37,7 +37,7 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
 - 撮影した画像・動画は gh の `--attach` で添付する (`gh pr create` / `gh pr edit` / `gh pr comment` で使える)
   - 本文に `![before: <画面名>](<ローカルのパス>)` のようにマークダウンの画像記法で書き、`--body-file` と一緒に渡すと、アップロードされた URL に書き換わる (例: `gh pr create --draft --body-file <本文> --attach <before.png> --attach <after.png>`)
   - 本文のパスと `--attach` のパスは同じ書き方にそろえる。違うと参照が書き換わらず、画像が本文の末尾に付く
-  - 動画は参照 `![](<ローカルのパス>)` だけを 1 つの段落に単独で書く (同じ段落に文があると、プレーヤーではなくリンクとして表示される)。動画には代替テキストを付けられないので、何の動画かは直前の段落に書く
+  - 動画は参照 `![](<ローカルのパス>)` だけを 1 つの段落に単独で書く (同じ段落に文がある・表のセルに入れると、プレーヤーではなくリンクとして表示される)。動画には代替テキストを付けられないので、何の動画かは直前の段落に書く
   - 添付が一部失敗しても PR の作成・更新は行われ、終了コードだけが非ゼロになる。そのときは `gh pr create` をやり直さず、下の差し替えと同じ手順で、足りない分を添付し直す
   - `gh pr create --help` に `--attach` が無い (gh が古い) とき、gh が使えない (GitHub MCP で PR を作るなど) とき、push 権限が無いときは、画像・動画をユーザーに送り (SendUserFile が使えればそれで)、添付を依頼する
     - 本文にローカルのパスの参照は残さない

@@ -40,6 +40,16 @@
 | before | after |
 | --- | --- |
 | ![before: <画面名> (<状態>)](https://github.com/user-attachments/assets/<before の画像の ID>) | ![after: <画面名> (<状態>)](https://github.com/user-attachments/assets/<after の画像の ID>) |
+
+### <画面名> (<操作>の動画)
+
+before: <何を操作した動画か>
+
+![](https://github.com/user-attachments/assets/<before の動画の ID>)
+
+after: <何を操作した動画か>
+
+![](https://github.com/user-attachments/assets/<after の動画の ID>)
 ```
 - UIの変更がない場合は実行ログなどを添付
 - 動作確認がない場合は"なし"

@@ -22,7 +22,7 @@ PR テンプレートのコメントなどに図についての指示があれ�
   - 1 枚の図のノードは 15 個程度までにする。超えるときは図を分ける
   - flowchart のノードのラベルに記号 (`(` `)` `{` `}` `|` や先頭の `/` など) を含むときは `"..."` で囲む。囲まないと構文エラーになり、図が描画されない (sequenceDiagram のメッセージなどでは引用符がそのまま表示されるので囲まない)
 - mermaid で表しにくい図 (画面上の位置に注釈を付けた図など) は画像を作る
-  - SVG か HTML で描き、Chrome の headless モードで PNG に書き出す: `"<Chrome>" --headless --screenshot=<out>.png --window-size=<幅>,<高さ> --force-device-scale-factor=2 "file://<in>.svg"` (HTML なら `<in>.html`。`--force-device-scale-factor=2` は高 DPI の画面でぼやけないよう 2 倍の解像度で書き出すため) (`<Chrome>` は下の「Chrome」節を参照)
+  - SVG か HTML で描き、Chrome の headless モードで PNG に書き出す: `"<Chrome>" --headless --screenshot=<out>.png --window-size=<幅>,<高さ> "file://<in>"` (`<in>` は描いた `.svg` か `.html` のファイル。`<Chrome>` は下の「Chrome」節を参照)
   - `<幅>,<高さ>` は SVG の width / height にそろえる。ずれると余白が付くか、図が切れる。HTML で描くときは `body` の `margin` を 0 にし、図の要素の幅・高さを固定してそれにそろえる (既定の `margin` の分だけ図がずれて切れるため)
   - `<in>` は絶対パスにする。相対パスだと先頭がホスト名と解釈され、図を開けない
   - 保存と添付は、[pr-screenshots skill](../pr-screenshots/SKILL.md) の撮影した画像と同じ規則に従う (リポジトリの外に保存して commit せず、gh の `--attach` で添付する)
