@@ -14,12 +14,12 @@ PR 本文の構成は、次の順で最初に見つかったものに従う。�
 2. プロジェクトの PR テンプレート。GitHub が使うのと同じ場所を探す (ファイル名の大文字・小文字は区別しない)
    - リポジトリの root・`.github/`・`docs/` の `pull_request_template.md`
    - 同じ 3 か所の `PULL_REQUEST_TEMPLATE/` 配下の `*.md`。複数あれば、PR の内容に合うものを選ぶ
-   - リポジトリに無くても、owner (組織・ユーザー) の `.github` リポジトリに置かれたテンプレートを GitHub は既定として使う。gh や GitHub MCP で読めるなら、同じ場所を確かめる
+   - リポジトリに無くても、owner (組織・ユーザー) の public な `.github` リポジトリに置かれたテンプレートを GitHub は既定として使う。gh や GitHub MCP で読めるなら、同じ場所を確かめる
 3. 1 も 2 も無ければ、フォールバックの [assets/pull_request_template.md](assets/pull_request_template.md)
+
+どの構成で書くときも、図を載せるかどうかとその描き方は [pr-diagrams skill](../pr-diagrams/SKILL.md) に、UI の変更を含む PR に載せる画像・動画の撮り方と添付の仕方は [pr-screenshots skill](../pr-screenshots/SKILL.md) に従う。
 
 ## フォールバックのテンプレートの埋め方
 
 - 見出しとその順番はそのまま使う。書くことが無い節も消さず、「なし」と書く
 - 各節のコメント (`<!-- -->`) は、その節に何を書くかの指示として読む。本文を書いたら、コメントは消す
-- 図を載せるかどうかと、その描き方は [pr-diagrams skill](../pr-diagrams/SKILL.md) に従う
-- `## 動作確認スクリーンショット` に載せる画像・動画の撮り方と添付の仕方は、[pr-screenshots skill](../pr-screenshots/SKILL.md) に従う

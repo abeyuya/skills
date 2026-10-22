@@ -12,10 +12,10 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - 撮影できなかった画面があれば、その画面名と理由を書く
 - 動き・アニメーション・画面遷移、ホバーやスクロールなどの操作に伴う変化は、VRT でもスクリーンショットでも確認しにくいので、before / after の動画を撮る。以下の撮影・保存・添付の規則は動画にも同じように適用する
   - 形式は `.mp4` / `.mov` / `.webm`。H.264 の `.mp4` が最も互換性が高い
-  - サイズの上限は無料プランのリポジトリで 10MB、有料プランで 100MB。超えるときは、確認したい操作の範囲に絞って撮り直すか、長辺 1280px に縮めて再エンコードする (例: `ffmpeg -i in.mov -vf scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2 -c:v libx264 -pix_fmt yuv420p -crf 28 -an out.mp4`)
+  - サイズの上限は無料プランのリポジトリで 10MB、有料プランで 100MB。超えるときは、確認したい操作の範囲に絞って撮り直すか、長辺 1280px 以下に縮めて再エンコードする (例: `ffmpeg -i in.mov -vf "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2" -c:v libx264 -pix_fmt yuv420p -crf 28 -an out.mp4`。`min()` は元が小さい動画を拡大しないため)。ffmpeg が無い macOS では `avconvert -s in.mov -p Preset1280x720 -o out.mp4` を使う
   - 録画時間の上限 (Android の 180 秒など) を超える操作は、先に操作のまとまりごとに分けてから撮る
   - 録画はバックグラウンドで始め、その間に画面を操作する
-    - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を、操作を終えたら SIGINT で止める (QuickTime 形式で書き出されるので拡張子は `.mov`)
+    - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を、操作を終えたら SIGINT で止める (例: `pkill -INT -f 'simctl io booted recordVideo'`)。SIGINT 以外で止めるとファイルが書き終わらずに壊れるので、プロセスが終わるのを待ってから使う。QuickTime 形式で書き出されるので拡張子は `.mov`
     - Android エミュレータは `adb shell screenrecord --time-limit <秒> /sdcard/<name>.mp4` に操作に要る秒数を指定し、止まるのを待つ (adb を強制終了すると mp4 が壊れることがある)。既定は 180 秒で、Android の版によってはそれが上限 (上限を超える値を渡すと録画されない)。`adb pull` で取り出し、端末側のファイルは消す
     - Web アプリや管理画面などのブラウザで動く画面は、Playwright の動画録画を使う
   - 録画できないときは、スクリーンショットを撮り、動きの違いを文章で補う
@@ -26,7 +26,9 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - ウォークスルーの before は撮らない。録画・保存・添付の規則は、ほかの動画と同じ (サイズや録画時間の上限を超えるときは分ける)
 - before は UI を変更する前に撮っておく。撮り忘れたときは、ブランチの分岐元を別の worktree に出して撮る (作業中のブランチの切り替えや `git stash` はしない)
   - `git fetch origin <ベースブランチ>` のあと `git worktree add --detach <path> "$(git merge-base HEAD origin/<ベースブランチ>)"` で出す。ベースブランチの先端で撮ると、分岐後に入った別の変更が差分に混ざる
+  - shallow clone で分岐元の commit が無く、`git merge-base` が何も出さないときは、`git fetch --deepen=<N> origin <ベースブランチ>` で履歴を足してから取り直す (取れるまで `<N>` を増やす)
   - `<path>` はリポジトリの外 (scratchpad など) にする。依存のインストールやビルドをし直し、gitignore されていてアプリの起動に要る設定ファイル (`.env` など) を本体の作業ツリーからコピーしてから、アプリを起動する
+  - 本体の作業ツリーのアプリ (開発サーバーなど) が動いていれば止めるか、worktree のアプリを別のポートで起動する。撮る前に、開いている画面が worktree のコードのものであることを確かめる。撮り終えたら worktree のアプリを止めてから after を撮る
   - worktree から起動すると本体の作業ツリーの環境を壊すもの (compose project 名が固定されていて、本体の作業ツリーの開発用コンテナが作り直される docker compose など) は、worktree から起動しない。before は VRT の baseline で代え、代えられなければ撮影できなかった画面として扱う
   - 撮り終えたら `git worktree remove` で片付ける。撮影用に作った worktree に限り、依存のインストールで変わったファイルが残っていれば `--force` を付ける
 - 撮影前にテスト用のデータに切り替えるかマスクして、個人情報・トークンなどの機密情報を写さない
@@ -40,6 +42,6 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
     - 本文にローカルのパスの参照は残さない
     - 添付のために commit したり外部に上げたりはしない
     - 送る手段もなければ、撮影できなかった画面と同じく PR 本文にその旨を書く
-- PR 作成後の push で UI が変わったら、VRT の差分を載せ直し (before / after の短縮 SHA を、その時点の merge-base と head にする)、撮影した画面は after を撮り直して差し替える。新たに影響を受けた画面は before / after を足す。ウォークスルーの動画も、操作の流れや表示が変わったら撮り直して差し替える
+- PR 作成後の push で UI が変わったら、VRT の差分を載せ直し (before / after の短縮 SHA を、`git fetch origin <ベースブランチ>` で取り直したその時点の merge-base と head にする)、撮影した画面は after を撮り直して差し替える。新たに影響を受けた画面は before / after を足す。ウォークスルーの動画も、操作の流れや表示が変わったら撮り直して差し替える
   - 更新は今の本文を元にする。`gh pr view --json body -q .body` で取り、差し替える参照だけをローカルのパスに書き換えて、`gh pr edit --body-file <本文> --attach <after.png>` で更新する
   - `--body-file` は本文全体を置き換えるので、今の本文を元にしないと添付済みの画像が消える。push 後に description を更新するときも同じ

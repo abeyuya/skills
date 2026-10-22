@@ -15,9 +15,9 @@ PR を作成するときに使う skill 群。PR 本文をどの構成で書く�
 使う手順に応じて、次のものが要る。無い場合の扱いは各 skill に書いてある。
 
 - **gh (`--attach` に対応した版)**: 撮影した画像・動画と、PNG に書き出した図の添付に使う (`pr-screenshots` / `pr-diagrams`)。使えない (gh が古い・GitHub MCP で PR を作る等) ときは、ファイルをユーザーに送って添付を依頼する。
-- **Chrome (または Chromium) と Node.js (`npx`)**: mermaid-cli での描画の確認と、SVG / HTML の図の PNG への書き出しに使う (`pr-diagrams`)。
+- **Chrome (または Chromium) と Node.js 22.13 以上 (`npx`)**: mermaid-cli での描画の確認と、SVG / HTML の図の PNG への書き出しに使う (`pr-diagrams`)。
 - **録画の手段**: iOS シミュレータは `xcrun simctl`、Android エミュレータは `adb`、ブラウザで動く画面は Playwright (`pr-screenshots`)。
-- **ffmpeg (任意)**: 動画がサイズの上限を超えるときの再エンコードに使う (`pr-screenshots`)。
+- **ffmpeg (任意)**: 動画がサイズの上限を超えるときの再エンコードに使う (`pr-screenshots`)。macOS では代わりに標準の `avconvert` も使える。
 
 ## 利用方法 (ローカル Claude Code)
 
