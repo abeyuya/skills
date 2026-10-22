@@ -22,24 +22,23 @@
 ## 動作確認スクリーンショット
 
 <!--
-- VRT が無い画面、VRT で確認できない画面・状態や動きは、動作確認時のスクリーンショットや動画を添付
-- 新しい画面・機能 (画面を伴うもの。既存画面への機能追加を含む) は、VRTの有無にかかわらず、その機能を一通り操作するウォークスルーの動画を添付
-- VRT (リポジトリに commit された baseline 画像との比較) で差分を確認できる画面は、撮影の代わりに VRT の画像を以下のような形式で記載する
-  - 画像URLは上限149文字なので、必ず短縮SHAを指定したURLにする。短縮SHAでも超えるときは、baseline 画像をリポジトリの外にコピーし、撮影した画像と同じように添付する
-  - before は分岐元 (ベースブランチとの merge-base)、after は PR の head の短縮SHAにする (merge-base は `git fetch origin <ベースブランチ>` のあと `git rev-parse --short "$(git merge-base HEAD origin/<ベースブランチ>)"` で取れる)
-  - 新しい画面で before の画像が無ければ、before は「なし (新規画面)」と書く
+- UIの変更がある場合は、影響を受ける画面の before / after のスクリーンショットを以下のような形式で添付
+  - 画像はアップロードしたものを載せる。gh の `--attach` で添付するときは、URL の代わりにローカルのパスを書いておくと、アップロードした画像の URL に置き換わる
+  - 新しい画面で before が無ければ、before は「なし (新規画面)」と書く
+- 動き・アニメーション・画面遷移など、スクリーンショットで確認しにくい変化は before / after の動画を添付
+- 新しい画面・機能 (画面を伴うもの。既存画面への機能追加を含む) は、その機能を一通り操作するウォークスルーの動画を添付
 ```
 ### <画面名>
 
 | before | after |
 | --- | --- |
-| <img width="400" alt="before" src="https://github.com/<owner>/<repo>/blob/<before の短縮SHA>/<baseline 画像のパス>?raw=true"> | <img width="400" alt="after" src="https://github.com/<owner>/<repo>/blob/<after の短縮SHA>/<baseline 画像のパス>?raw=true"> |
+| ![before: <画面名>](https://github.com/user-attachments/assets/<before の画像の ID>) | ![after: <画面名>](https://github.com/user-attachments/assets/<after の画像の ID>) |
 
 ### <画面名> (<状態>)
 
 | before | after |
 | --- | --- |
-| <img width="400" alt="before" src="https://github.com/<owner>/<repo>/blob/<before の短縮SHA>/<baseline 画像のパス>?raw=true"> | <img width="400" alt="after" src="https://github.com/<owner>/<repo>/blob/<after の短縮SHA>/<baseline 画像のパス>?raw=true"> |
+| ![before: <画面名> (<状態>)](https://github.com/user-attachments/assets/<before の画像の ID>) | ![after: <画面名> (<状態>)](https://github.com/user-attachments/assets/<after の画像の ID>) |
 ```
 - UIの変更がない場合は実行ログなどを添付
 - 動作確認がない場合は"なし"
