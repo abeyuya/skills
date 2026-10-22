@@ -5,7 +5,7 @@ PR を作成するときに使う skill 群。PR 本文をどの構成で書く�
 ## 提供 skill
 
 - `skills/pr-template`: PR 本文の構成を「ユーザー・プロジェクトの指示ファイルの指示 → プロジェクトの PR テンプレート (`.github/pull_request_template.md` 等) → フォールバックのテンプレート」の順で決める skill。どちらも無いときに使うフォールバックのテンプレートを [`assets/pull_request_template.md`](skills/pr-template/assets/pull_request_template.md) に同梱する (節は「このPRで実現したいこと」「関連リンク」「変更内容」「動作確認スクリーンショット」「特に人間にレビューしてほしい箇所」)。
-- `skills/pr-screenshots`: UI の変更を含む PR で、影響を受ける画面の before / after (VRT の baseline・撮影した画像・動画) と、新しい画面・機能のウォークスルーの動画を PR 本文に載せる手順を定める skill。撮り忘れた before を分岐元の worktree で撮る手順、gh の `--attach` での添付と push 後の差し替えの手順を含む。
+- `skills/pr-screenshots`: UI の変更を含む PR で、影響を受ける画面の before / after (撮影した画像・動画) と、新しい画面・機能のウォークスルーの動画を PR 本文に載せる手順を定める skill。撮り忘れた before を分岐元の worktree で撮る手順、gh の `--attach` での添付と push 後の差し替えの手順を含む。
 - `skills/pr-diagrams`: PR 本文に図を載せるかどうかの判断、mermaid 図の描き方、mermaid-cli での描画の確認、mermaid で表しにくい図の PNG への書き出しと添付の手順を定める skill。
 
 いずれもモデルが自動で選んで読む想定の skill で、PR の作成・本文の更新・UI の変更の前に、description の条件に合えば読まれる。
