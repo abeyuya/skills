@@ -7,7 +7,7 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
 
 - UI の変更を含む PR では、変更の影響を受ける画面すべての before / after を、PR 本文の動作確認の節に載せる
   - 載せる節は、PR テンプレートの動作確認・スクリーンショットの節にする (フォールバックのテンプレートでは `## 動作確認スクリーンショット`)。テンプレートにそういう節が無ければ、本文の末尾に `## 動作確認スクリーンショット` を足す。どのテンプレートを使うかは [pr-template skill](../pr-template/SKILL.md) に従う
-  - 画面は撮影する。before は PR の分岐元 (ベースブランチとの merge-base) のコード、after は PR のブランチのコードで、同じ画面・同じ状態を撮って並べる。並べ方は PR テンプレートに形式があればその形式、無ければ [フォールバックのテンプレート](../pr-template/assets/pull_request_template.md) の `## 動作確認スクリーンショット` のコメントの形式 (before / after の表と、新しい画面の before の書き方) にする
+  - 影響を受ける画面は撮影する。before は PR の分岐元 (ベースブランチとの merge-base) のコード、after は PR のブランチのコードで、同じ画面・同じ状態を撮って並べる。並べ方は PR テンプレートに形式があればその形式、無ければ [フォールバックのテンプレート](../pr-template/assets/pull_request_template.md) の `## 動作確認スクリーンショット` のコメントの形式 (before / after の表と、新しい画面の before の書き方) にする
   - プロジェクトの PR テンプレートや指示ファイルが、VRT (リポジトリに commit された baseline 画像との比較) の画像を載せる形式を定めているときは、VRT の差分で確認できる画面は撮影せず、その形式で baseline 画像の before / after を載せる (新しい画面・新機能は、下のウォークスルーの動画も撮る)
   - 撮影できなかった画面があれば、その画面名と理由を書く
 - 動き・アニメーション・画面遷移、ホバーやスクロールなどの操作に伴う変化は、VRT でもスクリーンショットでも確認しにくいので、before / after の動画を撮る。以下の撮影・保存・添付の規則は動画にも同じように適用する
@@ -15,7 +15,7 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - サイズの上限は無料プランのリポジトリで 10MB、有料プランで 100MB。超えるときは、確認したい操作の範囲に絞って撮り直すか、長辺 1280px 以下に縮めて再エンコードする (例: `ffmpeg -i in.mov -vf "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2" -c:v libx264 -pix_fmt yuv420p -crf 28 -an out.mp4`。`min()` は元が小さい動画を拡大しないため)。ffmpeg が無い macOS では `avconvert -s in.mov -p Preset1280x720 -o out.mp4` を使う
   - 録画時間の上限 (Android の 180 秒など) を超える操作は、先に操作のまとまりごとに分けてから撮る
   - 録画はバックグラウンドで始め、その間に画面を操作する
-    - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を、操作を終えたら SIGINT で止める (例: `pkill -INT -f 'simctl io booted recordVideo'`)。SIGINT 以外で止めるとファイルが書き終わらずに壊れるので、プロセスが終わるのを待ってから使う。QuickTime 形式で書き出されるので拡張子は `.mov`
+    - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を、操作を終えたら SIGINT で止める (例: `pkill -INT -f '[s]imctl io booted recordVideo'`。`[s]` は、このコマンドを実行しているシェル自身に一致させないため)。SIGINT 以外で止めるとファイルが書き終わらずに壊れるので、プロセスが終わるのを待ってから使う。QuickTime 形式で書き出されるので拡張子は `.mov`
     - Android エミュレータは `adb shell screenrecord --time-limit <秒> /sdcard/<name>.mp4` に操作に要る秒数を指定し、止まるのを待つ (adb を強制終了すると mp4 が壊れることがある)。既定は 180 秒で、Android の版によってはそれが上限 (上限を超える値を渡すと録画されない)。`adb pull` で取り出し、端末側のファイルは消す
     - Web アプリや管理画面などのブラウザで動く画面は、Playwright の動画録画を使う
   - 録画できないときは、スクリーンショットを撮り、動きの違いを文章で補う
@@ -26,6 +26,7 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - ウォークスルーの before は撮らない。録画・保存・添付の規則は、ほかの動画と同じ (サイズや録画時間の上限を超えるときは分ける)
 - before は UI を変更する前に撮っておく。撮り忘れたときは、ブランチの分岐元を別の worktree に出して撮る (作業中のブランチの切り替えや `git stash` はしない)
   - `git fetch origin <ベースブランチ>` のあと `git worktree add --detach <path> "$(git merge-base HEAD origin/<ベースブランチ>)"` で出す。ベースブランチの先端で撮ると、分岐後に入った別の変更が差分に混ざる
+  - `--single-branch` の clone では `git fetch origin <ベースブランチ>` で `origin/<ベースブランチ>` ができないので、`git fetch origin <ベースブランチ>:refs/remotes/origin/<ベースブランチ>` で取る
   - shallow clone で分岐元の commit が無く、`git merge-base` が何も出さないときは、`git fetch --deepen=<N> origin <ベースブランチ>` で履歴を足してから取り直す (取れるまで `<N>` を増やす)。作業ブランチも shallow に取ってきたもの (`--depth=1 --single-branch` の clone など) なら、`git fetch --deepen=<N> origin <作業ブランチ>` で作業ブランチ側の履歴も足す。merge-base が空のまま `git worktree add` に渡さない
   - `<path>` はリポジトリの外 (scratchpad など) にする。依存のインストールやビルドをし直し、gitignore されていてアプリの起動に要る設定ファイル (`.env` など) を本体の作業ツリーからコピーしてから、アプリを起動する
   - 本体の作業ツリーのアプリ (開発サーバーなど) が動いていれば止めるか、worktree のアプリを別のポートで起動する。撮る前に、開いている画面が worktree のコードのものであることを確かめる。撮り終えたら worktree のアプリを止めてから after を撮る
