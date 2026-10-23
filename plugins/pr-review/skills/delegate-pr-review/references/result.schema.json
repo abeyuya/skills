@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codex delegated PR review result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "pr", "request_id", "round", "head_sha", "status", "review_id", "reason"],
+  "properties": {
+    "version": {"const": 1},
+    "pr": {"type": "string", "format": "uri"},
+    "request_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "round": {"type": "integer", "minimum": 1},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "status": {"enum": ["posted", "failed", "stale", "unknown"]},
+    "review_id": {"type": ["integer", "null"], "minimum": 1},
+    "reason": {"type": ["string", "null"], "minLength": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "posted"}}},
+      "then": {"properties": {"review_id": {"type": "integer"}}},
+      "else": {"properties": {"review_id": {"type": "null"}, "reason": {"type": "string"}}}
+    }
+  ]
+}

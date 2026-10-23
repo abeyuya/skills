@@ -1,6 +1,6 @@
 ---
 name: post-pr-review
-description: 'PR レビュー結果を1つの Review として GitHub に投稿する。複数のインライン指摘や総括コメントを含むレビューを投稿する場合は必ずこの skill を使うこと。`gh pr comment` / `gh pr review` / MCP の個別コメント投稿ツールを使った個別投稿は禁止。gh CLI / GitHub MCP ツールのどちらのチャネル (`CHANNEL=gh|mcp`) でも投稿できる。Review body には AI 自動投稿マーカーと、CI が required status check で機械判定するための機械可読サマリ行 (`<!-- AI-REVIEW-RESULT: must=0 should=1 ... -->`、指摘 0 件でも必ず出力) を自動で付与する。ラベル別件数は任意入力 `LABEL_COUNTS` があればそれを正典とし、無ければ `comments[]` の先頭ラベルから集計する。'
+description: 'PR レビュー結果を1つの Review として GitHub に投稿する。複数のインライン指摘や総括コメントを含むレビューを投稿する場合は必ずこの skill を使うこと。`gh pr comment` / `gh pr review` / MCP の個別コメント投稿ツールを使った個別投稿は禁止。gh CLI / GitHub MCP ツールのどちらのチャネル (`CHANNEL=gh|mcp`) でも投稿できる。Review body には AI 自動投稿マーカーと、CI が required status check で機械判定するための機械可読サマリ行 (`AI-REVIEW-RESULT` 行、指摘 0 件でも必ず出力) を自動で付与する。ラベル別件数は任意入力 `LABEL_COUNTS` があればそれを正典とし、無ければ `comments[]` の先頭ラベルから集計する。'
 ---
 
 # post-pr-review skill
@@ -205,3 +205,7 @@ MCP には Payload 全体を 1 コールで受けるツールが無いため、p
   3. **submit**: Review 書き込みツールを method=`submit_pending` で呼ぶ: `owner` / `repo` / `pullNumber`、`body` = `payload.json` の `body`、`event` = `"COMMENT"`。
 
 **失敗時のクリーンアップ**: 2-b の組み立ては複数呼び出しに分かれるため、2-a の単一 atomic コールと違い途中失敗で pending review が宙に浮きうる。**本 skill が 2-b の 1 で `create` に成功して以降** (= 本 skill 自身が作った pending review が存在する状態) にコメント追加または submit が失敗したら、Review 書き込みツールを method=`delete_pending` (`owner` / `repo` / `pullNumber`) で **本 skill が作った pending review を破棄** してから caller にエラーを報告する (submit されないまま残った pending review は他の投稿の妨げになるため残さない)。2-b の 1 の `create` 自体が失敗したケース (上記の既存 pending review 衝突など) では本 skill は pending review を作っていないので `delete_pending` は呼ばない。
+
+### 3. caller に投稿結果を返す
+
+どちらのチャネルでも、成功した投稿レスポンスの数値 `id`・`html_url`・`commit_id` を caller に返す。MCP が別のキー名を使う場合は schema で確認して対応する値を取る。取得できない値は不明と明記し、投稿時刻や同じ author だけから Review ID を推測しない。投稿成否が不明の場合は再投稿せず、不明であることを返す。
