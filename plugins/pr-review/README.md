@@ -195,11 +195,11 @@ SKILL.md に書いた GitHub MCP のツール名 (`pull_request_read` など)・
 
 履歴を渡さない subagent の起動と最終結果の取得が必要。`collaboration.spawn_agent` の場合は `fork_turns: "none"` と明示した `model` を使い、A が同じターンで結果を待つ。B には対象 PR・head SHA・依頼 ID・スキルの絶対パスと、FETCH_HEAD を共有しない専用の Git 領域を渡す。モデルは指定があればそれを使い、なければ A のモデルを明示する。
 
-B は `EXPECTED_HEAD_SHA` と `DELEGATION_ID` を指定して `run-pr-review` を実行する。Review 本文の依頼マーカーで投稿を識別し、投稿後に中断しても同じ依頼の Review を再投稿しない。結果は [JSON schema](skills/delegate-pr-review/references/result.schema.json) に従い、投稿確認済み・未投稿の失敗・対象 SHA の更新・成否不明を区別する。A も GitHub で帰属と現在の SHA を検証してから対応する。
+B は `EXPECTED_HEAD_SHA` と `DELEGATION_ID` を指定して `run-pr-review` を実行する。同じホストでは PR ごとの共有ロックで別チャットからの重複起動を防ぐ。Review 本文の依頼マーカーで投稿を識別し、投稿後に中断しても同じ依頼の Review を再投稿しない。結果は [JSON schema](skills/delegate-pr-review/references/result.schema.json) に従い、投稿確認済み・未投稿の失敗・対象 SHA の更新・成否不明を区別する。A も GitHub で帰属と現在の SHA を検証してから対応する。
 
 Codex に `Skill` ツールが無い場合は、`SKILL.md` を読み現在コンテキストで実行する。更新時は `delegate-pr-review` の `references/` と、`EXPECTED_HEAD_SHA` / `DELEGATION_ID` に対応した同じ版の `run-pr-review`・`post-pr-review` を配置する。インストール済みの旧版に Codex 未対応の停止節がある場合は、そのエントリポイントも更新する。
 
-別チャットによる非同期運用と `codex exec` 経路は未実装。A のターン終了後の自動再開は保証せず、待機が中断した場合は agent ID と状態の保存先を報告する。詳細は [Codex 手順](skills/delegate-pr-review/references/codex-subagent.md) を参照。
+別チャットによる非同期運用と `codex exec` 経路は未実装。A のターン終了後の自動再開は保証せず、待機が中断した場合は agent ID と状態の保存先を報告する。詳細は [Codex 手順](skills/delegate-pr-review/references/codex-subagent.md) を参照。ロックの同時実行・所有者確認は `python3 plugins/pr-review/skills/delegate-pr-review/scripts/test-review-lock.py` で検証できる。
 
 以下は既存の Claude クラウド・デスクトップ経路の設定。[Claude 手順](skills/delegate-pr-review/references/claude-sessions.md) を使う。
 
