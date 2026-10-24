@@ -193,7 +193,7 @@ SKILL.md に書いた GitHub MCP のツール名 (`pull_request_read` など)・
 
 ### Codex
 
-履歴を渡さない subagent の起動と最終結果の取得が必要。`collaboration.spawn_agent` の場合は `fork_turns: "none"` と明示した `model` を使い、A が同じターンで結果を待つ。B には対象 PR・head SHA・依頼 ID・スキルの絶対パスだけを渡す。モデルは指定があればそれを使い、なければ A のモデルを明示する。
+履歴を渡さない subagent の起動と最終結果の取得が必要。`collaboration.spawn_agent` の場合は `fork_turns: "none"` と明示した `model` を使い、A が同じターンで結果を待つ。B には対象 PR・head SHA・依頼 ID・スキルの絶対パスと、FETCH_HEAD を共有しない専用の Git 領域を渡す。モデルは指定があればそれを使い、なければ A のモデルを明示する。
 
 B は `EXPECTED_HEAD_SHA` と `DELEGATION_ID` を指定して `run-pr-review` を実行する。Review 本文の依頼マーカーで投稿を識別し、投稿後に中断しても同じ依頼の Review を再投稿しない。結果は [JSON schema](skills/delegate-pr-review/references/result.schema.json) に従い、投稿確認済み・未投稿の失敗・対象 SHA の更新・成否不明を区別する。A も GitHub で帰属と現在の SHA を検証してから対応する。
 
