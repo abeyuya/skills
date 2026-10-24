@@ -7,9 +7,15 @@ abeyuya 個人が利用する Codex / Claude Code 向け skill / plugin 群を�
 
 ### [`pr-review`](plugins/pr-review/README.md)
 
-PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、PR のレビューを Codex の新規コンテキストの subagent または Claude の別クラウドセッションに委譲して結果に対応する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
+PR レビューを **1 回の API コールで 1 つの Review として投稿** し、過去スレッドを安全に **resolve** するための skill 群、PR 作成前のローカルブランチを対象に AI レビューを行いチャット + markdown ファイルへ出力する skill、PR のレビューを Codex の新規コンテキストの subagent または Claude の別セッションに委譲して結果に対応する skill、およびレビューコメントの **スタイル参考ガイド** をスラッシュコマンドとしてまとめて提供する。
 
 詳細は [plugins/pr-review/README.md](plugins/pr-review/README.md) を参照。
+
+### [`pr-create`](plugins/pr-create/README.md)
+
+PR を作成するときに使う skill 群。プロジェクトに PR テンプレートも本文の指示も無いときに使う **フォールバックの PR テンプレート**、UI 変更の **before / after のスクリーンショット・動画** の撮り方と添付の仕方、PR 本文に載せる **mermaid 図・画像** の描き方と描画の確認の仕方を提供する。
+
+詳細は [plugins/pr-create/README.md](plugins/pr-create/README.md) を参照。
 
 ## 利用方法 (ローカル Claude Code)
 
@@ -18,7 +24,14 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 ```
 /plugin marketplace add abeyuya/skills
 /plugin install pr-review@abeyuya-skills
+/plugin install pr-create@abeyuya-skills
 ```
+
+### 更新の受け取り
+
+`plugin.json` / `marketplace.json` には `version` を **書かない** 方針。書かない場合、Claude Code は git の commit SHA を version として扱うため、main にマージされた変更がそのまま新しい版になる (`version` を書くと、その文字列を上げない限り更新が配布されない)。
+
+marketplace の auto-update は third-party marketplace ではデフォルト off なので、ターミナル版なら `/plugin` の **Marketplaces** で `abeyuya-skills` を選び **Enable auto-update** を選ぶ。Desktop の Code タブでは `/plugin` が使えないので、`~/.claude/settings.json` の `extraKnownMarketplaces.abeyuya-skills` に `"autoUpdate": true` を書く。Claude Desktop の Code タブは `DISABLE_AUTOUPDATER=1` で Claude Code を起動するため、plugin の auto-update も止まる。Desktop で使う場合は `~/.claude/settings.json` の `env` に `"FORCE_AUTOUPDATE_PLUGINS": "1"` も追加する。
 
 ## 利用方法 (apm 経由)
 
@@ -28,9 +41,11 @@ PR レビューを **1 回の API コールで 1 つの Review として投稿**
 # marketplace 経由 (recommended)
 apm marketplace add abeyuya/skills
 apm install pr-review@abeyuya-skills
+apm install pr-create@abeyuya-skills
 
 # または subdirectory を直接指定する primitive form
 apm install abeyuya/skills/plugins/pr-review
+apm install abeyuya/skills/plugins/pr-create
 ```
 
 `apm install` 後、各 plugin の skill / command は consumer 側の `.claude/skills/` および `.claude/commands/` に展開される (ローカル Claude Code 経由で `/plugin install` した場合と同じファイルがインストールされる)。
@@ -38,10 +53,13 @@ apm install abeyuya/skills/plugins/pr-review
 plugin 個別の利用方法 (GitHub Actions / ローカル Claude Code / 開発時) は各 plugin の README を参照:
 
 - [`pr-review`](plugins/pr-review/README.md)
+- [`pr-create`](plugins/pr-create/README.md)
 
 ## 構成
 
 自前 skill は `plugins/<name>/skills/` 配下に置く方針。`.claude/skills/` は `apm install` の deploy 先として丸ごと apm 管理 (gitignore) とし、手書きの skill ファイルは置かない。
+
+`plugin.json` / `marketplace.json` には `version` を書かない (`claude plugin validate` の `No version specified` warning は意図どおり)。理由は [更新の受け取り](#更新の受け取り) を参照。
 
 ```
 apm.yml                                # apm 相互運用用マニフェスト
@@ -70,5 +88,18 @@ plugins/
       distill-pr-reviews/
         SKILL.md
       delegate-pr-review/
+        SKILL.md
+  pr-create/
+    README.md
+    .claude-plugin/
+      plugin.json
+    skills/
+      pr-template/
+        SKILL.md
+        assets/
+          pull_request_template.md     # フォールバックの PR テンプレート
+      pr-screenshots/
+        SKILL.md
+      pr-diagrams/
         SKILL.md
 ```

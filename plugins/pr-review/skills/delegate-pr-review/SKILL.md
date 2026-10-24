@@ -1,6 +1,6 @@
 ---
 name: delegate-pr-review
-description: 作成済み PR を実装履歴を渡さないレビュー役に委譲し、投稿された Review の指摘に元の会話で対応する。Codex は新規コンテキストの subagent を起動して結果を待つ。Claude Code on the web は別のクラウドセッションから完了通知を受ける。
+description: 作成済み PR を実装履歴を渡さないレビュー役に委譲し、投稿された Review の指摘に元の会話で対応する。Codex は新規コンテキストの subagent を起動して結果を待つ。Claude はクラウド・デスクトップの別セッションから完了通知を受ける。
 ---
 
 # delegate-pr-review
@@ -14,7 +14,7 @@ description: 作成済み PR を実装履歴を渡さないレビュー役に委
 | ホスト | 読む手順 | 完了の受け取り |
 |---|---|---|
 | Codex。履歴を渡さない subagent の起動と結果の取得が可能 | [Codex subagent](references/codex-subagent.md) | A が同じターンで待つ |
-| Claude Code on the web。専用セッション API が利用可能 | [Claude クラウド](references/claude-cloud.md) | 別セッションからの通知 |
+| Claude Code on the web または Claude デスクトップ。専用セッション API が利用可能 | [Claude セッション](references/claude-sessions.md) | 別セッションからの通知 |
 
 必要な機能が無ければ、委譲未対応と理由を報告して停止する。Codex の別チャット作成、`codex exec`、同じ会話での自己レビューへ自動で切り替えない。別チャットでの非同期運用と CLI プロセス経路は未実装。
 
