@@ -23,10 +23,14 @@ PR レビュー一式 (PR 情報取得 → compose-review でレビュー本文�
 - `MAX_INLINE_COMMENTS`: インライン指摘の総数上限。正の整数または `unlimited`。`compose-review` にそのまま転送する。
 - `THREAD_RESOLVE_SCOPE`: `resolve-pr-threads` に渡す resolve 範囲。`all` / `own` / `none`。省略時は `all`。
 - `SELF_LOGIN` (任意, `THREAD_RESOLVE_SCOPE=own` 時): 自身を判定するための `author.login`。caller が判明していれば渡す。Step 5 で `resolve-pr-threads` に転送される。
+- `EXPECTED_HEAD_SHA` (任意): 委譲元が確定したレビュー対象の 40 桁小文字 hex SHA。指定時は Step 2 と投稿直前に API の現 head と照合する。不一致なら投稿・resolve をせず停止する。
+- `DELEGATION_ID` (任意): 委譲依頼の小文字 UUID。指定時は Step 4 で Review 本文に識別マーカーを付ける。`EXPECTED_HEAD_SHA` と組にして渡す。不正な形式や片方だけの指定は API 書き込み前にエラー停止する。両方未指定なら従来の手順を使う。
 
 caller プロジェクト固有の方針 (技術観点 / スタイル上書き / 全方針置換) は **プロジェクト指示ファイル** に置く運用。読み込み手順は `compose-review` skill 側に集約しているため、本 skill では扱わない。
 
 ## 手順
+
+`EXPECTED_HEAD_SHA` / `DELEGATION_ID` が渡された場合は上記の形式と組を先に検証する。依頼 ID は `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` と一致する値だけを受け付ける。
 
 ### Step 1. PR 識別情報と GitHub アクセスチャネルを確定する
 
@@ -86,6 +90,8 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 ### Step 2. PR 状態と context を取得する
 
+`EXPECTED_HEAD_SHA` 指定時は、以下の PR メタ情報の head SHA と一致することを先に確認する。不一致・取得不能なら Step 3〜5 を行わず Step 6 へ進む。
+
 本 step の取得はすべて Step 1 で確定した `CHANNEL` の経路で行う。cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう、対象リポジトリは常に明示する: `CHANNEL=gh` では Step 1 で確定した `OWNER`/`REPO` を `--repo <OWNER>/<REPO>` で必ず明示し (`gh api graphql` は除く)、`CHANNEL=mcp` では各ツールの必須引数 `owner` / `repo` に Step 1 の値を渡す (引数が必須なので明示が内在化される)。
 
 - **PR メタ情報** (title / body / head ref / head SHA / base ref):
@@ -141,6 +147,10 @@ CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
 
 ### Step 4. `post-pr-review` skill でレビューを投稿する
 
+`EXPECTED_HEAD_SHA` 指定時は、投稿の直前に Step 2 と同じ API から head を再取得する。現 head と `compose-review` の `commit_id` がともに `EXPECTED_HEAD_SHA` と一致することを必須にし、不一致・取得不能・`commit_id` 欠落なら投稿も Step 5 の resolve もせず Step 6 へ進む。この場合は SHA の取り直しや defensive fallback で依頼対象を変えない。
+
+`DELEGATION_ID` 指定時は、`compose-review` から受け取った `body` の末尾に空行と `<!-- delegate-pr-review:request=<DELEGATION_ID> -->` の独立した 1 行を付けて渡す。このマーカーは依頼識別用で、`AI-REVIEW-RESULT` 等の公開契約は変えない。他の payload 値は加工しない。
+
 Step 1 の `OWNER` / `REPO` / `PR_NUMBER` / `CHANNEL` と Step 3 で得たレビュー本文を `post-pr-review` skill に Skill ツール経由で渡し、**1 つの Review として** 投稿する (CHANNEL に応じた投稿方式は `post-pr-review` の責務。本 skill では再実装しない)。`gh pr comment` / `gh pr review` / MCP の個別コメント投稿ツールでの個別投稿はしない。
 
 `compose-review` 出力 → `post-pr-review` 入力の対応 (加えて Step 1 の `CHANNEL` を `CHANNEL=<値>` としてそのまま転送する):
@@ -166,6 +176,8 @@ Step 1 の `OWNER` / `REPO` / `PR_NUMBER` / `CHANNEL` と Step 3 で得たレビ
 
 ### Step 5. `resolve-pr-threads` skill で過去スレッドを整理する
 
+`EXPECTED_HEAD_SHA` 指定時は、投稿が完了した後にも API の現 head を再取得する。投稿中に head が変わった場合や取得不能の場合は、スレッドへの返信・resolve を行わず Step 6 へ進む。投稿済み Review の ID・URL・`commit_id` は保持し、投稿成功と「head の再照合により過去スレッド整理を見送った」ことを分けて報告する。Review は再投稿しない。
+
 Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `all`) を `resolve-pr-threads` skill に渡して呼び出す。`THREAD_RESOLVE_SCOPE=none` の場合は呼び出すが skill 側で skip される。
 
 `THREAD_RESOLVE_SCOPE=own` の場合、caller から `SELF_LOGIN` が渡されていれば一緒に渡す。
@@ -174,7 +186,7 @@ Step 1 の PR 識別情報 / `CHANNEL` と `THREAD_RESOLVE_SCOPE` (省略時 `al
 
 以下を簡潔に caller へ返す:
 
-- 投稿した Review の URL (Step 4 のレスポンスから取れる場合)
+- 投稿した Review の数値 ID・URL・`commit_id` (Step 4 のレスポンスから取得した値。取れなければ不明と明記し、時刻や同じ author から推測しない)。投稿後に Step 5 が失敗しても、この投稿結果を失敗理由と分けて返す。
 - インライン指摘件数 / ラベル別件数内訳 (優先度順、`[must]` / `[should]` 等、件数>0 のもの)
 - **外部レビュー併用の有無** (`compose-review` の `external_review` から。`skill != "none"` なら `<skill> (fan-out: <mode> / finder <finders>/<finders_expected> / findings <findings> 件)`。**`finders` または `finders_expected` が `null` の場合は `finder …` の部分を省く** (`fanout` を返さない `code-review` 等を併用した回では、`mode` の値や自動・手動を問わず必ず `null` になるため、`null/null` と描画すると取得不能なのか 0 観点なのか判別できない)。`mode="inline"` なら「独立性は限定的」、`mode="partial"` なら「観点欠落あり」、`mode="empty"` なら「外部は対象差分なしと判定」、`verify_degraded=true` なら「外部由来の指摘は未検証」を添える。`skill == "none"` なら `未併用 (<reason>)`。フィールド欠落時は `不明 (compose-review が external_review を返さず)`、`post-pr-review` が `EXTERNAL_REVIEW` の `line_omitted` 警告を返した場合は `不明 (compose-review の external_review が不正: <警告の reason>)` と明記する。「不正」かどうかは本 skill が判断せず、この警告の有無だけで決める)。外部レビュー併用は `compose-review` の主目的なので、退化したまま黙って完了していないかを caller が確認できるよう **常に 1 行報告する**。
 - **エスカレーション判定の結果** (`compose-review` の `escalation` から 1 行。`escalate: true` なら `エスカレーション: 要 (理由 <reasons の件数> 件)`、`false` なら `エスカレーション: 不要`。フィールド欠落なら `エスカレーション判定: 不明 (compose-review が escalation を返さず)`、`post-pr-review` が `ESCALATION` の `line_omitted` 警告を返した場合は `エスカレーション判定: 不明 (compose-review の escalation が不正: <警告の reason>)` と明記する。「不正」かどうかは本 skill が判断せず、この警告の有無だけで決める)。これは「その PR を人に見てもらうべきか」の信号なので、`escalate: true` の回を caller が見落とさないよう **常に 1 行報告する** (マージをブロックする判定ではない点も含意として変えない)

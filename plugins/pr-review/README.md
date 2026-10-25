@@ -11,7 +11,7 @@ PR レビューを **1 つの Review として投稿** し、過去スレッド�
 - `skills/resolve-pr-threads`: 過去のレビュースレッドのうち修正済みのものだけを `resolveReviewThread` で resolve する。`THREAD_RESOLVE_SCOPE` (`all` / `own` / `none`) で範囲を制御。
 - `skills/run-local-review`: 現在のローカルブランチを対象に PR 作成前の AI レビューを行い、結果を **チャット + markdown ファイル** に出力する thin orchestrator skill (GitHub 投稿は行わない)。レビュー本文生成は `compose-review` に委譲する点で `run-pr-review` と対称で、両者とも sub-agent を立てず現在コンテキストで `compose-review` を直接呼ぶ。
 - `skills/distill-pr-reviews`: 期間内 merged PR のレビューコメント (AI 自動投稿 + 人間レビュー両方) を集約し、REVIEW.md に追記する価値のある指摘候補を `proposals.md` として出力する skill。一般的なレビュー観点 (レビュアーが REVIEW.md なしでも指摘するもの) は重要度を下げ (出典から固有の文脈を読み取れなければ採用候補にせず、`[汎用観点]` 付きの保留 / 棄却に降格する)、プロジェクト固有の観点 (ドメインの不変条件 / モジュール境界 / 社内 API の落とし穴 / 命名・用語の規約等) を重点的に抽出する。バグ修正PR (fix型title / bugラベル / revert 等で検知) の修正diffも抽出源にし、コメントの付かない hotfix からも再発防止のレビュー観点を抽出する (`MAX_BUGFIX_DIFFS` で diff 取得上限を制御)。信号収集はスクリプト、最終的な採否分類 (`accept` / `hold` / `reject`) とクラスタリングと配置先決定は AI が行う。各候補には **配置先 REVIEW.md** (root / `apps/web/REVIEW.md` 等のディレクトリ別) を付けて振り分け、配置先ごとにそのまま追記できる断片 (`review-md/<dir>/REVIEW.md`) も出力する (既存 REVIEW.md の配置に寄せるため default branch の tree を 1 コール取得する。**中身は読まない**)。read-only で REVIEW.md 編集 / PR 作成は行わない。**収集スクリプトが `gh` CLI に依存するため gh チャネル専用** (gh が使えない環境では動かない。後述「GitHub アクセスチャネル」参照)。
-- `skills/delegate-pr-review`: 作成済み PR のレビューを **別のセッションに委譲** し、投稿された Review に元のセッションで対応する skill。PR 作成直後に呼ぶと、レビュー専用セッションを起動して `run-pr-review` を実行させ、完了通知を受けて指摘の検討・修正・push・スレッドへの返信までを行う。クラウドセッションと Claude デスクトップアプリのローカルセッションで動く (後述「別セッションへのレビュー委譲」)。
+- `skills/delegate-pr-review`: 作成済み PR を **実装履歴を渡さないレビュー役に委譲** し、元の会話で指摘の検討・修正・push・返信まで行う skill。Codex は新規コンテキストの subagent の結果を待ち、Claude はクラウド・デスクトップの別セッションから完了通知を受ける (後述「別セッションへのレビュー委譲」)。
 - `commands/pr-review-style-reference`: `/pr-review-style-reference` で呼び出す **スタイル参考ガイド** (重要度ラベル / ノイズ抑制 / 粒度ガイド / 重複回避 / CI 扱い)。レビューコメントの書き方・体裁が対象で、技術観点 (何を見るか) は対象外。`compose-review` から内部的に呼ばれる。
 
 レビュー方針は caller (ユーザー) に委ねる前提。本スタイル参考ガイドは「そのまま採用 / 上に caller のカスタム指示を重ねる / 採用せず無視する」のいずれの使い方も可能。技術観点 (何をレビューするか) は caller 側で別途指定する想定。
@@ -189,7 +189,19 @@ SKILL.md に書いた GitHub MCP のツール名 (`pull_request_read` など)・
 
 ## 別セッションへのレビュー委譲 (`delegate-pr-review`)
 
-開発したセッション (A) が作った PR のレビューを、別のセッション (B) に `run-pr-review` で行わせ、投稿された Review に A が対応する。レビューを別セッションに分けるのは、実装時の思い込みを引き継がないレビューにするため。手順の正典は [`skills/delegate-pr-review/SKILL.md`](skills/delegate-pr-review/SKILL.md)。
+開発した会話 (A) が作った PR を、実装履歴を渡さないレビュー役 (B) に `run-pr-review` でレビューさせ、投稿された Review に A が対応する。手順の正典は [`skills/delegate-pr-review/SKILL.md`](skills/delegate-pr-review/SKILL.md)。ホストごとの起動・結果取得と、[検証後の対応](skills/delegate-pr-review/references/respond-to-review.md) を分けている。
+
+### Codex
+
+履歴を渡さない subagent の起動と最終結果の取得が必要。`collaboration.spawn_agent` の場合は `fork_turns: "none"` と明示した `model` を使い、A が同じターンで結果を待つ。B には対象 PR・head SHA・依頼 ID・スキルの絶対パスと、FETCH_HEAD を共有しない専用の Git 領域を渡す。モデルは指定があればそれを使い、なければ A のモデルを明示する。
+
+B は `EXPECTED_HEAD_SHA` と `DELEGATION_ID` を指定して `run-pr-review` を実行する。同じホストでは PR ごとの共有ロックで別チャットからの重複起動を防ぐ。Review 本文の依頼マーカーで投稿を識別し、投稿後に中断しても同じ依頼の Review を再投稿しない。結果は [JSON schema](skills/delegate-pr-review/references/result.schema.json) に従い、投稿確認済み・未投稿の失敗・対象 SHA の更新・成否不明を区別する。A も GitHub で帰属と現在の SHA を検証してから対応する。
+
+Codex に `Skill` ツールが無い場合は、`SKILL.md` を読み現在コンテキストで実行する。更新時は `delegate-pr-review` の `references/` と、`EXPECTED_HEAD_SHA` / `DELEGATION_ID` に対応した同じ版の `run-pr-review`・`post-pr-review` を配置する。インストール済みの旧版に Codex 未対応の停止節がある場合は、そのエントリポイントも更新する。
+
+別チャットによる非同期運用と `codex exec` 経路は未実装。A のターン終了後の自動再開は保証せず、待機が中断した場合は agent ID と状態の保存先を報告する。詳細は [Codex 手順](skills/delegate-pr-review/references/codex-subagent.md) を参照。ロックの同時実行・所有者確認は `python3 plugins/pr-review/skills/delegate-pr-review/scripts/test-review-lock.py` で検証できる。
+
+以下は既存の Claude クラウド・デスクトップ経路の設定。[Claude 手順](skills/delegate-pr-review/references/claude-sessions.md) を使う。
 
 ```text
 A: PR 作成 → delegate-pr-review → B を起動
