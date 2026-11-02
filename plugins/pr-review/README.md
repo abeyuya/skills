@@ -201,14 +201,14 @@ A: 再レビューを依頼しないなら終える (クラウド経路では用
 
 ### 経路
 
-B の起動のしかたは 2 通りある。サブエージェントのネスト起動が使えるならサブエージェント経路、使えないクラウドセッションならクラウド経路を使う。
+B の起動のしかたは 2 通りある。サブエージェントのネスト起動が使えるならサブエージェント経路、使えないクラウドセッションならクラウド経路を使う。経路の決め方の正典は SKILL.md Phase 1 Step 1-1。
 
 | | サブエージェント経路 | クラウド経路 |
 |---|---|---|
-| 使う条件 | Agent ツールがあり、ネスト上限 (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`) が 2 以上 (未設定なら既定の 3) | ネスト上限が 1 のクラウドセッション (Claude Code on the web) |
+| 主に使う環境 | ネスト上限 (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`) が 2 以上 (未設定なら既定の 3) のローカル CLI / デスクトップアプリ等 | ネスト上限が 1 のクラウドセッション (Claude Code on the web) |
 | B | A のサブエージェント (Agent ツールで background 起動。専用の worktree で動く) | 別のクラウドセッション (`claude-code-remote` MCP の `create_session`) |
 | B → A の報告 | B の最後の報告の 1 行目。完了通知とともに届く | `send_message` |
-| A → B の再レビュー依頼 | `SendMessage` (終了した B を、会話を保ったまま再開する) | `send_message` |
+| 再レビュー・やり直しの依頼 | 依頼のたびに新しい B を起動する (B の worktree は B の終了とともに片付くため) | 同じ B に `send_message` |
 | B の異常終了の通知 | 完了通知 | `<child-session-event>` |
 | 用済みの B | 何もしない | `archive_session` でアーカイブ |
 
@@ -218,7 +218,7 @@ B を専用の worktree で動かすのは、`run-pr-review` が作業ツリー�
 
 ### 必要なもの
 
-- **どちらかの経路のツールがあること**: サブエージェント経路は Agent ツールと `SendMessage` (無ければ、再レビューのたびに新しい B を起動する)、クラウド経路は `claude-code-remote` MCP の `get_session` / `create_session` / `send_message`。どちらも無い環境では委譲しない。B のアーカイブに使う `archive_session` が無ければ、アーカイブだけを飛ばす。`claude-code-remote` MCP は公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
+- **どちらかの経路のツールがあること**: サブエージェント経路は Agent ツール (A がメイン会話で動いていること。A がサブエージェントだと、B の完了通知で A が起こされない)、クラウド経路は `claude-code-remote` MCP の `get_session` / `create_session` / `send_message`。どちらも無い環境では委譲しない。B のアーカイブに使う `archive_session` が無ければ、アーカイブだけを飛ばす。`claude-code-remote` MCP は公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
 - **B が権限確認で止まらないこと**:
   - サブエージェント経路: B の権限確認は A のセッションに出るので、A の permission mode は問わない。ただし誰も答えないと B はそこで止まるので、誰も見ていない状態で委譲するなら A を auto モードで動かす。
   - クラウド経路: A が auto モード (または bypassPermissions) で動いていること。B の permission mode は A から引き継がれる。A が操作のたびに承認を求めるモードだと、B は誰も見ていないところで承認待ちのまま止まる。
