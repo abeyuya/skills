@@ -122,7 +122,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
 
 ### Step 1. 前提と対象 PR を確定する
 
-1. 経路を決める (「経路」「前提」参照)。Bash で `echo "depth=${CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH-unset}"` を実行し、ネスト上限を読む。`unset` か空なら既定の 3、2 以上の整数ならその値とする。それ以外 (`0` / `1` / 負の数 / 整数でない値) は 1 とみなす (ネスト起動が使えない側に倒す)。
+1. 経路を決める (「経路」「前提」参照)。Bash で `echo "depth=${CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH-unset}"` を実行し、ネスト上限を読む。`unset` か空なら既定の 3、2 以上の整数ならその値とする。それ以外 (`0` / `1` / 負の数 / 整数でない値) は 1 とみなす (ネスト起動が使えない側に倒す)。未設定でも、ホスト側の既定が 3 でないことはありうる。その場合の縮退は B の Review 本文に出るので、Phase 2 Step 2-3 で拾って報告する。
    - Agent ツールがあり、上限が 2 以上 → `ROUTE=subagent`
    - それ以外で、クラウド経路のツールがそろう → `ROUTE=cloud`
    - それ以外で、Agent ツールがある (上限が 1) → `ROUTE=subagent`。B の外部レビューは縮退する (Review 本文に開示される)。Step 4 の報告でその旨も伝える
@@ -159,7 +159,9 @@ Agent ツールを次の引数で呼ぶ。
 - `prompt`: 下のテンプレートの `<...>` を埋めたもの。`<ROUND>` は依頼する round (初回は `1`)
 - `name` は渡さない (名前付きで起動すると、ホストによっては teammate として起動されるため)。
 
-ホストの Agent ツールに無い引数 (`effort` / `isolation` / `run_in_background` 等) は省いて起動する。`isolation` を省いたときは、B の報告が届くまで A は `git fetch` を行わない (理由は下記)。
+ホストの Agent ツールに無い引数 (`effort` / `isolation` / `run_in_background` 等) は省いて起動する。`isolation` を省いたときは、B の報告が届くまで A は `FETCH_HEAD` や作業ツリーを書き換える git 操作 (`git fetch` / `git pull` / `git checkout` 等) を行わない (理由は下記)。
+
+B の worktree は、ホストによっては A のリポジトリの中 (`.claude/worktrees/` 等) に作られ、A の作業ツリーから未追跡のディレクトリとして見える。B の起動後に A が commit するときは (Phase 2 Step 4 を含む)、変更したファイルを指定して add し、`git add -A` / `git add .` で B の worktree を取り込まない。
 
 `isolation: "worktree"` で B に専用の worktree を持たせ、A の作業ツリーを共有しない。理由は次の 2 つ。
 
@@ -315,6 +317,7 @@ B が失敗したか、異常終了した可能性がある。自動では再試
 3. 機械可読行は、本文冒頭の AI 自動投稿マーカーから最初の `---` までの範囲だけで探す (`post-pr-review` の `references/machine-readable-lines.md` の規則。総括本文に引用されたフォーマット例を拾わないため)。
    - `AI-REVIEW-RESULT` 行からラベル別の件数を読む。
    - `AI-REVIEW-ESCALATE: escalate=1` があれば、人のレビューが必要と判定された PR なので、最後の報告で目立つように伝える。
+   - `AI-REVIEW-EXTERNAL` 行が縮退を示している (`skill=none` / `mode=inline|partial|empty` / `verify_degraded=true`) なら、B の外部レビューが縮退していたことを最後の報告に含める (サブエージェント経路で、ネスト上限が実際には 1 だった場合等)。
 4. Review の `commit_id` が PR の現在の head と違う場合 (B のレビュー中に A が push した等) は、指摘の行番号がずれている可能性を前提に読む。
 5. `gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews/<ID>/comments --jq '.[] | {id, in_reply_to_id}'` で、その Review に属するコメントを 1 件 1 行で取る (`--jq` を付けずに `--paginate` すると、ページごとの JSON 配列が連結されて 1 つの JSON として読めない)。`in_reply_to_id` が無いものがその Review の指摘で、その `id` がスレッドの先頭コメントの ID になる。この ID を対応済みの Review とともに記録する (トリガー節で、遅れて届いた webhook を見送るのに使う)。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずにユーザーに報告して終える (「前提」参照)。次に PR のスレッドの一覧を全ページ取り (`CHANNEL=mcp`: PR 読み取りツールを method=`get_review_comments` で呼ぶ。`CHANNEL=gh`: `resolve-pr-threads` Step 1 の CHANNEL=gh の GraphQL で、各コメントの `databaseId` も取る)、先頭コメントの ID (`CHANNEL=mcp` は `html_url` 末尾の `#discussion_r<ID>`、`CHANNEL=gh` は `databaseId`) がその指摘の ID と一致するスレッドを対象にする。そのうち、resolve 済みのものと、A の返信 (Step 5 の `<!-- delegate-pr-review:reply -->` を含むコメント) が既にあるものは除く。
 6. `AI-REVIEW-RESULT` の件数の合計が、5 で取った指摘の件数より多ければ、インラインに出ていない指摘がある (`MAX_INLINE_COMMENTS` で省略された等)。その内容は GitHub 上に無いので、件数の差を最後の報告に含める。
@@ -361,8 +364,8 @@ A はスレッドを resolve しない。修正が指摘どおりかの確認は
   - 返信に失敗したスレッド (Step 5)
   - 修正したが未 resolve のスレッドの件数 (最終ラウンドの修正は再レビューも A の resolve も無いので、未 resolve のまま残る。会話の resolve を必須にしているリポジトリでは、人が確認して resolve するか、再レビューを依頼するまでマージできない)
   - エスカレーション判定 (`escalate=1` だった場合) と、インラインに出ていない指摘の件数 (Step 2-6 で差があった場合)
-  - B のモデルと effort。クラウド経路は、アーカイブの前に引いた `get_session` の結果のモデル / effort (「経路」の表) を書く。effort が `REVIEW_EFFORT` と違えば、その旨も書く。effort が返っていなければ `不明` と書き、違うとは書かない。サブエージェント経路は、Agent ツールに渡した `model` / `effort` を書く (`REVIEW_MODEL` に合う別名が無く `opus` を渡した場合や、引数が無くて省いた場合はその旨)
-  - Phase 1 Step 1-1 でネスト上限が 1 なのにサブエージェント経路にした場合は、B の外部レビューが縮退していたこと
+  - B のモデルと effort。クラウド経路は、アーカイブの前に引いた `get_session` の結果のモデル / effort (「経路」の表) を書く。effort が `REVIEW_EFFORT` と違えば、その旨も書く。effort が返っていなければ `不明` と書き、違うとは書かない。サブエージェント経路は、Agent ツールに渡した `model` / `effort` を書く。`model` は別名なので、実際にどの版で動いたかは分からないと添える (`REVIEW_MODEL` に合う別名が無く `opus` を渡した場合や、引数が無くて省いた場合はその旨も)
+  - B の外部レビューが縮退していた場合はその旨 (Phase 1 Step 1-1 でネスト上限が 1 なのにサブエージェント経路にした場合と、Step 2-3 で縮退を見つけた場合)
   - クラウド経路では、B をアーカイブしたか。しなかった・できなかった場合はその理由
 
 クラウド経路では、再レビューを依頼しないと決まった時点で、B はレビューを投稿し終えていて、もう依頼されることもない。PR を作るたびに B が増えるので、ユーザーに確認せずに `archive_session` で B をアーカイブする。
