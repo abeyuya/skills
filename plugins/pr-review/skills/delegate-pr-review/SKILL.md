@@ -61,7 +61,7 @@ B の起動のしかたは 2 通りある。どちらを使うかは Phase 1 Ste
 - **どちらかの経路のツールがあること**: サブエージェント経路は Agent ツール (旧名 Task)、クラウド経路は `claude-code-remote` MCP の `get_session` / `create_session` / `send_message`。完全なツール名の接頭辞は接続のしかたで変わる。末尾が同じ別サーバーのツール (例: メールの `send_message`) と取り違えないよう、その経路のサーバーのツールから探す。遅延ロードで名前だけが見えているツールは、ToolSearch 等で読み込めば使えるので「ある」とみなす。GitHub MCP のツールも含め、ツール名の扱いは `run-pr-review` Step 1-2「MCP ツール名の扱い」に従う。
   - どちらもそろわない環境では委譲せずに停止し、その旨をユーザーに報告する。代わりに A のコンテキストで `run-pr-review` を実行することは、ユーザーに頼まれない限りしない。
   - 用済みになった B のアーカイブに使う `archive_session` は、無くても委譲はできる (アーカイブせずにその旨を報告する)。
-- **サブエージェント経路では、A がメイン会話で動いていること**: A がサブエージェントだと、A がターンを終えた時点で A 自身も終わり、B の完了通知で A が起こされない。A がサブエージェントの中で本 skill を実行しているときは、委譲せずに停止して報告する。
+- **A がメイン会話で動いていること**: A がサブエージェントだと、A がターンを終えた時点で A 自身も終わり、B の報告 (完了通知や `send_message`) で A が起こされない。経路によらず、A がサブエージェントの中で本 skill を実行しているときは、委譲せずに停止して報告する。
 - **B で `run-pr-review` が使えること**: B で使えなかったときは、B が `failed` を知らせてくる。
   - サブエージェント経路: B は A と同じ環境で動くので、A で `run-pr-review` が使えれば B でも使える。
   - クラウド経路: B は A と同じ環境 (environment) で起動し、対象リポジトリを checkout する。対象リポジトリに pr-review plugin が入っていなくても使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく (plugin README「レビューの委譲」)。
@@ -128,7 +128,7 @@ PR ごとに次の値を会話に記録し、ターンをまたいで使う。1 
    - それ以外で、Agent ツールがある (上限が 1) → `ROUTE=subagent`。B の外部レビューは縮退する (Review 本文に開示される)。Step 4 の報告でその旨も伝える
    - どれにも当たらない → 停止して報告する
 
-   `ROUTE=subagent` で、A がサブエージェントの中で本 skill を実行しているときは停止して報告する (「前提」参照)。
+   経路を決める前に、A がサブエージェントの中で本 skill を実行しているなら停止して報告する (「前提」参照)。
 2. クラウド経路では、自セッションを `get_session` で引く。permission mode が `auto` か `bypassPermissions` でなければ、B を起動せずに停止して理由を報告する。自セッションの ID を `A_SESSION_ID` として控える。B が `done` / `failed` を送る宛先になる。サブエージェント経路では行わない。
 3. `OWNER` / `REPO` / `PR_NUMBER` を確定する。`gh api repos/<OWNER>/<REPO> --jq .full_name` が成功することも確かめる。失敗したら、B を起動せずに停止して理由を報告する (B がレビューを終えても、A がその指摘を取れないため。「前提」参照)。あわせて A の `CHANNEL` を、`run-pr-review` Step 1-2 の手順で決める (Phase 2 で使う)。ただし A は Review を投稿しないので、`mcp` にする条件は、Review の作成ツールではなく、PR の Review とスレッドの読み取りツール (現行は `pull_request_read`) とスレッドへの返信ツール (現行は `add_reply_to_pull_request_comment`) がそろうこととする。決まらなければ、同じく停止して報告する。
 4. 同じ PR の B が既にいれば、新しく起動しない (同じ PR に B が複数いると、Review が重複するため)。
@@ -183,7 +183,7 @@ Agent ツールの呼び出しが失敗したら、委譲の状態は記録せ�
 round=<ROUND> のレビューとして、すぐに次の手順を行う。
 
 1. Skill ツールで run-pr-review を呼び (plugin として入っている場合は pr-review:run-pr-review)、上の OWNER / REPO / PR_NUMBER と追加入力を渡して、Review の投稿まで完了させる。
-2. 投稿した Review の数値 ID を確定する。run-pr-review の報告に Review の URL があれば、その末尾 (#pullrequestreview-<ID>) から取る。無ければ PR の Review の一覧を全ページ取り (GitHub MCP の PR 読み取りツールの get_reviews、または gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | {id, commit_id, body}')、自分が今投稿した Review (AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、commit_id がレビューした head のもの) を探して ID を取る。
+2. 投稿した Review の数値 ID を確定する。run-pr-review の報告に Review の URL があれば、その末尾 (#pullrequestreview-<ID>) から取る。無ければ PR の Review の一覧を全ページ取り (GitHub MCP の PR 読み取りツールの get_reviews、または gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | {id, commit_id, body}')、自分が今投稿した Review (AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、commit_id がレビューした head のもの) を探して ID を取る。当てはまるものが複数あれば、ID が最も大きいもの (最後に投稿されたもの) を取る (やり直しでは、前の B の Review が同じ head に残っていることがあるため)。
 3. 最後の報告を次のどちらか 1 行で始めて、終える。依頼元はこの 1 行で対応を始めるので、1 行目には他の文を書かない。
    - 投稿でき、ID も確定できた: [delegate-pr-review:done] pr=https://github.com/<OWNER>/<REPO>/pull/<PR_NUMBER> round=<ROUND> review=<Review の ID>
    - それ以外 (run-pr-review が見つからない / エラーで停止した / head SHA の照合で停止した / ID を確定できない など): [delegate-pr-review:failed] pr=https://github.com/<OWNER>/<REPO>/pull/<PR_NUMBER> round=<ROUND> reason=<理由を 1 行で>
@@ -193,6 +193,7 @@ round=<ROUND> のレビューとして、すぐに次の手順を行う。
 ## してはいけないこと
 
 - コードの変更・commit・push・PR の作成 (レビューだけを行う)
+- 作業ツリーへのファイルの作成 (一時ファイルは /tmp 等に置く。作業ツリーが変わると、終了時に worktree が片付かずに残る)
 - PR の監視 (subscribe_pr_activity 等。PR のイベントは依頼元が受け取る)
 - ScheduleWakeup / send_later / CronCreate などによる定期チェックインの設定
 - 別のセッションの起動 (create_session 等) と delegate-pr-review の呼び出し (委譲の連鎖を防ぐ)
@@ -227,7 +228,7 @@ effort は `create_session` に専用の引数が無いので、最初のプロ�
 
 1. メッセージの round で既に Review を投稿したことが自分の会話に記録されていれば、もう一度投稿せず、手順 3 でその Review の ID を送り直す (同じラウンドの Review を 2 つ作らないため)。記録が無ければ、通常どおりレビューする (投稿の直後にターンが中断して記録が失われた場合は、同じ head への Review が 2 つになることがあるが、どれが自分の投稿かを時刻などから推測するよりも安全なので、それを許容する)。
 2. Skill ツールで run-pr-review を呼び (plugin として入っている場合は pr-review:run-pr-review)、上の OWNER / REPO / PR_NUMBER と追加入力を渡して、Review の投稿まで完了させる。
-3. 投稿した Review の数値 ID を確定する。run-pr-review の報告に Review の URL があれば、その末尾 (#pullrequestreview-<ID>) から取る。無ければ get_reviews で、自分が今投稿した Review (AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、commit_id がレビューした head のもの) を探して ID を取る。
+3. 投稿した Review の数値 ID を確定する。run-pr-review の報告に Review の URL があれば、その末尾 (#pullrequestreview-<ID>) から取る。無ければ get_reviews で、自分が今投稿した Review (AI 自動投稿マーカーと AI-REVIEW-RESULT 行を持ち、commit_id がレビューした head のもの) を探して ID を取る。当てはまるものが複数あれば、ID が最も大きいもの (最後に投稿されたもの) を取る。
 4. send_message (claude-code-remote MCP) で session_id=<A_SESSION_ID> に次のどちらか 1 行を送る。round には届いたメッセージの round の値を使う。
    - 投稿でき、ID も確定できた: [delegate-pr-review:done] pr=https://github.com/<OWNER>/<REPO>/pull/<PR_NUMBER> round=<n> review=<Review の ID>
    - それ以外 (run-pr-review が見つからない / エラーで停止した / head SHA の照合で停止した / ID を確定できない など): [delegate-pr-review:failed] pr=https://github.com/<OWNER>/<REPO>/pull/<PR_NUMBER> round=<n> reason=<理由を 1 行で>
@@ -259,6 +260,8 @@ effort は `create_session` に専用の引数が無いので、最初のプロ�
 - 結果が届いたら対応する旨
 - Step 1-1 でネスト上限が 1 なのにサブエージェント経路にした場合は、B の外部レビューが縮退すること
 
+Step 2-A で B の報告がその場で返った (foreground で動いた) ときは、ターンを終えずに、記録のあとで Phase 2「トリガー」に進む。
+
 B の完了を待つためにポーリングはしない (sleep / `send_later` / `ScheduleWakeup` / `get_session` や `list_events` の繰り返し / サブエージェントの出力の読み取り)。結果は B の報告 (サブエージェント経路は完了通知、クラウド経路は B のメッセージ) か、B の異常終了の通知 (「経路」の表) で届き、それがこのセッションを起こす。
 
 ## Phase 2: レビュー結果に対応する
@@ -279,7 +282,7 @@ B の完了を待つためにポーリングはしない (sleep / `send_later` /
 
 B が止まるたびに完了通知が届く。B の報告は、通知の結果欄に載るか、B からのメッセージ (hand-back) として別に届き、両方の形で届くこともある。届く順序も決まっていない。そこで 1 回の依頼への報告は、先に読んだほうで 1 回だけ扱う。報告の「1 行目」は、ホストが付ける枠や注記を除いた、B の報告本文の最初の行を指す。
 
-- 報告の 1 行目が、この PR の `done` / `failed`: `ANSWERED` が真で、控えた 1 行と同じ → 何もしない (Step 2-2 の「対応済みの ID が届いた」報告もしない)。それ以外 → `ANSWERED` を真にしてその 1 行を控え、`done` → Step 2、`failed` → Step 1。
+- 報告の 1 行目が、この PR の `done` / `failed`: `ANSWERED` が真で、控えた 1 行と同じ → 何もしない (Step 2-2 の「対応済みの ID が届いた」報告もしない)。それ以外 → `ANSWERED` を真にしてその 1 行を控え、`done` → Step 2、`failed` → Step 1。下の 3 つ目の箇条で同じ依頼を既に失敗として報告していた (報告を伴わない完了通知が先に届いた等) なら、`ACTIVE` を真に戻し、先の失敗の報告を取り消す旨をユーザーに伝えてから進む。
 - 完了通知の結果欄に報告が無く、報告は別のメッセージで届くとだけある → 何もしない (報告のほうで扱う)。
 - それ以外 (完了通知の状態が完了でない・エラーで終わった、報告の 1 行目が `done` / `failed` でない): `ACTIVE` が真で `ANSWERED` が偽 → B が応答せずに終わった (異常終了の可能性) ので Step 1。それ以外 → 何もしない。
 

@@ -218,7 +218,8 @@ B を専用の worktree で動かすのは、`run-pr-review` が作業ツリー�
 
 ### 必要なもの
 
-- **どちらかの経路のツールがあること**: サブエージェント経路は Agent ツール (A がメイン会話で動いていること。A がサブエージェントだと、B の完了通知で A が起こされない)、クラウド経路は `claude-code-remote` MCP の `get_session` / `create_session` / `send_message`。どちらも無い環境では委譲しない。B のアーカイブに使う `archive_session` が無ければ、アーカイブだけを飛ばす。`claude-code-remote` MCP は公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
+- **A がメイン会話で動いていること**: A がサブエージェントだと、A がターンを終えた時点で A も終わり、B の報告で A が起こされない。
+- **どちらかの経路のツールがあること**: サブエージェント経路は Agent ツール、クラウド経路は `claude-code-remote` MCP の `get_session` / `create_session` / `send_message`。どちらも無い環境では委譲しない。B のアーカイブに使う `archive_session` が無ければ、アーカイブだけを飛ばす。`claude-code-remote` MCP は公開ドキュメントに載っていないツールなので、仕様が変わる可能性がある。
 - **B が権限確認で止まらないこと**:
   - サブエージェント経路: B の権限確認は A のセッションに出るので、A の permission mode は問わない。ただし誰も答えないと B はそこで止まるので、誰も見ていない状態で委譲するなら A を auto モードで動かす。
   - クラウド経路: A が auto モード (または bypassPermissions) で動いていること。B の permission mode は A から引き継がれる。A が操作のたびに承認を求めるモードだと、B は誰も見ていないところで承認待ちのまま止まる。
