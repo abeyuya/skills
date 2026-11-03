@@ -67,7 +67,11 @@ B の起動のしかたは 2 通りある。どちらを使うかは Phase 1 Ste
   - クラウド経路: B は A と同じ環境 (environment) で起動し、対象リポジトリを checkout する。対象リポジトリに pr-review plugin が入っていなくても使えるよう、環境のセットアップスクリプトで plugin を user scope にインストールしておく (plugin README「レビューの委譲」)。
 - **A で `gh api` が GitHub の REST API を呼べること**: Review ごとの指摘コメントの一覧 (`pulls/<PR_NUMBER>/reviews/<ID>/comments`) は GitHub MCP ツールでは取れないので、`gh api` で取る (クラウドセッションでは REST は通り、GraphQL は通らないことがある)。取れなければ、どのスレッドが B の指摘かを決められないので、対応せずに報告して終える (Phase 2 Step 2-5)。それ以外の GitHub の読み取りとスレッドへの返信は、Phase 1 Step 1-3 で決めた `CHANNEL` (`gh` / `mcp`) で行う (クラウドセッションでは通常 `mcp`、gh が GraphQL も呼べるローカルでは通常 `gh`。GitHub MCP が無くてもよい)。
 - **B が権限確認で止まらないこと**:
-  - サブエージェント経路: B の権限確認は A のセッションに出て、ユーザーがその場で許可・拒否できる (background のサブエージェントでも同じ。出典は https://code.claude.com/docs/en/sub-agents の「Foreground subagents」「Background subagents」の説明で、2026-11 に確認)。そのため A の permission mode は問わない。Claude Code の版によっては、background のサブエージェントは起動時に承認した権限だけを引き継ぎ、それ以外のツール呼び出しを確認なしで拒否すると説明されていた。その版では A を auto モードで動かす (B の `run-pr-review` が使う Bash / Write が拒否され、`failed` か縮退したレビューになるため)。ただし、確認が出たまま誰も答えないと B はそこで止まり、報告も届かない。誰も見ていない状態で委譲するなら、A を auto モードで動かす。事前許可の無いツールを拒否するモード (dontAsk 等) では、B は `run-pr-review` に要る Bash / Write を使えずに失敗する。
+  - サブエージェント経路: A を auto モード (または bypassPermissions) で動かすのが確実。A が承認を求めるモードでも委譲はできるが、次の 2 つの条件を満たす必要がある。
+    - ユーザーがその場で B の権限確認に答えられること。執筆時点のドキュメントでは、background のサブエージェントの権限確認も A のセッションに出る (出典: https://code.claude.com/docs/en/sub-agents の「Foreground subagents」「Background subagents」。2026-11 に確認)。誰も答えないと B はそこで止まり、報告も届かない。
+    - Claude Code が、background のサブエージェントの権限確認を A のセッションに出す版であること。版によっては、起動時に承認した権限だけを引き継ぎ、それ以外のツール呼び出しを確認なしで拒否すると説明されていた。その版では、B の `run-pr-review` が使う Bash / Write が拒否され、`failed` か縮退したレビューになる。
+
+    事前許可の無いツールを拒否するモード (dontAsk 等) では、B は `run-pr-review` に要る Bash / Write を使えずに失敗する。
   - クラウド経路: A が auto モード (または bypassPermissions) で動いていること。B の permission mode は A から引き継がれ、A より緩くはできない。A が操作のたびに人の承認を求めるモードだと、B は誰も見ていないところで承認待ちのまま止まり、A に何も届かなくなる。事前許可の無いツールを拒否するモード (dontAsk 等) では、B は `run-pr-review` に要る Bash / Write を使えずに失敗する。
 
 ## 入力 (任意)
