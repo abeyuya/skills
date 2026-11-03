@@ -14,7 +14,7 @@ description: 作成済み PR を実装履歴を渡さないレビュー役に委
 | ホスト | 読む手順 | 完了の受け取り |
 |---|---|---|
 | Codex。履歴を渡さない subagent の起動と結果の取得が可能 | [Codex subagent](references/codex-subagent.md) | A が同じターンで待つ |
-| Claude Code。Agent ツールまたは専用セッション API が利用可能 | [Claude サブエージェント・クラウド](references/claude-sessions.md) | 別セッションからの通知 |
+| Claude Code。Agent ツールまたは専用セッション API が利用可能 | [Claude サブエージェント・クラウド](references/claude-sessions.md) | サブエージェントの報告・完了通知、または別セッションからの通知 |
 
 必要な機能が無ければ、委譲未対応と理由を報告して停止する。Codex の別チャット作成、`codex exec`、同じ会話での自己レビューへ自動で切り替えない。別チャットでの非同期運用と CLI プロセス経路は未実装。
 
