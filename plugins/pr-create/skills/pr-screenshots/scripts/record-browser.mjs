@@ -22,7 +22,7 @@
 //
 // scenario の書き方:
 //   export const url = 'http://localhost:3000/';               // 録画の前に開く URL (任意)
-//   export const contextOptions = { storageState: '<path>' };   // browser.newContext に足すオプション (任意。viewport は上書きできない)
+//   export const contextOptions = { storageState: '<path>' };   // browser.newContext に足すオプション (任意。viewport と deviceScaleFactor は上書きできない)
 //   export async function setup({ page, context }) {}           // 録画しない準備。ログインなど (任意)
 //   export default async function ({ page, context, pause, scroll }) {}  // 録画する操作 (必須)
 //     pause(ms)               : 画面を見せるために待つ
@@ -34,7 +34,7 @@
 import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -139,6 +139,9 @@ function startEncoder(outPath) {
   let queue = Promise.resolve();
   let first = null;
   let last = null;
+  // 終了時刻は Node の時計で取るので、フレームの時計との差を最初のフレームで控えて換算する。
+  // 2 つの時計の起点がずれていても、最後のフレームを繰り返す回数が実際の経過時間を超えない
+  let clockOffset = null;
   const indexAt = (timestampMs) => Math.floor(((timestampMs - first) / 1000) * fps);
   // screencast は描画が変わったときだけフレームを送るので、次のフレームまで前のフレームを繰り返して一定の fps にする
   const enqueue = (data, count) => {
@@ -150,13 +153,14 @@ function startEncoder(outPath) {
   return {
     push(data, timestampMs) {
       first ??= timestampMs;
+      clockOffset ??= Date.now() - timestampMs;
       const index = indexAt(timestampMs);
       if (last) enqueue(last.data, index - last.index);
       last = { data, index };
     },
     async finish(endMs) {
       if (!last) throw new Error('screencast のフレームが 1 枚も届かなかった');
-      enqueue(last.data, Math.max(indexAt(endMs) - last.index, 1) + LEAD_OUT_SECONDS * fps);
+      enqueue(last.data, Math.max(indexAt(endMs - clockOffset) - last.index, 1) + LEAD_OUT_SECONDS * fps);
       await queue;
       ffmpeg.stdin.end();
       const code = await exited;
@@ -175,6 +179,8 @@ if (typeof scenario.default !== 'function') fail('scenario は録画する操作
 
 const chromium = loadPlaywright();
 const outPath = path.resolve(opt.out);
+// 親ディレクトリが無いと、ffmpeg は最初のフレームで出力を開けずに終わり、scenario を最後まで流してから EPIPE で失敗する
+mkdirSync(path.dirname(outPath), { recursive: true });
 const browser = await chromium
   .launch({
     ...(opt.chrome ? { executablePath: opt.chrome } : { channel: 'chrome' }),
@@ -226,7 +232,8 @@ try {
   }
   console.error(`record-browser: ${e.stack ?? e}`);
 } finally {
-  await browser.close();
+  // mp4 は書き終えているので、Chrome が先に落ちていて閉じられなくても録画の成否は変えない
+  await browser.close().catch((e) => console.error(`record-browser: ブラウザを閉じられなかった (${e.message.split('\n')[0]})`));
 }
 if (failed) process.exit(1);
 console.log(outPath);

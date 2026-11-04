@@ -22,8 +22,8 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
     - 要るものは Node.js、Playwright 1.61 以上 (`playwright-core` か `playwright`)、Chrome、libx264 入りの ffmpeg。Playwright はカレントディレクトリから解決するので、プロジェクトに入っていればそのディレクトリで実行する。無いか古いときは、リポジトリの外に `npm install --prefix <dir> playwright-core@1.61.1` で入れて、`--playwright <dir>/node_modules/playwright-core` で渡す (playwright-core はブラウザをダウンロードしない)。Chrome が標準の場所に無ければ `--chrome <実行ファイル>` で渡す
     - scenario は `.mjs` でリポジトリの外に書く。最初に開く `url`、ログインなど録画しない準備の `setup`、録画する操作の default export の関数を export する。書き方とオプションはスクリプトの先頭のコメントにある
     - 見る人が追える速さで操作する。入力は `locator.pressSequentially(<文字列>, { delay: 80 })` で 1 文字ずつ打ち、スクロールは scenario に渡される `scroll(<px>)` で小刻みに送り、結果が出たら `pause(1000)` で見せる。カーソルと操作名は既定で表示される
-    - `node <SKILL.md のディレクトリ>/scripts/record-browser.mjs --scenario <scenario.mjs> --out <path>.mp4` で撮る (既定は 1280x800・30fps)。バックグラウンドにせず、終わるのを待つ。失敗すると終了コード 1 で終わり、mp4 は残らない。エラーを見て scenario を直し、撮り直す
-    - 撮れたら `ffmpeg -i <path>.mp4 -vf "fps=9/<動画の秒数>,scale=640:-2,tile=3x3" -frames:v 1 <コマ割り>.png` で 9 コマを並べた画像を作り、意図した画面と操作が写っているかを見る
+    - `node <SKILL.md のディレクトリ>/scripts/record-browser.mjs --scenario <scenario.mjs> --out <path>.mp4` で撮る (既定は 1280x800・30fps)。バックグラウンドにせず、終わるのを待つ。成否は終了コードで判断する (失敗すると 1。録画を始めた後の失敗では書きかけの mp4 を消すが、始める前の失敗では前回撮った同名の mp4 が残る)。エラーを見て scenario を直し、撮り直す
+    - 撮れたら、動画の秒数を `ffprobe -v error -show_entries format=duration -of csv=p=0 <path>.mp4` で取り、`ffmpeg -i <path>.mp4 -vf "fps=9/<秒数>,scale=640:-2,tile=3x3" -frames:v 1 <コマ割り>.png` で 9 コマを並べた画像を作って、意図した画面と操作が写っているかを見る
   - 録画できないときは、スクリーンショットを撮り、動きの違いを文章で補う
 - 新しい画面・新機能 (画面を伴うもの) を実装する PR では、その機能を一通り操作するウォークスルーの動画を撮って添付する。before / after のスクリーンショットとは別に撮る (静止画では操作の流れが分からないため)
   - 既存の画面に新しい機能を足す PR も対象にする。その画面の before / after に加えて撮る
