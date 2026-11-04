@@ -10,14 +10,20 @@ description: UI の変更を含む作業で、UI を変更する前 (before の�
   - 影響を受ける画面は撮影する。before は PR の分岐元 (ベースブランチとの merge-base) のコード、after は PR のブランチのコードで、同じ画面・同じ状態を撮って並べる。並べ方は PR テンプレートに形式があればその形式、無ければ [フォールバックのテンプレート](../pr-template/assets/pull_request_template.md) の `## 動作確認スクリーンショット` のコメントの形式 (before / after の表と、新しい画面の before の書き方) にする
   - 撮影できなかった画面があれば、その画面名と理由を書く
 - 動き・アニメーション・画面遷移、ホバーやスクロールなどの操作に伴う変化は、スクリーンショットでは確認しにくいので、before / after の動画を撮る。以下の撮影・保存・添付の規則は動画にも同じように適用する
-  - 形式は `.mp4` / `.mov` / `.webm`。H.264 の `.mp4` が最も互換性が高い
+  - 形式は `.mp4` / `.mov` / `.webm`。H.264 の `.mp4` が最も互換性が高い。GIF にはしない (コマが落ちて色も減るうえ、プレーヤーで止めたり戻したりできない)
   - サイズの上限は無料プランのリポジトリで 10MB、有料プランで 100MB。超えるときは、確認したい操作の範囲に絞って撮り直すか、長辺 1280px 以下に縮めて再エンコードする (例: `ffmpeg -i in.mov -vf "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2" -c:v libx264 -pix_fmt yuv420p -crf 28 -an out.mp4`。`min()` は元が小さい動画を拡大しないため)。ffmpeg が無い macOS では `avconvert -s in.mov -p Preset1280x720 -o out.mp4` を使う
   - 録画時間の上限 (Android の 180 秒など) を超える操作は、先に操作のまとまりごとに分けてから撮る
-  - 録画はバックグラウンドで始め、その間に画面を操作する
+  - iOS シミュレータ・Android エミュレータの録画はバックグラウンドで始め、その間に画面を操作する
     - バックグラウンドで始めるときは、出力を切り離して `nohup <録画のコマンド> >/dev/null 2>&1 & echo $! > <pid ファイル>` の形にする (切り離さないと、ツールの呼び出しが返らなくなる)。録画のプロセスが終わるのは `for i in $(seq <上限の秒数>); do kill -0 "$(cat <pid ファイル>)" 2>/dev/null || break; sleep 1; done` で待つ。上限までに終わらなければ `kill -KILL "$(cat <pid ファイル>)"` で止め、途中のファイルは消して、撮れなかった旨を報告する
     - iOS シミュレータは `xcrun simctl io booted recordVideo --codec=h264 <path>.mov` を上の形で始め、操作を終えたら `kill -INT "$(cat <pid ファイル>)"` で止める (ほかの simctl のプロセスを巻き込まないよう、録画のプロセスだけに送る)。SIGINT 以外で止めるとファイルが書き終わらずに壊れるので、上限 30 秒で終わるのを待ってから使う。QuickTime 形式で書き出されるので拡張子は `.mov`
     - Android エミュレータは `adb shell screenrecord --time-limit <秒> /sdcard/<name>.mp4` に操作に要る秒数を指定して上の形で始め、その間に操作する。`<秒>` + 10 秒を上限に終わるのを待ってから取り出す (adb を強制終了すると mp4 が壊れることがある)。既定は 180 秒で、Android の版によってはそれが上限 (上限を超える値を渡すと録画されない)。`adb pull` で取り出し、端末側のファイルは消す
-    - Web アプリや管理画面などのブラウザで動く画面は、Playwright の動画録画を使う
+  - Web アプリや管理画面などのブラウザで動く画面は、この SKILL.md と同じディレクトリの `scripts/record-browser.mjs` で撮る。操作を書いた scenario を渡すと、Playwright で操作しながら録画し、H.264 の `.mp4` を書き出す
+    - Playwright の `recordVideo` や `page.screencast.start({ path })` では直接録画しない。800px 以内に縮小し、VP8・1Mbps の webm にするので、文字が潰れてカクつく。Claude in Chrome の `gif_creator` など GIF を作る道具も使わない
+    - 要るものは Node.js、Playwright 1.61 以上 (`playwright-core` か `playwright`)、Chrome、libx264 入りの ffmpeg。Playwright はカレントディレクトリから解決するので、プロジェクトに入っていればそのディレクトリで実行する。無いか古いときは、リポジトリの外に `npm install --prefix <dir> playwright-core@1.61.1` で入れて、`--playwright <dir>/node_modules/playwright-core` で渡す (playwright-core はブラウザをダウンロードしない)。Chrome が標準の場所に無ければ `--chrome <実行ファイル>` で渡す
+    - scenario は `.mjs` でリポジトリの外に書く。最初に開く `url`、ログインなど録画しない準備の `setup`、録画する操作の default export の関数を export する。書き方とオプションはスクリプトの先頭のコメントにある
+    - 見る人が追える速さで操作する。入力は `locator.pressSequentially(<文字列>, { delay: 80 })` で 1 文字ずつ打ち、スクロールは scenario に渡される `scroll(<px>)` で小刻みに送り、結果が出たら `pause(1000)` で見せる。カーソルと操作名は既定で表示される
+    - `node <SKILL.md のディレクトリ>/scripts/record-browser.mjs --scenario <scenario.mjs> --out <path>.mp4` で撮る (既定は 1280x800・30fps)。バックグラウンドにせず、終わるのを待つ。失敗すると終了コード 1 で終わり、mp4 は残らない。エラーを見て scenario を直し、撮り直す
+    - 撮れたら `ffmpeg -i <path>.mp4 -vf "fps=9/<動画の秒数>,scale=640:-2,tile=3x3" -frames:v 1 <コマ割り>.png` で 9 コマを並べた画像を作り、意図した画面と操作が写っているかを見る
   - 録画できないときは、スクリーンショットを撮り、動きの違いを文章で補う
 - 新しい画面・新機能 (画面を伴うもの) を実装する PR では、その機能を一通り操作するウォークスルーの動画を撮って添付する。before / after のスクリーンショットとは別に撮る (静止画では操作の流れが分からないため)
   - 既存の画面に新しい機能を足す PR も対象にする。その画面の before / after に加えて撮る
