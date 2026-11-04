@@ -27,6 +27,7 @@
 //   export default async function ({ page, context, pause, scroll }) {}  // 録画する操作 (必須)
 //     pause(ms)               : 画面を見せるために待つ
 //     scroll(deltaY)          : マウスのある位置を小刻みにスクロールする (負の値で上へ)
+//   録画するのは最初のタブだけ。新しいタブやポップアップを開く操作は、同じタブで開くように書く
 //
 // 成功すると、書き出した mp4 の絶対パスを stdout に 1 行出す。
 
@@ -95,7 +96,7 @@ function loadPlaywright() {
     }
     const { version } = req(pkgPath);
     const [major, minor] = version.split('.').map(Number);
-    if (major < MIN_PLAYWRIGHT[0] || (major === MIN_PLAYWRIGHT[0] && minor < MIN_PLAYWRIGHT[1])) {
+    if (!Number.isInteger(major) || !Number.isInteger(minor) || major < MIN_PLAYWRIGHT[0] || (major === MIN_PLAYWRIGHT[0] && minor < MIN_PLAYWRIGHT[1])) {
       fail(`${path.dirname(pkgPath)} の Playwright は ${version}。${MIN_PLAYWRIGHT.join('.')} 以上が要る`);
     }
     return req(path.dirname(pkgPath)).chromium;
@@ -218,8 +219,11 @@ try {
   await encoder.finish(endMs);
 } catch (e) {
   failed = true;
-  encoder?.abort();
-  rmSync(outPath, { force: true });
+  // 録画を始める前に失敗したときは、前回撮った同名のファイルを消さない
+  if (encoder) {
+    encoder.abort();
+    rmSync(outPath, { force: true });
+  }
   console.error(`record-browser: ${e.stack ?? e}`);
 } finally {
   await browser.close();
