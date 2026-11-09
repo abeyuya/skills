@@ -17,6 +17,7 @@ PR 作成前のローカルブランチに対して AI レビューを行うた�
   - `{repo}`: `git remote get-url origin` の URL 末尾セグメント (`.git` を除く、取得失敗時は `local`)
   - `{timestamp}`: `date -u +%Y%m%dT%H%M%SZ` の出力
   - `{branch}`: 現在ブランチ名の英数記号以外 (`/` 等) を `-` に置換
+- `REQUIREMENTS_CONTEXT` (長文): このブランチで対応する issue の title / 本文や、作業の要件。`compose-review` にそのまま転送し、5-1 の要件カバレッジ (要件を起点に、対応する差分が無いものを探す) に使わせる。ローカルブランチには PR 本文が無いので、渡さなければ要件カバレッジは行わない。形式は `run-pr-review` Step 2 の `REQUIREMENTS_CONTEXT` に揃え、`^[A-Z_]+=` で始まる行は先頭にスペース 1 文字を入れて escape する。
 
 caller プロジェクト固有の方針は **プロジェクト指示ファイル** に置く運用。読み込み手順は `compose-review` skill 側に集約しているため、本 skill では扱わない。
 
@@ -45,6 +46,7 @@ MODE=local
 BASE_BRANCH=<値>
 MAX_INLINE_COMMENTS=<値>
 HANDOFF_PATH=<本 step で生成した /tmp/compose-review-local-<branch (/ 等を - に置換)>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
+REQUIREMENTS_CONTEXT=<caller から渡された値。長文なので必ず末尾に置く>
 ```
 
 #### 戻り値の扱い
