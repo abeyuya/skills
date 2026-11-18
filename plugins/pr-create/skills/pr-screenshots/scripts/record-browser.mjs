@@ -196,7 +196,8 @@ const ease = (t) => t * t * t * (10 - 15 * t + 6 * t * t);
 async function tween(duration, step) {
   const start = performance.now();
   for (let tick = 1; ; tick++) {
-    const t = Math.min((performance.now() - start) / duration, 1);
+    // duration が 0 だと 0 / 0 で NaN になり、1 に届かない
+    const t = duration > 0 ? Math.min((performance.now() - start) / duration, 1) : 1;
     await step(ease(t));
     if (t >= 1) return;
     await sleep(Math.max(0, start + tick * TICK_MS - performance.now()));
@@ -226,7 +227,8 @@ function installOverlay(marker) {
       const frame = [...document.querySelectorAll('iframe, frame')].find((f) => f.contentWindow === e.source);
       if (!frame) return;
       const rect = frame.getBoundingClientRect();
-      emit(message[0], message[1] + rect.left + frame.clientLeft, message[2] + rect.top + frame.clientTop);
+      const { paddingLeft, paddingTop } = getComputedStyle(frame);
+      emit(message[0], message[1] + rect.left + frame.clientLeft + parseFloat(paddingLeft), message[2] + rect.top + frame.clientTop + parseFloat(paddingTop));
     },
     true,
   );
@@ -251,7 +253,7 @@ function installOverlay(marker) {
     host.setAttribute('aria-hidden', 'true');
     layer = host.attachShadow({ mode: 'closed' });
     arrow = style(document.createElementNS(SVG, 'svg'), {
-      position: 'fixed', left: '-2px', top: '-2px', width: '26px', height: '36px', overflow: 'visible',
+      position: 'fixed', left: '-2px', top: '-2px', width: '26px', height: '36px', overflow: 'visible', visibility: 'hidden',
       filter: 'drop-shadow(0 2px 3px rgba(0,0,0,.45))', 'transform-origin': '2px 2px', 'will-change': 'transform',
     });
     arrow.setAttribute('viewBox', '-2 -2 26 36');
@@ -281,22 +283,28 @@ function installOverlay(marker) {
     window.addEventListener(event, (e) => e.target !== host && host?.isConnected && raise(), true);
   }
 
-  let position = [0, 0];
+  // 新しい document では、マウスのイベントが来るまで位置が分からない。それまでは描かない
+  let position;
   let pressed = false;
   const place = () => {
-    arrow.style.setProperty('transform', `translate(${position[0]}px, ${position[1]}px) scale(${pressed ? 0.82 : 1})`, 'important');
+    if (!position) return;
+    style(arrow, { visibility: 'visible', transform: `translate(${position[0]}px, ${position[1]}px) scale(${pressed ? 0.82 : 1})` });
+  };
+  const locate = (x, y) => {
+    position = [x, y];
+    window[marker]?.(x, y);
   };
   const draw = {
     move(x, y) {
       if (!ensure()) return;
-      position = [x, y];
+      locate(x, y);
       place();
       // shadow DOM の中の dialog は toggle が外に出ず、上の listener では拾えない
       if (performance.now() - raisedAt > 250) raise();
     },
     down(x, y) {
       if (!ensure()) return;
-      position = [x, y];
+      locate(x, y);
       pressed = true;
       place();
       const ring = style(document.createElement('div'), {
@@ -450,6 +458,11 @@ async function installPointer(page, context) {
     return true;
   });
 
+  // page.click(selector) などの割り込めない操作でもマウスは動く。ページから実際の位置を受け取らないと、
+  // 次に滑らせるときに古い位置へ戻ってから動き出す
+  await context.exposeBinding(OVERLAY_MARKER, ({ page: source }, x, y) => {
+    if (source === page && !gliding) Object.assign(at, { x, y });
+  });
   await context.addInitScript(installOverlay, OVERLAY_MARKER);
   await Promise.all(page.frames().map((frame) => frame.evaluate(installOverlay, OVERLAY_MARKER).catch(() => {})));
   // 新しい document のカーソルは、マウスが動くまで描かれない
