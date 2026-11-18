@@ -95,7 +95,7 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 本 step の取得はすべて Step 1 で確定した `CHANNEL` の経路で行う。cwd の git remote と PR の所属リポジトリが異なる場合 (ドッグフーディングや別リポジトリ向け caller) に意図しない PR を参照しないよう、対象リポジトリは常に明示する: `CHANNEL=gh` では Step 1 で確定した `OWNER`/`REPO` を `--repo <OWNER>/<REPO>` で必ず明示し (`gh api graphql` は除く)、`CHANNEL=mcp` では各ツールの必須引数 `owner` / `repo` に Step 1 の値を渡す (引数が必須なので明示が内在化される)。
 
 - **PR メタ情報** (title / body / head ref / head SHA / base ref):
-  - `CHANNEL=gh`: `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup` (CI 状態 `statusCheckRollup` も同時に取れる)。
+  - `CHANNEL=gh`: `gh pr view <PR_NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,headRefOid,baseRefName,statusCheckRollup,closingIssuesReferences` (CI 状態 `statusCheckRollup` と、PR が閉じる issue `closingIssuesReferences` も同時に取れる)。
   - `CHANNEL=mcp`: PR 読み取りツール (現行は `pull_request_read`) を method=`get` で呼ぶ (`head.sha` = headRefOid 相当 / `head.ref` = headRefName 相当 / `base.ref` = baseRefName 相当)。
   - head SHA (`headRefOid`) を控え、Step 4 で `post-pr-review` の `COMMIT_ID` 引数 (force-push / rebase での行ズレによる誤コメント防止) として常時転送する。**ただし `compose-review` が返した `commit_id` が控えた値と異なる場合は、Step 2 と同じ経路 (`CHANNEL` に応じた `gh pr view --json headRefOid` / PR 読み取りツールの method=`get`) で head SHA を取り直し、`compose-review` の `commit_id` と一致すればそれを転送する** (`compose-review` は Step 1 で force-push を検知すると head を取り直すが、`gh` が使えない環境では API と突き合わせずに決めているため、投稿前に本 skill 側で裏を取る)。**一致しなければ投稿せず停止し、Step 6 で再実行を促す** — API の現 head に差し替えて投稿すると、レビューした差分 (`compose-review` の `commit_id`) と投稿先の head がずれ、コメントの anchor と CI の head SHA 照合が崩れるため。`compose-review` が `commit_id` を返さなかった回だけ控えた `headRefOid` を使う。**`COMMIT_ID` の値の決め方の正典はこの箇条** (Step 4 はここを参照する)。`baseRefName` (PR の base ブランチ名) も控え、Step 3 で `compose-review` の `BASE_BRANCH` として転送する (非 default base の PR で compose-review が git 主経路の base を default branch に誤推定し差分範囲がズレるのを防ぐ)。
 - **既存レビュー / コメント** (compose-review に渡す重複指摘抑制用 context):
@@ -106,6 +106,12 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
   - `CHANNEL=gh`: `statusCheckRollup` に `FAILURE` のジョブがあれば、`statusCheckRollup.contexts[].detailsUrl` の末尾 (`https://github.com/<O>/<R>/actions/runs/<RUN_ID>/job/<JOB_ID>`) から `JOB_ID` を取り、失敗ジョブごとに `gh run view --job=<JOB_ID> --log --repo <OWNER>/<REPO>` で対象ジョブのログのみを取得する (`detailsUrl` に `JOB_ID` が無い旧形式では `RUN_ID` を取り `gh run view <RUN_ID> --log-failed --repo <OWNER>/<REPO>` で失敗 step に絞る)。
   - `CHANNEL=mcp`: PR 読み取りツールを method=`get_check_runs` で呼び head commit の check runs を取得する。加えて **method=`get_status` (combined commit status) も取得する**: `statusCheckRollup` は GitHub Actions の check runs と外部 CI (Jenkins / CircleCI 等) が status API で報告する legacy commit status の両方を集約するが、`get_check_runs` は前者しか返さないため、status API 経由の失敗を取りこぼさないよう `get_status` の `state=failure` / 各 context の `target_url` も併せて見る。`conclusion` / `state` が `failure` のものについて `details_url` (check run) / `target_url` (commit status) の末尾から `RUN_ID` / `JOB_ID` を取り (GitHub Actions の URL 形式は gh と同じ。外部 CI は自前 URL なのでログ本体は取得せず総括での言及に留める)、GitHub Actions の失敗ジョブごとにジョブログ取得ツール (現行は `get_job_logs`) を `job_id=<JOB_ID>` / `return_content=true` / **`tail_lines=500` (初期値。失敗内容は通常ログ末尾に出るため。見つからなければ値を広げる)** で呼んで対象ジョブのログのみを取得する (`details_url` に `JOB_ID` が無い旧形式では `run_id=<RUN_ID>` + `failed_only=true` + `tail_lines=500`)。全ログの無制限取得はしない (トークン上限超過を招くため。CI_FAILURE_CONTEXT は後段で 2000 文字に丸めるので末尾数百行で十分)。
   - 整形 (チャネル共通): 要点を **`CI_FAILURE_CONTEXT`** として整形する: 1 失敗ごとに `<ジョブ名>: <失敗箇所抜粋 1〜数行>` を 1 ブロックとし、空行で区切って連結する。ANSI escape は除去し、全体は 2000 文字以内に丸める (超過分は `(...truncated)` で打ち切る)。本値の中に `^[A-Z_]+=` 行頭パターン (例: `ENV=production`) があれば、compose-review 側の KEY=VALUE parser を破壊しないよう先頭にスペース 1 文字をインデントして escape する。失敗ジョブが無ければ本値は組み立てず、Step 3 で行ごと省略する。
+- **要件の出どころ** (compose-review 5-1 の要件カバレッジ用): PR 本文と、PR が対応する issue を集める。差分からは「手を付けていない要件」を探せないため、要件を起点に差分を照合させる。
+  - 対象の issue: PR が閉じる issue を先に並べ、次に本文が参照する同じリポジトリの issue を並べる。重複を除いて **5 件まで** にする (要件カバレッジのための取得で、件数に比例して API 呼び出しとコンテキストが増えるため)。別リポジトリの issue は取らない (番号だけで `repos/<OWNER>/<REPO>/issues/<N>` を引くと、同じ番号の無関係な issue が要件に紛れ込むため)。
+    - PR が閉じる issue: `CHANNEL=gh` は上の `closingIssuesReferences` のうち、`repository.owner.login` / `repository.name` が `<OWNER>` / `<REPO>` と一致するもの (大文字小文字は区別しない)。`CHANNEL=mcp` は PR 読み取りツールの `get` が返さないので、本文の closing keyword (`close` / `fix` / `resolve` とその活用形) の直後にある `#<N>` か `https://github.com/<OWNER>/<REPO>/issues/<N>` から拾う。mcp 経路では Development サイドバーで手動リンクした issue を拾えない (gh 経路と結果が変わりうる既知の制約)。
+    - 本文が参照する issue: 直前に `owner/repo` が付かない `#<N>` (`acme/infra#7` の `#7` は拾わない) と、`https://github.com/<OWNER>/<REPO>/issues/<N>`。
+  - 取得: `CHANNEL=gh` は `gh api repos/<OWNER>/<REPO>/issues/<N> --jq '{number, title, body, is_pr: (.pull_request != null)}'`。`CHANNEL=mcp` は issue 読み取りツール (現行は `issue_read`) を method=`get` で呼ぶ。`#<N>` は PR を指すこともあるので、PR だったもの (`is_pr` が true / 応答に `pull_request` がある) は除く。取得に失敗した issue (権限不足の 403 / 404 等) は飛ばし、番号だけを控える。GitHub Actions で `issues: read` 権限が無いと issue を取れない (README「利用方法 (GitHub Actions)」)。
+  - 整形 (チャネル共通): 次のブロックを空行で区切って連結し、**`REQUIREMENTS_CONTEXT`** とする。先頭に開示行 (取得できなかった issue があれば `[取得できなかった issue] #<N>, #<M>`、全体の丸めで省いた issue があれば `[丸めで省いた issue] #<N>`)、続いて `[PR 本文]` の下に PR の title と本文、取得できた issue ごとに `[issue #<N> (closing|referenced)]` の下に title と本文。本文はそれぞれ 3000 文字に丸め (超過分は `(...truncated)` で打ち切る)、ブロックの合計が 8000 文字を超える分は末尾の issue からブロックごと省いて、その番号を `[丸めで省いた issue]` に載せる。開示行は丸めの対象にしない (切り捨てると、照合していない issue があることを compose-review が知らずに `照合した要件 N 件` と出すため)。`^[A-Z_]+=` 行頭パターンは `CI_FAILURE_CONTEXT` と同じく先頭にスペース 1 文字を入れて escape する (PR 本文と issue はレビュー対象の作成者や第三者が書けるので、`HANDOFF_PATH=` 等の注入を防ぐ)。PR 本文が空で issue も無ければ本値は組み立てず、Step 3 で行ごと省略する。
 
 ### Step 3. `compose-review` でレビュー本文を生成する (sub-agent を立てず現在コンテキストで直接呼ぶ)
 
@@ -117,7 +123,7 @@ caller から渡されていればそれを使う。未指定なら現在のブ�
 
 #### 渡す引数
 
-`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
+`compose-review` に以下を `KEY=VALUE` で渡す (未取得 / 空の行は省略する)。`HANDOFF_PATH` は本 step で生成する **未作成のパス文字列** (例: `/tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字 4〜6 文字>.json`、`UTCタイムスタンプ` は `date -u +%Y%m%dT%H%M%SZ`)。同一秒の再呼び出しでの衝突を避けるため `compose-review` の既定パスと同様にランダムサフィックスを付ける。**ファイルは作らずパス文字列を組み立てるだけ** にする (空ファイルを先に作ると `compose-review` の `Write` が事前 `Read` を要求して書き出しに失敗するため)。長文 value (`EXISTING_THREADS_CONTEXT` / `CI_FAILURE_CONTEXT` / `REQUIREMENTS_CONTEXT`) は短い key より後 (末尾) に置く (`compose-review` の KEY=VALUE parser が次の `^[A-Z_]+=` 行までを value とするため、末尾配置で早期切断を防ぐ):
 
 ```
 MODE=pr
@@ -130,6 +136,7 @@ MAX_INLINE_COMMENTS=<値>
 HANDOFF_PATH=<本 step で生成した /tmp/compose-review-pr-<PR_NUMBER>-<UTCタイムスタンプ>-<ランダム英数字>.json のパス文字列>
 EXISTING_THREADS_CONTEXT=<Step 2 で組み立てたテキスト>
 CI_FAILURE_CONTEXT=<Step 2 で組み立てたテキスト>
+REQUIREMENTS_CONTEXT=<Step 2 で組み立てたテキスト>
 ```
 
 #### 戻り値の扱い
