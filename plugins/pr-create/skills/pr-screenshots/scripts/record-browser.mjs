@@ -367,10 +367,11 @@ async function installPointer(page, context) {
     }
   };
 
-  // locator の対象まで滑らせる。滑らせられなかったら false
-  const approach = async (locator, { position, force, timeout } = {}) => {
+  // locator の対象まで滑らせる。滑らせられなかったら false。
+  // 後ろに元の操作が控えていないとき (patient) は、ここが待ち切らないと操作そのものが失敗するので、元の操作と同じだけ待つ
+  const approach = async (locator, { position, force, timeout, patient } = {}) => {
     // timeout の 0 は「待ち続ける」の意味
-    const limit = Math.min(timeout || Infinity, APPROACH_TIMEOUT_MS);
+    const limit = patient ? timeout : Math.min(timeout || Infinity, APPROACH_TIMEOUT_MS);
     try {
       if (!force) await locator.waitFor({ state: 'visible', timeout: limit });
       // 操作の側のスクロールは一瞬で飛ぶので、先に滑らかに寄せておく。止まるのを待たないと、動いている途中の位置を目標にしてしまう
@@ -381,8 +382,16 @@ async function installPointer(page, context) {
         };
         const margin = 48;
         const [x, y] = point();
-        if (x >= margin && x <= innerWidth - margin && y >= margin && y <= innerHeight - margin) return;
-        el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+        const centered = x >= margin && x <= innerWidth - margin && y >= margin && y <= innerHeight - margin;
+        // 中心が window の中にあっても、スクロール領域や iframe に切られて見えていないことがある
+        const visible = await new Promise((resolve) => {
+          new IntersectionObserver(([entry], observer) => {
+            observer.disconnect();
+            resolve(entry.intersectionRatio);
+          }).observe(el);
+        });
+        if (centered && visible > 0.99) return;
+        el.scrollIntoView({ behavior: 'smooth', block: centered ? 'nearest' : 'center', inline: 'nearest' });
         const deadline = performance.now() + 3000;
         for (let last = point(), still = 0; still < 6 && performance.now() < deadline; ) {
           await new Promise(requestAnimationFrame);
@@ -452,7 +461,7 @@ async function installPointer(page, context) {
   wrap('dragTo', async (source, [target, { trial, force, timeout, sourcePosition, targetPosition } = {}]) => {
     if (trial || !(await approach(source, { position: sourcePosition, force, timeout }))) return false;
     await mouse.down();
-    const reached = await approach(target, { position: targetPosition, force, timeout });
+    const reached = await approach(target, { position: targetPosition, force, timeout, patient: true });
     await mouse.up();
     if (!reached) throw new Error('dragTo の移動先の位置を取れなかった');
     return true;
