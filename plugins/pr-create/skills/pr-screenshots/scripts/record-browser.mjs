@@ -326,13 +326,18 @@ function installOverlay(marker) {
   let badge;
   window.addEventListener(marker, (e) => {
     if (!ensure()) return;
+    // マウスを動かさずに位置だけ描く。実際の位置が分かっているときは、そちらが正しい
+    if (e.detail.at) {
+      position ??= e.detail.at;
+      return place();
+    }
     badge?.remove();
     badge = style(document.createElement('div'), {
       position: 'fixed', left: '50vw', bottom: '32px', transform: 'translateX(-50%)', padding: '8px 18px', 'border-radius': '10px',
       background: 'rgba(17,17,17,.82)', color: '#fff', font: '600 22px/1.4 system-ui, sans-serif', 'white-space': 'nowrap',
       'box-shadow': '0 4px 14px rgba(0,0,0,.3)',
     });
-    badge.textContent = String(e.detail);
+    badge.textContent = String(e.detail.key);
     layer.append(badge);
     const shown = badge;
     shown.animate([{ opacity: 1, offset: 0.75 }, { opacity: 0 }], { duration: 1400 }).finished.finally(() => shown.remove());
@@ -371,8 +376,7 @@ async function installPointer(page, context) {
   const reach = async (locator, { position, force } = {}, limit) => {
     if (!force) await locator.waitFor({ state: 'visible', timeout: limit });
     // 操作の側のスクロールは一瞬で飛ぶので、先に滑らかに寄せておく
-    const scrolled = await locator.evaluate(async (el, offset) => {
-      const margin = 48;
+    const sight = await locator.evaluate(async (el, offset) => {
       // 中心が window の中にあっても、スクロール領域や iframe に切られて見えていないことがある。
       // 対象が画面より大きいと全体は収まらないので、押す位置が見えているかで決める
       const entry = await new Promise((resolve) => {
@@ -389,16 +393,18 @@ async function installPointer(page, context) {
       const y = rect.top + (offset?.y ?? rect.height / 2);
       const seen = entry?.intersectionRect ?? rect;
       const shown = x >= seen.left && x <= seen.right && y >= seen.top && y <= seen.bottom;
-      if (shown && x >= margin && x <= innerWidth - margin && y >= margin && y <= innerHeight - margin) return false;
+      if (shown && x >= 0 && x <= innerWidth && y >= 0 && y <= innerHeight) return 'shown';
       // scrollIntoView は要素の中の 1 点を狙えない。position の指定があるときに要素を中央へ寄せると、押す位置から離れることがある
-      if (offset) return false;
+      if (offset) return 'hidden';
       el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-      return true;
+      return 'scrolled';
     }, position ?? null, { timeout: limit });
+    // 見えていない位置へは滑らせない (画面の端で止まり、押す場所と違うところを指してしまう)
+    if (sight === 'hidden') return false;
     let box = await locator.boundingBox({ timeout: limit });
     // 止まるのを待たないと、動いている途中の位置を目標にしてしまう。iframe の中の対象は親のページのスクロールで動くので、
     // その frame の中の座標ではなく、画面上の位置で確かめる
-    for (let still = 0, deadline = performance.now() + 3000; scrolled && still < 2 && performance.now() < deadline; ) {
+    for (let still = 0, deadline = performance.now() + 3000; sight === 'scrolled' && still < 2 && performance.now() < deadline; ) {
       await sleep(60);
       const next = await locator.boundingBox({ timeout: limit });
       still = next?.x === box?.x && next?.y === box?.y ? still + 1 : 0;
@@ -426,8 +432,9 @@ async function installPointer(page, context) {
     return raw.click(x, y, options);
   };
 
-  const showKey = (key) =>
-    page.evaluate(([marker, detail]) => window.dispatchEvent(new CustomEvent(marker, { detail })), [OVERLAY_MARKER, key]).catch(() => {});
+  const tell = (detail) =>
+    page.evaluate(([marker, sent]) => window.dispatchEvent(new CustomEvent(marker, { detail: sent })), [OVERLAY_MARKER, detail]).catch(() => {});
+  const showKey = (key) => tell({ key });
   const keyboard = page.keyboard;
   const rawPress = keyboard.press.bind(keyboard);
   keyboard.press = async (key, options) => {
@@ -483,13 +490,12 @@ async function installPointer(page, context) {
   });
   await context.addInitScript(installOverlay, OVERLAY_MARKER);
   await Promise.all(page.frames().map((frame) => frame.evaluate(installOverlay, OVERLAY_MARKER).catch(() => {})));
-  // 新しい document のカーソルは、マウスが動くまで描かれない
-  const redraw = () => {
-    if (!gliding) raw.move(at.x, at.y).catch(() => {});
-  };
+  // 新しい document のカーソルは、マウスのイベントが来るまで描かれない。実際のマウスを動かして描かせると、
+  // その位置の hover が発火し、進行中の操作のマウスの位置もずらすので、位置だけを伝える
+  const redraw = () => tell({ at: [at.x, at.y] });
   page.on('framenavigated', (frame) => frame === page.mainFrame() && redraw());
   page.on('domcontentloaded', redraw);
-  await raw.move(at.x, at.y);
+  await redraw();
 }
 
 const scenarioPath = path.resolve(opt.scenario);
