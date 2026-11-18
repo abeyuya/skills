@@ -367,49 +367,53 @@ async function installPointer(page, context) {
     }
   };
 
-  // locator の対象まで滑らせる。滑らせられなかったら false。
-  // 後ろに元の操作が控えていないとき (patient) は、ここが待ち切らないと操作そのものが失敗するので、元の操作と同じだけ待つ
-  const approach = async (locator, { position, force, timeout, patient } = {}) => {
-    // timeout の 0 は「待ち続ける」の意味
-    const limit = patient ? timeout : Math.min(timeout || Infinity, APPROACH_TIMEOUT_MS);
-    try {
-      if (!force) await locator.waitFor({ state: 'visible', timeout: limit });
-      // 操作の側のスクロールは一瞬で飛ぶので、先に滑らかに寄せておく。止まるのを待たないと、動いている途中の位置を目標にしてしまう
-      await locator.evaluate(async (el) => {
-        const point = () => {
-          const rect = el.getBoundingClientRect();
-          return [rect.left + rect.width / 2, rect.top + rect.height / 2];
-        };
-        const margin = 48;
-        const [x, y] = point();
-        const centered = x >= margin && x <= innerWidth - margin && y >= margin && y <= innerHeight - margin;
-        // 中心が window の中にあっても、スクロール領域や iframe に切られて見えていないことがある
-        const visible = await new Promise((resolve) => {
-          new IntersectionObserver(([entry], observer) => {
-            observer.disconnect();
-            resolve(entry.intersectionRatio);
-          }).observe(el);
+  // locator の対象まで滑らせる。対象が表示されていなければ false。limit までに現れなければ投げる
+  const reach = async (locator, { position, force } = {}, limit) => {
+    if (!force) await locator.waitFor({ state: 'visible', timeout: limit });
+    // 操作の側のスクロールは一瞬で飛ぶので、先に滑らかに寄せておく
+    const scrolled = await locator.evaluate(async (el, offset) => {
+      const margin = 48;
+      // 中心が window の中にあっても、スクロール領域や iframe に切られて見えていないことがある。
+      // 対象が画面より大きいと全体は収まらないので、押す位置が見えているかで決める
+      const entry = await new Promise((resolve) => {
+        const observer = new IntersectionObserver(([first]) => {
+          observer.disconnect();
+          resolve(first);
         });
-        if (centered && visible > 0.99) return;
-        el.scrollIntoView({ behavior: 'smooth', block: centered ? 'nearest' : 'center', inline: 'nearest' });
-        const deadline = performance.now() + 3000;
-        for (let last = point(), still = 0; still < 6 && performance.now() < deadline; ) {
-          await new Promise(requestAnimationFrame);
-          const now = point();
-          still = now[0] === last[0] && now[1] === last[1] ? still + 1 : 0;
-          last = now;
-        }
-      }, null, { timeout: limit });
-      const box = await locator.boundingBox({ timeout: limit });
-      if (!box) return false;
-      const clamp = (value, max) => Math.min(Math.max(value, 0), max - 1);
-      await glide(clamp(box.x + (position?.x ?? box.width / 2), width), clamp(box.y + (position?.y ?? box.height / 2), height));
-      await sleep(SETTLE_MS);
+        observer.observe(el);
+        // 描画が止まっているページでは callback が来ない
+        setTimeout(resolve, 500);
+      });
+      const rect = el.getBoundingClientRect();
+      const x = rect.left + (offset?.x ?? rect.width / 2);
+      const y = rect.top + (offset?.y ?? rect.height / 2);
+      const seen = entry?.intersectionRect ?? rect;
+      const shown = x >= seen.left && x <= seen.right && y >= seen.top && y <= seen.bottom;
+      if (shown && x >= margin && x <= innerWidth - margin && y >= margin && y <= innerHeight - margin) return false;
+      // scrollIntoView は要素の中の 1 点を狙えない。position の指定があるときに要素を中央へ寄せると、押す位置から離れることがある
+      if (offset) return false;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
       return true;
-    } catch {
-      return false;
+    }, position ?? null, { timeout: limit });
+    let box = await locator.boundingBox({ timeout: limit });
+    // 止まるのを待たないと、動いている途中の位置を目標にしてしまう。iframe の中の対象は親のページのスクロールで動くので、
+    // その frame の中の座標ではなく、画面上の位置で確かめる
+    for (let still = 0, deadline = performance.now() + 3000; scrolled && still < 2 && performance.now() < deadline; ) {
+      await sleep(60);
+      const next = await locator.boundingBox({ timeout: limit });
+      still = next?.x === box?.x && next?.y === box?.y ? still + 1 : 0;
+      box = next;
     }
+    if (!box) return false;
+    const clamp = (value, max) => Math.min(Math.max(value, 0), max - 1);
+    await glide(clamp(box.x + (position?.x ?? box.width / 2), width), clamp(box.y + (position?.y ?? box.height / 2), height));
+    await sleep(SETTLE_MS);
+    return true;
   };
+  // 後ろに元の操作が控えているので、長くは待たず、滑らせられなくても失敗にしない (待ち方と失敗の報告は元の操作に任せる)。
+  // timeout の 0 は「待ち続ける」の意味
+  const approach = (locator, options = {}) =>
+    reach(locator, options, Math.min(options.timeout || Infinity, APPROACH_TIMEOUT_MS)).catch(() => false);
 
   mouse.move = async (x, y, options = {}) => {
     if (!options.steps) return glide(x, y);
@@ -461,9 +465,14 @@ async function installPointer(page, context) {
   wrap('dragTo', async (source, [target, { trial, force, timeout, sourcePosition, targetPosition } = {}]) => {
     if (trial || !(await approach(source, { position: sourcePosition, force, timeout }))) return false;
     await mouse.down();
-    const reached = await approach(target, { position: targetPosition, force, timeout, patient: true });
-    await mouse.up();
-    if (!reached) throw new Error('dragTo の移動先の位置を取れなかった');
+    let reached;
+    try {
+      // 移動先は掴んでから現れることがある。ここで待ち切らないと操作が失敗するので、元の dragTo と同じ timeout で待つ
+      reached = await reach(target, { position: targetPosition, force }, timeout);
+    } finally {
+      await mouse.up();
+    }
+    if (!reached) throw new Error('dragTo の移動先が表示されていない');
     return true;
   });
 
